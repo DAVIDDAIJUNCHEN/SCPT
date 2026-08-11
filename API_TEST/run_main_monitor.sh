@@ -29,7 +29,7 @@ if [ $step = "3" ]; then
     export DEEPSEEK_ENDPOINT="http://10.255.12.38:13206/member1/deepseek/v1"
     export DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Flash"
     export DEEPSEEK_MODE="local"
-    export DEEPSEEK_BEARER_TOKEN="793fc19f5b26f0f35e3ace4cd1cc4a59d46d6587ff1a0fbb0fb30ee566ca8e8a"
+    export DEEPSEEK_BEARER_TOKEN="YOUR_BEARER_TOKEN"
     
     python ./deepseek_v4_bench_monitor.py --ssh-alias allomax-h20-dsV4
 fi

@@ -29,7 +29,7 @@ if [ $step = "3" ]; then
     export DEEPSEEK_ENDPOINT="http://10.255.12.38:13206/v1"
     export DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Flash"
     export DEEPSEEK_MODE="local"
-    export DEEPSEEK_BEARER_TOKEN="3f3e8075db921aa95d062e4116e6b65e2ca4e5364fae7e718f2579419d208b95"
+    export DEEPSEEK_BEARER_TOKEN="YOUR_BEARER_TOKEN"
     
     python ./deepseek_v4_bench.py
 fi
