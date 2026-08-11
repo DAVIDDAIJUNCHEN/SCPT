@@ -1,3 +1,0 @@
-timestamp_s,sys_cpu_%,mem_used_mb,mem_total_mb,gpu_mem_mb,gpu_util_%
-172.9,100.0,88009.0,1547790.0,139828,0.0
-173.8,100.0,88006.0,1547790.0,139828,100.0
