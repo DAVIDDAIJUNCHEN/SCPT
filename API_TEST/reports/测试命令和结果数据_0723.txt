@@ -1,0 +1,409 @@
+1. deepseek 官网api调用测试
+export DEEPSEEK_ENDPOINT="https://api.deepseek.com"
+export DEEPSEEK_MODEL="deepseek-chat"
+export DEEPSEEK_API_KEY="你的官方key"
+export DEEPSEEK_MODE="official"
+python "/Users/Admin/Desktop/API 测试/deepseek_v4_bench.py"
+
+DeepSeek V4 Flash 性能测试方案
+目标地址: https://api.deepseek.com
+模型名称: deepseek-v4-flash
+测试时间: 2026-07-23 18:19:47
+
+--- 连通性检查 ---
+服务状态: 200
+连接成功，示例回复: 
+
+======================================================================
+测试一：吞吐率 & 首字符响应时间 (TTFT)
+======================================================================
+
+> 提示词类型: short (约10 tokens)
+  第 1 次: TTFT=891ms, 总耗时=1083ms, 输出=28 tokens, 吞吐=25.8 tok/s
+  第 2 次: TTFT=1000ms, 总耗时=1182ms, 输出=31 tokens, 吞吐=26.2 tok/s
+  第 3 次: TTFT=815ms, 总耗时=1145ms, 输出=33 tokens, 吞吐=28.8 tok/s
+  第 4 次: TTFT=827ms, 总耗时=1007ms, 输出=31 tokens, 吞吐=30.8 tok/s
+  第 5 次: TTFT=987ms, 总耗时=1257ms, 输出=24 tokens, 吞吐=19.1 tok/s
+  >> 平均: TTFT=904ms (P99=1000ms), 吞吐=26.2 tok/s
+
+> 提示词类型: medium (约16 tokens)
+  第 1 次: TTFT=1399ms, 总耗时=2764ms, 输出=157 tokens, 吞吐=56.8 tok/s
+  第 2 次: TTFT=1577ms, 总耗时=3142ms, 输出=171 tokens, 吞吐=54.4 tok/s
+  第 3 次: TTFT=3335ms, 总耗时=6270ms, 输出=291 tokens, 吞吐=46.4 tok/s
+  第 4 次: TTFT=1513ms, 总耗时=3367ms, 输出=187 tokens, 吞吐=55.5 tok/s
+  第 5 次: TTFT=1416ms, 总耗时=2884ms, 输出=162 tokens, 吞吐=56.2 tok/s
+  >> 平均: TTFT=1848ms (P99=3335ms), 吞吐=53.9 tok/s
+
+> 提示词类型: long (约32 tokens)
+  第 1 次: TTFT=5077ms, 总耗时=29958ms, 输出=2470 tokens, 吞吐=82.4 tok/s
+  第 2 次: TTFT=2286ms, 总耗时=21568ms, 输出=1811 tokens, 吞吐=84.0 tok/s
+  第 3 次: TTFT=4094ms, 总耗时=15977ms, 输出=1134 tokens, 吞吐=71.0 tok/s
+  第 4 次: TTFT=4392ms, 总耗时=23073ms, 输出=1811 tokens, 吞吐=78.5 tok/s
+  第 5 次: TTFT=3457ms, 总耗时=14030ms, 输出=1083 tokens, 吞吐=77.2 tok/s
+  >> 平均: TTFT=3861ms (P99=5077ms), 吞吐=78.6 tok/s
+
+======================================================================
+测试二：并发数测试
+======================================================================
+
+> 并发数: 1
+  有效请求: 1/1
+  总耗时(墙钟): 3.1s
+  总输出: 175 tokens
+  系统吞吐: 57.3 tok/s
+  平均 TTFT: 1381ms
+  并发效率: 100%
+
+> 并发数: 2
+  有效请求: 2/2
+  总耗时(墙钟): 2.9s
+  总输出: 313 tokens
+  系统吞吐: 106.8 tok/s
+  平均 TTFT: 1398ms
+  并发效率: 179%
+
+> 并发数: 4
+  有效请求: 4/4
+  总耗时(墙钟): 3.0s
+  总输出: 654 tokens
+  系统吞吐: 219.8 tok/s
+  平均 TTFT: 1196ms
+  并发效率: 350%
+
+> 并发数: 8
+  有效请求: 8/8
+  总耗时(墙钟): 5.5s
+  总输出: 1318 tokens
+  系统吞吐: 239.1 tok/s
+  平均 TTFT: 1440ms
+  并发效率: 398%
+
+> 并发数: 16
+  有效请求: 16/16
+  总耗时(墙钟): 3.6s
+  总输出: 2617 tokens
+  系统吞吐: 724.6 tok/s
+  平均 TTFT: 1482ms
+  并发效率: 1344%
+
+> 并发数: 32
+  有效请求: 32/32
+  总耗时(墙钟): 3.4s
+  总输出: 5025 tokens
+  系统吞吐: 1473.6 tok/s
+  平均 TTFT: 1182ms
+  并发效率: 2504%
+
+> 并发数: 64
+  有效请求: 64/64
+  总耗时(墙钟): 3.6s
+  总输出: 10265 tokens
+  系统吞吐: 2816.9 tok/s
+  平均 TTFT: 1357ms
+  并发效率: 5025%
+
+======================================================================
+测试三：上下文长度测试
+======================================================================
+
+> 目标上下文: 512 tokens (实际约 512 tokens)
+  成功: TTFT=2566ms, 输出=217 tokens
+
+> 目标上下文: 1024 tokens (实际约 1024 tokens)
+  成功: TTFT=1706ms, 输出=89 tokens
+
+> 目标上下文: 2048 tokens (实际约 2048 tokens)
+  成功: TTFT=2652ms, 输出=128 tokens
+
+> 目标上下文: 4096 tokens (实际约 4096 tokens)
+  成功: TTFT=1732ms, 输出=77 tokens
+
+> 目标上下文: 8192 tokens (实际约 8192 tokens)
+  成功: TTFT=1755ms, 输出=122 tokens
+
+> 目标上下文: 16384 tokens (实际约 16384 tokens)
+  成功: TTFT=1778ms, 输出=98 tokens
+
+> 目标上下文: 32768 tokens (实际约 32768 tokens)
+  成功: TTFT=1203ms, 输出=38 tokens
+
+> 目标上下文: 65536 tokens (实际约 65536 tokens)
+  成功: TTFT=2014ms, 输出=82 tokens
+
+> 目标上下文: 131072 tokens (实际约 131072 tokens)
+  成功: TTFT=2508ms, 输出=84 tokens
+
+
+2. NIM 直接暴露出来的API
+export DEEPSEEK_ENDPOINT="http://10.32.1.3:30466/v1"
+export DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Flash"
+export DEEPSEEK_MODE="local"
+python "/Users/Admin/Desktop/API 测试/deepseek_v4_bench.py"
+
+DeepSeek V4 Flash 性能测试方案
+目标地址: http://10.32.1.3:30466/v1
+模型名称: deepseek-ai/DeepSeek-V4-Flash
+测试时间: 2026-07-23 18:27:49
+
+--- 连通性检查 ---
+服务状态: 200
+连接成功，示例回复: We need to respond to the user's query "ping". This is a simple
+
+======================================================================
+测试一：吞吐率 & 首字符响应时间 (TTFT)
+======================================================================
+
+> 提示词类型: short (约10 tokens)
+  第 1 次: TTFT=143ms, 总耗时=661ms, 输出=78 tokens, 吞吐=118.0 tok/s
+  第 2 次: TTFT=145ms, 总耗时=699ms, 输出=83 tokens, 吞吐=118.8 tok/s
+  第 3 次: TTFT=144ms, 总耗时=668ms, 输出=84 tokens, 吞吐=125.7 tok/s
+  第 4 次: TTFT=144ms, 总耗时=748ms, 输出=90 tokens, 吞吐=120.3 tok/s
+  第 5 次: TTFT=144ms, 总耗时=673ms, 输出=81 tokens, 吞吐=120.3 tok/s
+  >> 平均: TTFT=144ms (P99=145ms), 吞吐=120.6 tok/s
+
+> 提示词类型: medium (约16 tokens)
+  第 1 次: TTFT=142ms, 总耗时=2515ms, 输出=290 tokens, 吞吐=115.3 tok/s
+  第 2 次: TTFT=148ms, 总耗时=2066ms, 输出=235 tokens, 吞吐=113.7 tok/s
+  第 3 次: TTFT=157ms, 总耗时=1769ms, 输出=214 tokens, 吞吐=121.0 tok/s
+  第 4 次: TTFT=643ms, 总耗时=2058ms, 输出=192 tokens, 吞吐=93.3 tok/s
+  第 5 次: TTFT=143ms, 总耗时=1948ms, 输出=234 tokens, 吞吐=120.1 tok/s
+  >> 平均: TTFT=247ms (P99=643ms), 吞吐=112.7 tok/s
+
+> 提示词类型: long (约32 tokens)
+  第 1 次: TTFT=148ms, 总耗时=11066ms, 输出=1474 tokens, 吞吐=133.2 tok/s
+  第 2 次: TTFT=153ms, 总耗时=10585ms, 输出=1431 tokens, 吞吐=135.2 tok/s
+  第 3 次: TTFT=145ms, 总耗时=10823ms, 输出=1467 tokens, 吞吐=135.5 tok/s
+  第 4 次: TTFT=151ms, 总耗时=12554ms, 输出=1719 tokens, 吞吐=136.9 tok/s
+  第 5 次: TTFT=150ms, 总耗时=11429ms, 输出=1496 tokens, 吞吐=130.9 tok/s
+  >> 平均: TTFT=149ms (P99=153ms), 吞吐=134.4 tok/s
+
+======================================================================
+测试二：并发数测试
+======================================================================
+
+> 并发数: 1
+  有效请求: 1/1
+  总耗时(墙钟): 2.0s
+  总输出: 248 tokens
+  系统吞吐: 122.4 tok/s
+  平均 TTFT: 148ms
+  并发效率: 100%
+
+> 并发数: 2
+  有效请求: 2/2
+  总耗时(墙钟): 2.2s
+  总输出: 483 tokens
+  系统吞吐: 221.2 tok/s
+  平均 TTFT: 152ms
+  并发效率: 193%
+
+> 并发数: 4
+  有效请求: 4/4
+  总耗时(墙钟): 2.3s
+  总输出: 863 tokens
+  系统吞吐: 378.0 tok/s
+  平均 TTFT: 278ms
+  并发效率: 368%
+
+> 并发数: 8
+  有效请求: 8/8
+  总耗时(墙钟): 3.0s
+  总输出: 1910 tokens
+  系统吞吐: 639.5 tok/s
+  平均 TTFT: 257ms
+  并发效率: 727%
+
+> 并发数: 16
+  有效请求: 16/16
+  总耗时(墙钟): 3.6s
+  总输出: 3831 tokens
+  系统吞吐: 1078.9 tok/s
+  平均 TTFT: 272ms
+  并发效率: 1399%
+
+> 并发数: 32
+  有效请求: 32/32
+  总耗时(墙钟): 4.9s
+  总输出: 7761 tokens
+  系统吞吐: 1595.7 tok/s
+  平均 TTFT: 394ms
+  并发效率: 2565%
+
+> 并发数: 64
+  有效请求: 64/64
+  总耗时(墙钟): 6.4s
+  总输出: 15111 tokens
+  系统吞吐: 2372.0 tok/s
+  平均 TTFT: 530ms
+  并发效率: 4943%
+
+======================================================================
+测试三：上下文长度测试
+======================================================================
+
+> 目标上下文: 512 tokens (实际约 512 tokens)
+  成功: TTFT=145ms, 输出=215 tokens
+
+> 目标上下文: 1024 tokens (实际约 1024 tokens)
+  成功: TTFT=382ms, 输出=222 tokens
+
+> 目标上下文: 2048 tokens (实际约 2048 tokens)
+  成功: TTFT=140ms, 输出=138 tokens
+
+> 目标上下文: 4096 tokens (实际约 4096 tokens)
+  成功: TTFT=142ms, 输出=79 tokens
+
+> 目标上下文: 8192 tokens (实际约 8192 tokens)
+  成功: TTFT=779ms, 输出=211 tokens
+
+> 目标上下文: 16384 tokens (实际约 16384 tokens)
+  成功: TTFT=156ms, 输出=185 tokens
+
+> 目标上下文: 32768 tokens (实际约 32768 tokens)
+  成功: TTFT=9341ms, 输出=266 tokens
+
+> 目标上下文: 65536 tokens (实际约 65536 tokens)
+  成功: TTFT=14797ms, 输出=185 tokens
+
+> 目标上下文: 131072 tokens (实际约 131072 tokens)
+  成功: TTFT=357ms, 输出=277 tokens
+
+
+3. AI 中台纳管之后的结果：
+export DEEPSEEK_ENDPOINT="http://10.255.12.38:13206/v1"
+export DEEPSEEK_MODEL="deepseek-ai/DeepSeek-V4-Flash"
+export DEEPSEEK_MODE="local"
+export DEEPSEEK_BEARER_TOKEN="3f3e8075db921aa95d062e4116e6b65e2ca4e5364fae7e718f2579419d208b95 "
+python "/Users/Admin/Desktop/API 测试/deepseek_v4_bench.py"
+
+
+DeepSeek V4 Flash 性能测试方案
+目标地址: http://10.255.12.38:13206/v1
+模型名称: deepseek-ai/DeepSeek-V4-Flash
+测试时间: 2026-07-23 18:50:34
+
+--- 连通性检查 ---
+服务状态: 404 -> http://10.255.12.38:13206/v1/chat/completions
+服务状态: 404 -> http://10.255.12.38:13206/chat/completions
+服务状态: 200 -> http://10.255.12.38:13206/member1/deepseek/v1/chat/completions
+连接成功，示例回复: 好的，用户只发了一个词“ping”。这通常是一个网络诊断命令
+
+======================================================================
+测试一：吞吐率 & 首字符响应时间 (TTFT)
+======================================================================
+
+> 提示词类型: short (约10 tokens)
+  第 1 次: TTFT=166ms, 总耗时=726ms, 输出=89 tokens, 吞吐=122.7 tok/s
+  第 2 次: TTFT=180ms, 总耗时=740ms, 输出=83 tokens, 吞吐=112.1 tok/s
+  第 3 次: TTFT=161ms, 总耗时=705ms, 输出=86 tokens, 吞吐=122.0 tok/s
+  第 4 次: TTFT=170ms, 总耗时=758ms, 输出=91 tokens, 吞吐=120.0 tok/s
+  第 5 次: TTFT=182ms, 总耗时=730ms, 输出=88 tokens, 吞吐=120.6 tok/s
+  >> 平均: TTFT=172ms (P99=182ms), 吞吐=119.5 tok/s
+
+> 提示词类型: medium (约16 tokens)
+  第 1 次: TTFT=170ms, 总耗时=2038ms, 输出=241 tokens, 吞吐=118.3 tok/s
+  第 2 次: TTFT=163ms, 总耗时=2050ms, 输出=236 tokens, 吞吐=115.1 tok/s
+  第 3 次: TTFT=180ms, 总耗时=2174ms, 输出=261 tokens, 吞吐=120.1 tok/s
+  第 4 次: TTFT=168ms, 总耗时=2194ms, 输出=252 tokens, 吞吐=114.9 tok/s
+  第 5 次: TTFT=1271ms, 总耗时=8621ms, 输出=223 tokens, 吞吐=25.9 tok/s
+  >> 平均: TTFT=391ms (P99=1271ms), 吞吐=98.8 tok/s
+
+> 提示词类型: long (约32 tokens)
+  第 1 次: TTFT=189ms, 总耗时=13012ms, 输出=1696 tokens, 吞吐=130.3 tok/s
+  第 2 次: TTFT=179ms, 总耗时=10500ms, 输出=1403 tokens, 吞吐=133.6 tok/s
+  第 3 次: TTFT=171ms, 总耗时=11443ms, 输出=1511 tokens, 吞吐=132.0 tok/s
+  第 4 次: TTFT=184ms, 总耗时=11689ms, 输出=1546 tokens, 吞吐=132.3 tok/s
+  第 5 次: TTFT=183ms, 总耗时=11865ms, 输出=1543 tokens, 吞吐=130.0 tok/s
+  >> 平均: TTFT=181ms (P99=189ms), 吞吐=131.7 tok/s
+
+======================================================================
+测试二：并发数测试
+======================================================================
+
+> 并发数: 1
+  有效请求: 1/1
+  总耗时(墙钟): 2.3s
+  总输出: 254 tokens
+  系统吞吐: 111.9 tok/s
+  平均 TTFT: 196ms
+  并发效率: 100%
+
+> 并发数: 2
+  有效请求: 2/2
+  总耗时(墙钟): 120.6s
+  总输出: 217 tokens
+  系统吞吐: 1.8 tok/s
+  平均 TTFT: 417ms
+  并发效率: 3%
+
+> 并发数: 4
+  有效请求: 4/4
+  总耗时(墙钟): 26.5s
+  总输出: 925 tokens
+  系统吞吐: 34.9 tok/s
+  平均 TTFT: 350ms
+  并发效率: 46%
+
+> 并发数: 8
+  有效请求: 8/8
+  总耗时(墙钟): 142.4s
+  总输出: 1847 tokens
+  系统吞吐: 13.0 tok/s
+  平均 TTFT: 468ms
+  并发效率: 19%
+
+> 并发数: 16
+  有效请求: 16/16
+  总耗时(墙钟): 114.0s
+  总输出: 3489 tokens
+  系统吞吐: 30.6 tok/s
+  平均 TTFT: 369ms
+  并发效率: 47%
+
+> 并发数: 32
+  有效请求: 32/32
+  总耗时(墙钟): 412.6s
+  总输出: 7283 tokens
+  系统吞吐: 17.7 tok/s
+  平均 TTFT: 913ms
+  并发效率: 43%
+
+> 并发数: 64
+  有效请求: 64/64
+  总耗时(墙钟): 233.1s
+  总输出: 15049 tokens
+  系统吞吐: 64.6 tok/s
+  平均 TTFT: 795ms
+  并发效率: 179%
+
+======================================================================
+测试三：上下文长度测试
+======================================================================
+
+> 目标上下文: 512 tokens (实际约 512 tokens)
+  成功: TTFT=186ms, 输出=185 tokens
+
+> 目标上下文: 1024 tokens (实际约 1024 tokens)
+  成功: TTFT=165ms, 输出=380 tokens
+
+> 目标上下文: 2048 tokens (实际约 2048 tokens)
+  成功: TTFT=453ms, 输出=206 tokens
+
+> 目标上下文: 4096 tokens (实际约 4096 tokens)
+  成功: TTFT=172ms, 输出=120 tokens
+
+> 目标上下文: 8192 tokens (实际约 8192 tokens)
+  成功: TTFT=184ms, 输出=354 tokens
+
+> 目标上下文: 16384 tokens (实际约 16384 tokens)
+  成功: TTFT=5899ms, 输出=50 tokens
+
+> 目标上下文: 32768 tokens (实际约 32768 tokens)
+  成功: TTFT=13621ms, 输出=174 tokens
+
+> 目标上下文: 65536 tokens (实际约 65536 tokens)
+  成功: TTFT=338ms, 输出=170 tokens
+
+> 目标上下文: 131072 tokens (实际约 131072 tokens)
+  成功: TTFT=500ms, 输出=105 tokens
+
