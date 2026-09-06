@@ -84,6 +84,7 @@ import {
   type CurrencyConfig,
   type CurrencyDisplayType,
 } from '@/stores/system-config-store'
+import i18n from '@/i18n/config'
 
 export interface CurrencyFormatOptions {
   /** Fraction digits to use when |value| >= 1 */
@@ -185,9 +186,13 @@ function getConfig(): CurrencyConfig {
 }
 
 // 川邮·星语: 根据当前 UI 语言选择货币（符号 + 粗略汇率），避免单一货币误导
+// key 使用 i18n 的真实语言代码（zhCN/zhTW 等，见 src/i18n/config.ts supportedLngs）
 type LocaleCurrency = { type: 'CNY' | 'USD' | 'CUSTOM'; symbol: string; rate: number }
 const LOCALE_CURRENCY_MAP: Record<string, LocaleCurrency> = {
+  zhCN: { type: 'CNY', symbol: '¥', rate: 7.3 },
+  'zh-CN': { type: 'CNY', symbol: '¥', rate: 7.3 },
   zh: { type: 'CNY', symbol: '¥', rate: 7.3 },
+  zhTW: { type: 'CNY', symbol: '¥', rate: 7.3 },
   'zh-TW': { type: 'CNY', symbol: '¥', rate: 7.3 },
   ja: { type: 'CUSTOM', symbol: '¥', rate: 150 },
   fr: { type: 'CUSTOM', symbol: '€', rate: 0.9 },
@@ -196,24 +201,49 @@ const LOCALE_CURRENCY_MAP: Record<string, LocaleCurrency> = {
   en: { type: 'USD', symbol: '$', rate: 1 },
 }
 
-// 读取当前 UI 语言（优先 i18next localStorage，其次浏览器语言，兼容 zh-CN/zh-TW 等）
+// 读取当前 UI 语言。优先使用 i18n 实际渲染语言(document.documentElement.lang)，
+// 因为这才是用户真正看到的语言；回退 i18next localStorage，再回退浏览器语言。
+// i18n 使用 zhCN/zhTW 代码，需映射到货币表。
 function getCurrentLocale(): string {
   try {
-    if (typeof window === 'undefined') return 'zh'
+    if (typeof window === 'undefined') return 'zhCN'
     let lang: string | null = null
+    // 1) i18n 实例当前语言（最权威，代表实际渲染的 UI 语言）
     try {
-      lang = window.localStorage.getItem('i18nextLng')
+      if (i18n?.language) lang = i18n.language
     } catch {
       /* ignore */
     }
+    // 2) i18n 渲染后设置的 document lang
+    if (!lang) {
+      try {
+        const docLang = document.documentElement?.getAttribute('lang')
+        if (docLang) lang = docLang
+      } catch {
+        /* ignore */
+      }
+    }
+    // 3) i18next localStorage 语言
+    if (!lang) {
+      try {
+        lang = window.localStorage.getItem('i18nextLng')
+      } catch {
+        /* ignore */
+      }
+    }
+    // 4) 浏览器语言（转换为 i18n 约定代码：zh-CN→zhCN, zh-TW→zhTW）
     if (!lang && navigator.language) lang = navigator.language
-    if (!lang) return 'zh'
-    // 归一化：zh-CN → zh，fr-FR → fr；但保留 zh-TW 明确标识
-    const normalized = lang.replace('_', '-').split('-')[0]
-    if (normalized === 'zh' && lang.toUpperCase().includes('TW')) return 'zh-TW'
-    return normalized
+    if (!lang) return 'zhCN'
+    const upper = lang.toUpperCase()
+    // 统一 zh 中文代码：zhCN / zh-TW / zh-CN / zh → 中文（CNY）
+    if (/^ZH/.test(upper)) {
+      if (upper === 'ZH-TW' || upper === 'ZHTW') return 'zhTW'
+      return 'zhCN'
+    }
+    // 其他语言取主代码（fr-FR→fr）
+    return lang.replace('_', '-').split('-')[0]
   } catch {
-    return 'zh'
+    return 'zhCN'
   }
 }
 
