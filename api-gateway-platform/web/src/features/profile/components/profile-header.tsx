@@ -16,18 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Activity, BarChart3, WalletCards } from 'lucide-react'
+import { Activity, BarChart3, WalletCards, Pencil } from 'lucide-react'
+import { useState } from 'react'
+import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatCompactNumber, formatQuota } from '@/lib/format'
 import { getRoleLabel } from '@/lib/roles'
 
+import { updateUserProfile } from '../api'
 import { getDisplayName } from '../lib'
 import type { UserProfile } from '../types'
 
@@ -38,10 +43,37 @@ import type { UserProfile } from '../types'
 interface ProfileHeaderProps {
   profile: UserProfile | null
   loading: boolean
+  onProfileUpdate?: () => void
 }
 
-export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
+export function ProfileHeader({
+  profile,
+  loading,
+  onProfileUpdate,
+}: ProfileHeaderProps) {
   const { t } = useTranslation()
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    if (!name.trim()) return
+    setSaving(true)
+    try {
+      const res = await updateUserProfile({ display_name: name.trim() })
+      if (res.success) {
+        toast.success(t('显示名称已更新'))
+        setEditing(false)
+        onProfileUpdate?.()
+      } else {
+        toast.error(res.message || t('更新失败'))
+      }
+    } catch {
+      toast.error(t('更新失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -115,7 +147,8 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
   ]
 
   return (
-    <Card data-card-hover='false' className='gap-0 overflow-hidden py-0'>
+    <>
+      <Card data-card-hover='false' className='gap-0 overflow-hidden py-0'>
       <CardContent className='p-3 sm:p-5'>
         <div className='flex items-center gap-3 text-left sm:gap-4'>
           <Avatar className='ring-background h-12 w-12 rounded-xl text-sm ring-2 sm:h-16 sm:w-16 sm:rounded-2xl sm:text-lg sm:ring-4'>
@@ -132,6 +165,18 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
               <h1 className='truncate text-xl font-semibold tracking-tight sm:text-2xl'>
                 {displayName}
               </h1>
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon'
+                className='h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground'
+                onClick={() => {
+                  setName(displayName)
+                  setEditing(true)
+                }}
+              >
+                <Pencil className='h-3.5 w-3.5' />
+              </Button>
               <StatusBadge
                 label={roleLabel}
                 variant='neutral'
@@ -186,5 +231,25 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
         </div>
       </div>
     </Card>
+
+    {editing && (
+      <div className='flex items-center gap-2'>
+        <Input
+          value={name}
+          maxLength={20}
+          placeholder={t('我的昵称')}
+          onChange={(e) => setName(e.target.value)}
+          className='max-w-xs bg-background'
+          autoFocus
+        />
+        <Button variant='ghost' onClick={() => setEditing(false)} size='sm'>
+          {t('取消')}
+        </Button>
+        <Button onClick={handleSave} disabled={saving || !name.trim()} size='sm'>
+          {saving ? t('保存中…') : t('保存')}
+        </Button>
+      </div>
+    )}
+    </>
   )
 }

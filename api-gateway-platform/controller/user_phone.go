@@ -119,7 +119,7 @@ func autoRegisterByPhone(phone string) (*model.User, error) {
 	cleanUser := model.User{
 		Username:      phone,
 		Password:      "",
-		DisplayName:   "用户" + phone[len(phone)-4:],
+		DisplayName:   phone, // 默认显示名称=手机号；用户可自行修改
 		Phone:         phone,
 		PhoneVerified: true,
 		Role:          common.RoleCommonUser,
