@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { MESSAGE_STATUS, STORAGE_KEYS } from '../../constants'
 import type { PlaygroundConfig, ParameterEnabled, Message } from '../../types'
+import { useAuthStore } from '@/stores/auth-store'
 import {
   finalizeMessage,
   isAssistantMessagePending,
@@ -46,6 +47,20 @@ const MIN_PREFIX_COLLAPSE_LENGTH = 2000
 const MIN_REPEATED_SECTION_COUNT = 3
 const SECTION_HEADING_LINE_PATTERN = /^#{2,6}\s+\d+\.\s+.+$/gm
 
+// 川邮·星语：按登录用户隔离 Playground 本地数据（修复不同账号互相看到记录的问题）
+function getCurrentUserId(): string {
+  try {
+    const user = useAuthStore.getState().auth.user
+    return user?.id ? `uid_${user.id}` : 'guest'
+  } catch {
+    return 'guest'
+  }
+}
+
+function getScopedKey(base: string): string {
+  return `${base}.${getCurrentUserId()}`
+}
+
 function readStoredValue(key: string): unknown | null {
   const saved = localStorage.getItem(key)
   if (!saved) return null
@@ -54,11 +69,11 @@ function readStoredValue(key: string): unknown | null {
 }
 
 function readStoredMessagesValue(): unknown | null {
-  const saved = localStorage.getItem(STORAGE_KEYS.MESSAGES)
+  const saved = localStorage.getItem(getScopedKey(STORAGE_KEYS.MESSAGES))
   if (!saved) return null
 
   if (saved.length > MAX_STORED_MESSAGES_BYTES) {
-    localStorage.removeItem(STORAGE_KEYS.MESSAGES)
+    localStorage.removeItem(getScopedKey(STORAGE_KEYS.MESSAGES))
     return null
   }
 
@@ -280,7 +295,7 @@ function trimMessagesByContentSize(messages: Message[]): Message[] {
  */
 export function loadConfig(): Partial<PlaygroundConfig> {
   try {
-    const saved = readStoredValue(STORAGE_KEYS.CONFIG)
+    const saved = readStoredValue(getScopedKey(STORAGE_KEYS.CONFIG))
     if (!saved) return {}
 
     return playgroundConfigSchema.parse(unwrapStoredValue(saved))
@@ -297,7 +312,7 @@ export function loadConfig(): Partial<PlaygroundConfig> {
 export function saveConfig(config: Partial<PlaygroundConfig>): void {
   try {
     const parsed = playgroundConfigSchema.parse(config)
-    writeStoredValue(STORAGE_KEYS.CONFIG, parsed)
+    writeStoredValue(getScopedKey(STORAGE_KEYS.CONFIG), parsed)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to save config:', error)
@@ -309,7 +324,7 @@ export function saveConfig(config: Partial<PlaygroundConfig>): void {
  */
 export function loadParameterEnabled(): Partial<ParameterEnabled> {
   try {
-    const saved = readStoredValue(STORAGE_KEYS.PARAMETER_ENABLED)
+    const saved = readStoredValue(getScopedKey(STORAGE_KEYS.PARAMETER_ENABLED))
     if (!saved) return {}
 
     return parameterEnabledSchema.parse(unwrapStoredValue(saved))
@@ -328,7 +343,7 @@ export function saveParameterEnabled(
 ): void {
   try {
     const parsed = parameterEnabledSchema.parse(parameterEnabled)
-    writeStoredValue(STORAGE_KEYS.PARAMETER_ENABLED, parsed)
+    writeStoredValue(getScopedKey(STORAGE_KEYS.PARAMETER_ENABLED), parsed)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to save parameter enabled:', error)
@@ -376,7 +391,7 @@ export function saveMessages(messages: Message[]): void {
   try {
     const trimmed = trimMessages(messages)
     const parsed = messagesSchema.parse(trimmed) as Message[]
-    writeStoredValue(STORAGE_KEYS.MESSAGES, parsed)
+    writeStoredValue(getScopedKey(STORAGE_KEYS.MESSAGES), parsed)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to save messages:', error)
@@ -388,9 +403,9 @@ export function saveMessages(messages: Message[]): void {
  */
 export function clearPlaygroundData(): void {
   try {
-    localStorage.removeItem(STORAGE_KEYS.CONFIG)
-    localStorage.removeItem(STORAGE_KEYS.PARAMETER_ENABLED)
-    localStorage.removeItem(STORAGE_KEYS.MESSAGES)
+    localStorage.removeItem(getScopedKey(STORAGE_KEYS.CONFIG))
+    localStorage.removeItem(getScopedKey(STORAGE_KEYS.PARAMETER_ENABLED))
+    localStorage.removeItem(getScopedKey(STORAGE_KEYS.MESSAGES))
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to clear playground data:', error)
