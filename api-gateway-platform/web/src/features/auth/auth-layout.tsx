@@ -40,18 +40,18 @@ export function AuthLayout({ children }: AuthLayoutProps) {
       {/* 顶部导航 */}
       <header className='relative z-10 flex items-center justify-between px-6 py-5 sm:px-10'>
         <div className='flex items-center gap-3'>
-          <div className='relative h-16 w-16'>
+          <div className='relative h-24 w-24'>
             {loading ? (
-              <Skeleton className='absolute inset-0 rounded-xl' />
+              <Skeleton className='absolute inset-0 rounded-2xl' />
             ) : (
               <img
                 src={logo}
                 alt={BRAND_NAME}
-                className='h-16 w-16 rounded-xl object-cover'
+                className='h-24 w-24 rounded-2xl object-cover'
               />
             )}
           </div>
-          <span className='text-xl font-medium text-foreground'>{BRAND_NAME}</span>
+          <span className='text-2xl font-medium text-foreground'>{BRAND_NAME}</span>
         </div>
         <Link
           to='/'
