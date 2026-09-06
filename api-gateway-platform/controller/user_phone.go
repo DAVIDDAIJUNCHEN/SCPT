@@ -114,11 +114,11 @@ func PhoneLogin(c *gin.Context) {
 }
 
 // autoRegisterByPhone 用手机号自动注册：username 用 u+手机号（手机号唯一保证用户名唯一），
-// 随机密码（该用户以验证码登录，无需口令），DisplayName 脱敏展示。
+// 密码为空（验证码登录为主，用户可后设密码），DisplayName 脱敏展示。
 func autoRegisterByPhone(phone string) (*model.User, error) {
 	cleanUser := model.User{
 		Username:      "u" + phone,
-		Password:      common.GetRandomString(16),
+		Password:      "",
 		DisplayName:   "用户" + phone[len(phone)-4:],
 		Phone:         phone,
 		PhoneVerified: true,
@@ -129,4 +129,84 @@ func autoRegisterByPhone(phone string) (*model.User, error) {
 	}
 	// 回读完整用户（Insert 已回填 Id，但完整读一遍确保 Setting/配额/AuthVersion 就绪）
 	return model.GetUserById(cleanUser.Id, false)
+}
+
+// PhonePasswordLogin POST /api/user/phone/password-login
+// 手机号 + 密码登录（用户需已设置密码；未设密码提示用验证码登录）
+func PhonePasswordLogin(c *gin.Context) {
+	if !common.PhoneRegisterEnabled {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "手机号登录功能未启用"})
+		return
+	}
+	var req struct {
+		Phone    string `json:"phone"`
+		Password string `json:"password"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	phone, ok := normalizeChinaPhone(req.Phone)
+	if !ok || strings.TrimSpace(req.Password) == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	user, err := model.GetUserByPhone(phone, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "该手机号未注册，请使用验证码登录"})
+		return
+	}
+	if user.Password == "" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "该账号未设置密码，请使用验证码登录"})
+		return
+	}
+	if !common.ValidatePasswordAndHash(req.Password, user.Password) {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "密码错误"})
+		return
+	}
+	if user.Status != common.UserStatusEnabled {
+		common.ApiErrorI18n(c, i18n.MsgAuthUserBanned)
+		return
+	}
+	setupLogin(user, c)
+}
+
+// SetPhonePassword POST /api/user/phone/set-password
+// 验证码校验后设置/重置密码（验证码本身即凭证，可免登录调用）
+func SetPhonePassword(c *gin.Context) {
+	var req struct {
+		Phone    string `json:"phone"`
+		Code     string `json:"code"`
+		Password string `json:"password"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	phone, ok := normalizeChinaPhone(req.Phone)
+	if !ok || strings.TrimSpace(req.Code) == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if len(req.Password) < 8 {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "密码至少 8 位"})
+		return
+	}
+	if !common.VerifyCodeWithKey(phone, req.Code, common.PhoneVerificationPurpose) {
+		common.ApiErrorI18n(c, i18n.MsgUserVerificationCodeError)
+		return
+	}
+	common.DeleteKey(phone, common.PhoneVerificationPurpose)
+
+	user, err := model.GetUserByPhone(phone, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "该手机号未注册"})
+		return
+	}
+	user.Password = req.Password
+	if err := user.Update(true); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "密码设置成功"})
 }

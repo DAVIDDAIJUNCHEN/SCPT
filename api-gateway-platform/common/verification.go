@@ -1,6 +1,7 @@
 package common
 
 import (
+	crand "crypto/rand"
 	"strings"
 	"sync"
 	"time"
@@ -25,12 +26,29 @@ var verificationMapMaxSize = 10
 var VerificationValidMinutes = 10
 
 func GenerateVerificationCode(length int) string {
-	code := uuid.New().String()
-	code = strings.Replace(code, "-", "", -1)
-	if length == 0 {
-		return code
+	if length <= 0 {
+		length = 6
 	}
-	return code[:length]
+	// 纯数字验证码（6 位），避免字母混淆；crypto/rand 保证不可预测
+	b := make([]byte, length)
+	if _, err := crand.Read(b); err != nil {
+		// 极端情况回退：用时间戳+UUID 数字化（非安全场景极少触发）
+		code := uuid.New().String()
+		digits := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, code)
+		if len(digits) >= length {
+			return digits[:length]
+		}
+		return strings.Repeat("0", length)
+	}
+	for i := range b {
+		b[i] = '0' + b[i]%10
+	}
+	return string(b)
 }
 
 func RegisterVerificationCodeWithKey(key string, code string, purpose string) {

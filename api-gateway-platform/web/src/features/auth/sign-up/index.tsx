@@ -1,60 +1,34 @@
 /*
-Copyright (C) 2023-2026 QuantumNous
+Copyright (C) 2026 川邮星语 · AlloMax
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
-import { useStatus } from '@/hooks/use-status'
-
 import { AuthLayout } from '../auth-layout'
-import { TermsFooter } from '../components/terms-footer'
-import { SignUpForm } from './components/sign-up-form'
+import { PhoneAuthForm } from '../sign-in/components/phone-auth-form'
 
 export function SignUp() {
   const { t } = useTranslation()
-  const { status } = useStatus()
 
   return (
     <AuthLayout>
-      <div className='w-full space-y-8'>
-        <div className='space-y-2'>
-          <h2 className='text-center text-2xl font-semibold tracking-tight sm:text-left'>
-            {t('Create an account')}
-          </h2>
-          <p className='text-muted-foreground text-left text-sm sm:text-base'>
-            {t('Already have an account?')}{' '}
-            <Link
-              to='/sign-in'
-              className='hover:text-primary font-medium underline underline-offset-4'
-            >
-              {t('Sign in')}
-            </Link>
-            .
-          </p>
+      <div className='space-y-6'>
+        <div className='space-y-1.5 text-center lg:text-left'>
+          <h1 className='text-xl font-medium text-foreground'>{t('注册')}</h1>
+          <p className='text-sm text-muted-foreground'>{t('仅支持手机号注册，一个账号访问全部服务')}</p>
         </div>
-
-        <SignUpForm />
-
-        <TermsFooter
-          variant='sign-up'
-          status={status}
-          className='text-center'
-        />
+        <PhoneAuthForm variant='sign-up' />
+        <p className='text-center text-sm text-muted-foreground'>
+          {t('已有账号？')}{' '}
+          <Link to='/sign-in' className='text-[#7F77DD] hover:underline'>
+            {t('登录')}
+          </Link>
+        </p>
       </div>
     </AuthLayout>
   )

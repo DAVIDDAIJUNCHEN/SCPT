@@ -121,6 +121,19 @@ export async function phoneLogin(
   return res.data
 }
 
+/** 手机号 + 密码登录（用户需已设置密码） */
+export async function phonePasswordLogin(
+  phone: string,
+  password: string
+): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>(
+    '/api/user/phone/password-login',
+    { phone, password },
+    { skipAuthRefresh: true }
+  )
+  return res.data
+}
+
 interface LogoutRuntime {
   getExpectedSID: () => string | undefined
   request: (expectedSID?: string) => Promise<ApiResponse>

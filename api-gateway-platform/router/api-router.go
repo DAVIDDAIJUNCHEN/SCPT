@@ -44,6 +44,8 @@ func SetApiRouter(router *gin.Engine) {
 		// AlloMax: 手机号验证码（发码 + 登录，频控防轰炸）
 		apiRouter.GET("/phone/verification", middleware.SmsVerificationRateLimit(), middleware.DisableCache(), controller.SendPhoneCode)
 		apiRouter.POST("/user/phone/login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhoneLogin)
+		apiRouter.POST("/user/phone/password-login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhonePasswordLogin)
+		apiRouter.POST("/user/phone/set-password", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.SetPhonePassword)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ResetPassword)
 		// OAuth routes - specific routes must come before :provider wildcard
