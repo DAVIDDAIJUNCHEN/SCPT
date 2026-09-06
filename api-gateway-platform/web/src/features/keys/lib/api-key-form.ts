@@ -45,6 +45,10 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
       tokenCount: z.number().min(1).optional(),
+      // 川邮·星语：令牌级限流/并发管控（0=不限制）
+      rate_limit_rpm: z.number().min(0).int().optional(),
+      rate_limit_tpm: z.number().min(0).int().optional(),
+      max_concurrency: z.number().min(0).int().optional(),
     })
     .superRefine((data, ctx) => {
       if (data.group === 'auto') {
@@ -115,6 +119,9 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   auto_groups: [],
   cross_group_retry: true,
   tokenCount: 1,
+  rate_limit_rpm: 0,
+  rate_limit_tpm: 0,
+  max_concurrency: 0,
 }
 
 export function getApiKeyFormDefaultValues(
@@ -157,6 +164,16 @@ export function transformFormDataToPayload(
         ? data.auto_groups
         : [],
     cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
+    // 川邮·星语：令牌级限流/并发（0=不限制）
+    rate_limit_rpm: data.rate_limit_rpm && data.rate_limit_rpm > 0
+      ? data.rate_limit_rpm
+      : 0,
+    rate_limit_tpm: data.rate_limit_tpm && data.rate_limit_tpm > 0
+      ? data.rate_limit_tpm
+      : 0,
+    max_concurrency: data.max_concurrency && data.max_concurrency > 0
+      ? data.max_concurrency
+      : 0,
   }
 }
 
@@ -194,5 +211,9 @@ export function transformApiKeyToFormDefaults(
     auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
     tokenCount: 1,
+    // 川邮·星语：令牌级限流/并发回填（0 无限制显示为空）
+    rate_limit_rpm: apiKey.rate_limit_rpm || undefined,
+    rate_limit_tpm: apiKey.rate_limit_tpm || undefined,
+    max_concurrency: apiKey.max_concurrency || undefined,
   }
 }

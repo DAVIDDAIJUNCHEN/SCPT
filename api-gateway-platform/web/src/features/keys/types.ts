@@ -46,6 +46,10 @@ export const apiKeySchema = z.object({
   model_limits_enabled: z.boolean(),
   model_limits: z.string().nullish().default(''),
   allow_ips: z.string().nullish().default(''),
+  // 川邮·星语：令牌级限流/并发
+  rate_limit_rpm: z.number().optional().default(0),
+  rate_limit_tpm: z.number().optional().default(0),
+  max_concurrency: z.number().optional().default(0),
 })
 
 export type ApiKey = z.infer<typeof apiKeySchema>
@@ -94,6 +98,10 @@ export interface ApiKeyFormData {
   group: string
   auto_groups: string[]
   cross_group_retry: boolean
+  // 川邮·星语：令牌级限流/并发（0=不限制）
+  rate_limit_rpm: number
+  rate_limit_tpm: number
+  max_concurrency: number
 }
 
 export interface TokenAutoGroupsConfig {

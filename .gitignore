@@ -1,0 +1,14 @@
+# 运行时数据（本地/预览数据库、日志）——不应提交到仓库
+.preview-data/
+.dev-data/
+*.db
+*.db-shm
+*.db-wal
+*.db.broken*
+
+# 日志
+logs/
+*.log
+
+# 系统
+.DS_Store

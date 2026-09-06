@@ -744,6 +744,90 @@ export function ApiKeysMutateDrawer({
                         </FormItem>
                       )}
                     />
+                    {/* 川邮·星语：令牌级限流 / 并发管控 */}
+                    <div className='grid grid-cols-3 gap-3'>
+                      <FormField
+                        control={form.control}
+                        name='rate_limit_rpm'
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t('RPM')}</FormLabel>
+                            <FormControl>
+                              <Input
+                                type='number'
+                                min={0}
+                                placeholder='0'
+                                {...field}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value === ''
+                                      ? undefined
+                                      : Number(e.target.value)
+                                  )
+                                }
+                              />
+                            </FormControl>
+                            <FormDescription className='text-[10px]'>
+                              {t('每分钟请求数, 0=不限')}
+                            </FormDescription>
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name='rate_limit_tpm'
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t('TPM')}</FormLabel>
+                            <FormControl>
+                              <Input
+                                type='number'
+                                min={0}
+                                placeholder='0'
+                                {...field}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value === ''
+                                      ? undefined
+                                      : Number(e.target.value)
+                                  )
+                                }
+                              />
+                            </FormControl>
+                            <FormDescription className='text-[10px]'>
+                              {t('每分钟 token, 0=不限')}
+                            </FormDescription>
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name='max_concurrency'
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t('并发')}</FormLabel>
+                            <FormControl>
+                              <Input
+                                type='number'
+                                min={0}
+                                placeholder='0'
+                                {...field}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value === ''
+                                      ? undefined
+                                      : Number(e.target.value)
+                                  )
+                                }
+                              />
+                            </FormControl>
+                            <FormDescription className='text-[10px]'>
+                              {t('最大并发请求, 0=不限')}
+                            </FormDescription>
+                          </FormItem>
+                        )}
+                      />
+                    </div>
                   </div>
                 </CollapsibleContent>
               </SideDrawerSection>
