@@ -12,8 +12,9 @@ import (
 
 var StartTime = time.Now().Unix() // unit: second
 var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
-var SystemName = "四川邮电职业技术学院"
-var Footer = ""
+var SystemName = "川邮·星语 API"
+// 合规声明：AGPL v3 要求保留原始版权并在修改作品中标明"基于 New API 二次开发"。
+var Footer = "四川邮电职业技术学院 版权所有 · 基于 New API（AGPL v3）构建的二次开发平台"
 var Logo = ""
 var TopUpLink = ""
 
