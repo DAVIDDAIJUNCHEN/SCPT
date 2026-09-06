@@ -49,6 +49,15 @@ def detect_mode() -> str:
 
 MODE = detect_mode()
 
+# 本地 HTTPS 网关常使用自签名证书，默认行为与 curl -k 一致；官方接口仍校验证书。
+verify_ssl_env = os.getenv("DEEPSEEK_VERIFY_SSL")
+if verify_ssl_env is None:
+    VERIFY_SSL = not (MODE == "local" and ENDPOINT.startswith("https://"))
+else:
+    VERIFY_SSL = verify_ssl_env.strip().lower() not in {
+        "0", "false", "no", "off"
+    }
+
 
 MAX_CONCURRENT = [1, 2, 4, 8, 16, 32, 64]
 TEST_PROMPTS = {
@@ -313,7 +322,7 @@ async def test_throughput_latency():
     print("测试一：吞吐率 & 首字符响应时间 (TTFT)")
     print("=" * 70)
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
         for name, prompt in TEST_PROMPTS.items():
             print(f"\n> 提示词类型: {name} (约{token_count_approx(prompt)} tokens)")
 
@@ -353,7 +362,7 @@ async def test_concurrency():
 
     prompt = TEST_PROMPTS["medium"]
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
         for n in MAX_CONCURRENT:
             print(f"\n> 并发数: {n}")
             tasks = [send_stream_request(client, prompt) for _ in range(n)]
@@ -404,7 +413,7 @@ async def test_context_length():
                 high = mid
         return base_text[:low]
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
         for target_len in lengths:
             # 二分查找构造指定 token 长度的输入
             prompt = _build_prompt(target_len)
@@ -480,7 +489,7 @@ async def main():
     if ENDPOINT.startswith("https://api.deepseek.com") and not API_KEY:
         print("[提示] 未设置 DEEPSEEK_API_KEY，官方接口通常会返回 401。")
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
         if not await check_connectivity(client):
             print("请确认 ENDPOINT、MODEL_NAME 和 API_KEY 配置正确。")
             return

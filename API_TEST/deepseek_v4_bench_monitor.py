@@ -761,7 +761,7 @@ def generate_report(monitor, output_dir: Path):
     # 汇总 JSON
     summary = {
         "test_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "remote_host": monitor.host,
+        "remote_host": getattr(monitor, "host", "localhost"),
         "total_samples": len(monitor.samples),
         "total_duration_s": round(
             monitor.samples[-1].timestamp if monitor.samples else 0, 1
@@ -817,7 +817,7 @@ async def main_async(monitor, bench_module):
     print("\n" + "=" * 70)
     print("阶段 0: 连通性检查")
     print("=" * 70)
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=bench_module.VERIFY_SSL) as client:
         ok = await bench_module.check_connectivity(client)
         if not ok:
             print("连通性检查失败。")
@@ -827,7 +827,7 @@ async def main_async(monitor, bench_module):
     print("\n" + "=" * 70)
     print("测试一：吞吐率 & 首字符响应时间 (TTFT)")
     print("=" * 70)
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=bench_module.VERIFY_SSL) as client:
         for name, prompt in bench_module.TEST_PROMPTS.items():
             seg_name = f"1_throughput_{name}"
             print(f"\n> 提示词类型: {name} (约{bench_module.token_count_approx(prompt)} tokens)")
@@ -862,7 +862,7 @@ async def main_async(monitor, bench_module):
     print("测试二：并发数测试")
     print("=" * 70)
     prompt = bench_module.TEST_PROMPTS["medium"]
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=bench_module.VERIFY_SSL) as client:
         for n in bench_module.MAX_CONCURRENT:
             seg_name = f"2_concurrency_{n}"
             print(f"\n> 并发数: {n}")
@@ -905,7 +905,7 @@ async def main_async(monitor, bench_module):
                 high = mid
         return base_text[:low]
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=bench_module.VERIFY_SSL) as client:
         for target_len in lengths:
             seg_name = f"3_context_{target_len}"
             prompt = _build_prompt(target_len)
@@ -983,7 +983,7 @@ def main():
     run_dir = OUTPUT_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # ---- 选择监控模式 ----
-    if args.ssh_host:
+    if args.ssh_host or args.ssh_alias:
         # 远程 SSH 模式
         monitor = SSHRemoteMonitor(
             host=args.ssh_host or "",
@@ -1001,7 +1001,7 @@ def main():
     monitor.start(server_port=args.server_port)
 
     # --verify-only：仅验证，不跑 benchmark
-    if args.verify_only and args.ssh_host:
+    if args.verify_only and (args.ssh_host or args.ssh_alias):
         print("\n[验证模式] 环境检查完成，跳过 benchmark。")
         monitor.stop()
         return
@@ -1009,8 +1009,9 @@ def main():
     print(f"\n输出目录: {run_dir}")
     print(f"目标接口: {bench.ENDPOINT}")
     print(f"模型: {bench.MODEL_NAME}")
-    if args.ssh_host:
-        print(f"监控模式: 远程 SSH ({args.ssh_user}@{args.ssh_host})")
+    if args.ssh_host or args.ssh_alias:
+        target = args.ssh_alias or f"{args.ssh_user}@{args.ssh_host}"
+        print(f"监控模式: 远程 SSH ({target})")
     else:
         print(f"监控模式: 本地 psutil")
 

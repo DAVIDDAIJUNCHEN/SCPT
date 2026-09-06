@@ -1,0 +1,81 @@
+[SYS] 2026/09/06 - 15:32:00 | initializing token encoders 
+[SYS] 2026/09/06 - 15:32:00 | token encoders initialized 
+[SYS] 2026/09/06 - 15:32:00 | SQL_DSN not set, using SQLite as database 
+[SYS] 2026/09/06 - 15:32:00 | database migration started 
+[SYS] 2026/09/06 - 15:32:00 | system is already initialized at: 2026-09-06 12:54:27 +0800 CST 
+[SYS] 2026/09/06 - 15:32:00 | REDIS_CONN_STRING not set, Redis is not enabled 
+[SYS] 2026/09/06 - 15:32:00 | i18n initialized with languages: zh-CN, zh-TW, en 
+[SYS] 2026/09/06 - 15:32:00 | Loaded 0 custom OAuth providers 
+[SYS] 2026/09/06 - 15:32:00 | New API  started 
+[INFO] 2026/09/06 - 15:32:00 | SYSTEM | codex credential auto-refresh task started: tick=10m0s threshold=24h0m0s 
+[SYS] 2026/09/06 - 15:32:00 | 正在更新数据看板数据... 
+[SYS] 2026/09/06 - 15:32:00 | 保存数据看板数据成功，共保存0条数据 
+[INFO] 2026/09/06 - 15:32:00 | SYSTEM | subscription quota reset task started: tick=1m0s 
+[INFO] 2026/09/06 - 15:32:00 | SYSTEM | system task runner started: runner=7064a5514d09-oIuqKPvB idle_interval=15s 
+
+  [33mWarning: Refresh cookie is not secure and refresh/logout Origin validation is disabled. Please set SESSION_COOKIE_SECURE=true in production.[0m
+
+
+  [32m四川邮电职业技术学院 [0m  ready in 379 ms
+
+  ➜  [1mNetwork:[0m http://192.168.215.5:3000/
+
+[GIN] 2026/09/06 - 15:32:04 | api | 202609060732040637658118268d9d6JiCC89uP | 200 |    3.628367ms |   192.168.215.1 |     GET /api/phone/verification?phone=13700006666
+[SYS] 2026/09/06 - 15:32:04 | 为新用户 13700006666 (角色: 1) 初始化边栏配置 
+[GIN] 2026/09/06 - 15:32:04 | api | 202609060732041455526108268d9d6yBsFouHr | 200 |    9.681478ms |   192.168.215.1 |    POST /api/user/phone/login
+[SYS] 2026/09/06 - 15:33:00 | syncing options from database 
+[GIN] 2026/09/06 - 15:33:11 | web | 202609060733112455786678268d9d6vj9IlvOU | 200 |   19.914598ms |   192.168.215.1 |     GET /sign-in
+[GIN] 2026/09/06 - 15:33:12 | api | 202609060733127468624138268d9d6tObSldB3 | 200 |    6.376149ms |   192.168.215.1 |     GET /api/status
+[GIN] 2026/09/06 - 15:33:12 | api | 202609060733127519718588268d9d6dd13dnvv | 200 |    2.536743ms |   192.168.215.1 |     GET /api/setup?t=1788679992432
+[GIN] 2026/09/06 - 15:33:12 | api | 202609060733129152540118268d9d65zuHuZFS | 401 |    2.584286ms |   192.168.215.1 |    POST /api/user/auth/refresh
+[GIN] 2026/09/06 - 15:33:12 | api | 202609060733129629222348268d9d6NvebMhbA | 200 |     688.562µs |   192.168.215.1 |     GET /api/status
+[GIN] 2026/09/06 - 15:33:20 | api | 202609060733201039689508268d9d6c8FGP6s4 | 200 |    5.920136ms |   192.168.215.1 |     GET /api/phone/verification?phone=13000000000
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733274648709338268d9d6H4Isvq8a | 200 |   24.949957ms |   192.168.215.1 |    POST /api/user/phone/login
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733276071988328268d9d6bIKfHaz3 | 200 |    1.745927ms |   192.168.215.1 |     GET /api/status
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733276066076488268d9d6rOgDlcOl | 200 |    3.508147ms |   192.168.215.1 |     GET /api/notice
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733276104410138268d9d6wZjjupka | 200 |    1.423209ms |   192.168.215.1 |     GET /api/uptime/status
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733276104104298268d9d6vjqX8hhF | 200 |    6.602615ms |   192.168.215.1 |     GET /api/user/models
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733276113469578268d9d6KBaDtTOf | 200 |   15.937104ms |   192.168.215.1 |     GET /api/token/?p=1&size=10
+[GIN] 2026/09/06 - 15:33:27 | api | 202609060733276103493028268d9d6fcKjS5CP | 200 |   20.183565ms |   192.168.215.1 |     GET /api/data/self?start_timestamp=1788597207&end_timestamp=1788683607&default_time=hour
+[GIN] 2026/09/06 - 15:33:37 | api | 202609060733374172443158268d9d66EHTrYlh | 200 |    3.904617ms |   192.168.215.1 |     GET /api/user/passkey
+[GIN] 2026/09/06 - 15:33:37 | api | 202609060733374172442738268d9d649NrT3zg | 200 |    4.276753ms |   192.168.215.1 |     GET /api/user/2fa/status
+[GIN] 2026/09/06 - 15:33:37 | api | 202609060733374172443988268d9d6BsZKZlM8 | 200 |    6.776662ms |   192.168.215.1 |     GET /api/user/self
+[GIN] 2026/09/06 - 15:33:37 | api | 202609060733374172443158268d9d67X1NcLlH | 200 |    7.757524ms |   192.168.215.1 |     GET /api/user/sessions
+[GIN] 2026/09/06 - 15:33:37 | api | 202609060733374544100568268d9d6eEZmWcZd | 200 |     1.43846ms |   192.168.215.1 |     GET /api/user/2fa/status
+[GIN] 2026/09/06 - 15:33:46 | api | 202609060733464471453728268d9d6Du6BDAFz | 200 |    7.841569ms |   192.168.215.1 |    POST /api/user/auth/logout
+[GIN] 2026/09/06 - 15:33:46 | api | 202609060733465011840788268d9d6Dg1DoYtH | 200 |     930.278µs |   192.168.215.1 |     GET /api/status
+[GIN] 2026/09/06 - 15:33:46 | api | 202609060733465081924978268d9d64qC4xkN2 | 200 |     107.378µs |   192.168.215.1 |     GET /api/notice
+[GIN] 2026/09/06 - 15:33:46 | api | 202609060733465081277458268d9d6hl6373ZN | 401 |     889.485µs |   192.168.215.1 |     GET /api/user/sessions
+[GIN] 2026/09/06 - 15:33:46 | api | 202609060733465229611488268d9d6snsB8Gtw | 401 |     218.132µs |   192.168.215.1 |    POST /api/user/auth/refresh
+[GIN] 2026/09/06 - 15:33:52 | api | 202609060733523361933278268d9d6JlDzjeDb | 200 |    5.681754ms |   192.168.215.1 |     GET /api/phone/verification?phone=13700000000
+[SYS] 2026/09/06 - 15:33:59 | 为新用户 13700000000 (角色: 1) 初始化边栏配置 
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733593835579808268d9d6Z1OS3a2I | 200 |   44.901932ms |   192.168.215.1 |    POST /api/user/phone/login
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733594876251468268d9d6Da4zGBhq | 200 |    2.190566ms |   192.168.215.1 |     GET /api/status
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733594923314138268d9d6hjr6IO0I | 200 |     941.237µs |   192.168.215.1 |     GET /api/notice
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733594933155258268d9d6jzeCfr3a | 200 |     791.566µs |   192.168.215.1 |     GET /api/uptime/status
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733594934117378268d9d6hAkvwLpV | 200 |   20.378153ms |   192.168.215.1 |     GET /api/data/self?start_timestamp=1788597239&end_timestamp=1788683639&default_time=hour
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733595022560028268d9d6pfKu5aNW | 200 |  112.424501ms |   192.168.215.1 |     GET /api/user/models
+[GIN] 2026/09/06 - 15:33:59 | api | 202609060733595014356868268d9d6dve1bDNB | 200 |  114.768071ms |   192.168.215.1 |     GET /api/token/?p=1&size=10
+[SYS] 2026/09/06 - 15:34:00 | syncing options from database 
+[GIN] 2026/09/06 - 15:34:05 | api | 202609060734056872245938268d9d6vRi8SSny | 200 |    3.081925ms |   192.168.215.1 |     GET /api/user/passkey
+[GIN] 2026/09/06 - 15:34:05 | api | 202609060734056872245518268d9d6H1OjYkIW | 200 |    5.502249ms |   192.168.215.1 |     GET /api/user/sessions
+[GIN] 2026/09/06 - 15:34:05 | api | 202609060734056873501388268d9d6qF7JKTOr | 200 |   10.090595ms |   192.168.215.1 |     GET /api/user/2fa/status
+[GIN] 2026/09/06 - 15:34:05 | api | 202609060734056872245938268d9d6jxKX7kgY | 200 |   12.779884ms |   192.168.215.1 |     GET /api/user/self
+[GIN] 2026/09/06 - 15:34:05 | api | 202609060734057462394488268d9d6rCoJbIxq | 200 |    3.191679ms |   192.168.215.1 |     GET /api/user/2fa/status
+[SYS] 2026/09/06 - 15:35:00 | syncing options from database 
+[SYS] 2026/09/06 - 15:36:00 | syncing options from database 
+[SYS] 2026/09/06 - 15:37:00 | 正在更新数据看板数据... 
+[SYS] 2026/09/06 - 15:37:00 | 保存数据看板数据成功，共保存0条数据 
+[SYS] 2026/09/06 - 15:37:00 | syncing options from database 
+[SYS] 2026/09/06 - 15:38:00 | syncing options from database 
+[GIN] 2026/09/06 - 15:38:57 | api | 202609060738572159349898268d9d6rrSX1BCr | 200 |    50.80144ms |   192.168.215.1 |    POST /api/user/auth/logout
+[GIN] 2026/09/06 - 15:38:57 | api | 202609060738573864932318268d9d68CxJH4Cz | 200 |    8.865683ms |   192.168.215.1 |     GET /api/status
+[GIN] 2026/09/06 - 15:38:57 | api | 202609060738573944548868268d9d6rAFHr24Y | 401 |    3.377768ms |   192.168.215.1 |     GET /api/user/sessions
+[GIN] 2026/09/06 - 15:38:57 | api | 202609060738573942711728268d9d6EFZk0r4l | 200 |    3.935827ms |   192.168.215.1 |     GET /api/notice
+[GIN] 2026/09/06 - 15:38:57 | api | 202609060738574155280608268d9d60CIEQ2LN | 401 |     445.138µs |   192.168.215.1 |    POST /api/user/auth/refresh
+[SYS] 2026/09/06 - 15:39:00 | syncing options from database 
+[SYS] 2026/09/06 - 15:40:00 | syncing options from database 
+[SYS] 2026/09/06 - 15:41:00 | syncing options from database 
+[SYS] 2026/09/06 - 15:42:00 | 正在更新数据看板数据... 
+[SYS] 2026/09/06 - 15:42:00 | 保存数据看板数据成功，共保存0条数据 
+[SYS] 2026/09/06 - 15:42:00 | syncing options from database 

@@ -1,0 +1,10 @@
+{
+  "test_time": "2026-08-21 21:02:25",
+  "remote_host": "",
+  "total_samples": 0,
+  "total_duration_s": 0,
+  "sample_interval_s": 0.5,
+  "dmon_granularity_ms": 50,
+  "clock_offset_ms": 0.0,
+  "tests": []
+}
