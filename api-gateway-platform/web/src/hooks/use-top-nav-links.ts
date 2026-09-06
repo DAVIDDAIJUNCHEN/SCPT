@@ -62,14 +62,10 @@ export function useTopNavLinks(): TopNavLink[] {
 
   const links: TopNavLink[] = []
 
-  // Home
-  if (modules?.home !== false) {
-    links.push({ title: t('Home'), href: '/' })
-  }
-
-  // Console -> /dashboard (new console path)
-  if (modules?.console !== false) {
-    links.push({ title: t('Console'), href: '/dashboard' })
+  // 主页（川邮·星语：已去掉独立主页，根路径重定向到 /dashboard，
+  // 故主页与控制台合并为一个「主页」标签，指向 /dashboard）
+  if (modules?.home !== false || modules?.console !== false) {
+    links.push({ title: t('Home'), href: '/dashboard' })
   }
 
   // Pricing
