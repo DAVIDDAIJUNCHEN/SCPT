@@ -142,6 +142,16 @@ export function SummaryCards() {
   const { status, loading } = useStatus()
 
   const summaryTimeRange = useMemo(() => computeTimeRange(1), [])
+  // 川邮·星语：本月（当月 1 号 00:00 至今）消费洞察
+  const monthTimeRange = useMemo(() => {
+    const now = new Date()
+    return computeTimeRange(
+      0,
+      new Date(now.getFullYear(), now.getMonth(), 1),
+      now,
+      true
+    )
+  }, [])
   const remainQuota = Number(user?.quota ?? 0)
   const usedQuota = Number(user?.used_quota ?? 0)
   const requestCount = Number(user?.request_count ?? 0)
@@ -162,6 +172,37 @@ export function SummaryCards() {
       }),
     staleTime: 60 * 1000,
   })
+
+  // 川邮·星语：本月用量聚合（消费 / 调用次数 / token）
+  const monthUsageQuery = useQuery({
+    queryKey: [
+      'dashboard',
+      'overview',
+      'month-summary',
+      monthTimeRange.start_timestamp,
+      monthTimeRange.end_timestamp,
+    ],
+    queryFn: async () =>
+      getUserQuotaDates({
+        start_timestamp: monthTimeRange.start_timestamp,
+        end_timestamp: monthTimeRange.end_timestamp,
+        default_time: 'day',
+      }),
+    staleTime: 60 * 1000,
+  })
+
+  const monthTotals = useMemo(() => {
+    const rows = monthUsageQuery.data?.data ?? []
+    let quota = 0
+    let count = 0
+    let tokens = 0
+    for (const item of rows) {
+      quota += Number(item.quota) || 0
+      count += Number(item.count) || 0
+      tokens += Number(item.token_used) || 0
+    }
+    return { quota, count, tokens, loading: monthUsageQuery.isFetching }
+  }, [monthUsageQuery.data, monthUsageQuery.isFetching])
 
   const summaryValues = useMemo(() => {
     return {
@@ -231,6 +272,10 @@ export function SummaryCards() {
     todayUsageDisplay,
     currencyEnabled,
     currencyLabel,
+    monthQuota: monthTotals.quota,
+    monthCount: monthTotals.count,
+    monthTokens: monthTotals.tokens,
+    monthLoading: monthTotals.loading,
   }).map((config, index) => {
     const tones = ['accent-1', 'accent-2', 'accent-3'] as const
 

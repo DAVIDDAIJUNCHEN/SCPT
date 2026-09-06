@@ -22,7 +22,6 @@ import {
   Layers,
   Gauge,
   Zap,
-  Flame,
   TrendingUp,
   Activity,
   type LucideIcon,
@@ -31,6 +30,7 @@ import { useTranslation } from 'react-i18next'
 
 import type { IconBadgeTone } from '@/components/ui/icon-badge'
 import { safeDivide } from '@/features/dashboard/lib'
+import { formatNumber, formatQuota } from '@/lib/format'
 
 interface StatCardConfig {
   key: string
@@ -96,34 +96,51 @@ export function useSummaryCardsConfig(totals: {
   requestCountDisplay: string
   currencyLabel: string
   currencyEnabled: boolean
+  monthQuota: number
+  monthCount: number
+  monthTokens: number
+  monthLoading: boolean
 }) {
   const { t } = useTranslation()
 
   return [
     {
-      key: 'todayUsage',
-      title: t('Last 24h usage'),
-      value: totals.todayUsageDisplay,
-      description: totals.currencyEnabled
-        ? `${t('Consumed in the last 24 hours')} (${totals.currencyLabel})`
-        : t('Consumed in the last 24 hours'),
-      icon: Flame,
+      key: 'monthConsumption',
+      title: t('本月消费'),
+      value: totals.monthLoading
+        ? '…'
+        : totals.currencyEnabled
+          ? formatQuota(totals.monthQuota)
+          : formatNumber(totals.monthQuota),
+      description: t('本月累计消费金额'),
+      icon: Coins,
     },
     {
-      key: 'usage',
-      title: t('Historical Usage'),
+      key: 'monthRequests',
+      title: t('本月调用次数'),
+      value: totals.monthLoading
+        ? '…'
+        : formatNumber(totals.monthCount),
+      description: t('本月 API 调用次数'),
+      icon: Activity,
+    },
+    {
+      key: 'monthTokens',
+      title: t('本月消耗 token'),
+      value: totals.monthLoading
+        ? '…'
+        : formatNumber(totals.monthTokens),
+      description: t('本月输入 + 输出 token 总数'),
+      icon: Layers,
+    },
+    {
+      key: 'cumulative',
+      title: t('累计消费'),
       value: totals.usedDisplay,
       description: totals.currencyEnabled
-        ? `${t('Total consumed')} (${totals.currencyLabel})`
-        : t('Total consumed quota'),
+        ? `${t('历史累计消费')} (${totals.currencyLabel})`
+        : t('历史累计消耗'),
       icon: TrendingUp,
-    },
-    {
-      key: 'requests',
-      title: t('Request Count'),
-      value: totals.requestCountDisplay,
-      description: t('Total requests made'),
-      icon: Activity,
     },
   ]
 }
