@@ -134,26 +134,39 @@ func autoRegisterByPhone(phone string) (*model.User, error) {
 // PhonePasswordLogin POST /api/user/phone/password-login
 // 手机号 + 密码登录（用户需已设置密码；未设密码提示用验证码登录）
 func PhonePasswordLogin(c *gin.Context) {
-	if !common.PhoneRegisterEnabled {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "手机号登录功能未启用"})
-		return
-	}
+	// 统一密码登录：account 支持「手机号 或 用户名」，自动分流查询
 	var req struct {
+		Account  string `json:"account"`
 		Phone    string `json:"phone"`
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	phone, ok := normalizeChinaPhone(req.Phone)
-	if !ok || strings.TrimSpace(req.Password) == "" {
+	account := strings.TrimSpace(req.Account)
+	if account == "" {
+		account = strings.TrimSpace(req.Phone)
+	}
+	if account == "" {
+		account = strings.TrimSpace(req.Username)
+	}
+	if account == "" || strings.TrimSpace(req.Password) == "" {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	user, err := model.GetUserByPhone(phone, true)
+	var user *model.User
+	var err error
+	if phone, ok := normalizeChinaPhone(account); ok {
+		user, err = model.GetUserByPhone(phone, true)
+	} else {
+		// 非手机号按 username 查询（与 ValidateAndFill 一致）
+		user = &model.User{}
+		err = model.DB.Where("username = ?", account).First(user).Error
+	}
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "该手机号未注册，请使用验证码登录"})
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "账号未注册，请使用验证码登录"})
 		return
 	}
 	if user.Password == "" {
