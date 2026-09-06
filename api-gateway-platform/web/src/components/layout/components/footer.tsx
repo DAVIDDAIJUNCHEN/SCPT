@@ -129,14 +129,22 @@ function ProjectAttribution(props: { currentYear: number; inline?: boolean }) {
     <span className='text-muted-foreground/45'>
       &copy; {props.currentYear}{' '}
       <a
-        href='https://github.com/QuantumNous/new-api'
+        href='https://github.com/DAVIDDAIJUNCHEN/SCPT'
         target='_blank'
         rel='noopener noreferrer'
         className='text-foreground/70 hover:text-foreground font-medium transition-colors'
       >
-        {t('New API')}
+        {t('川邮·星语 API')}
       </a>
-      . {t(NEW_API_FOOTER_ATTRIBUTION_KEY)}
+      {' · '}
+      <a
+        href='https://github.com/QuantumNous/new-api'
+        target='_blank'
+        rel='noopener noreferrer'
+        className='text-foreground/70 hover:text-foreground transition-colors'
+      >
+        {t('Based on New API (AGPL v3)')}
+      </a>
     </span>
   )
   if (props.inline) {

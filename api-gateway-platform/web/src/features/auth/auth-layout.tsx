@@ -105,10 +105,8 @@ export function AuthLayout({ children }: AuthLayoutProps) {
       {/* 底部版权 */}
       <footer className='relative z-10 px-6 pb-5 sm:px-10'>
         <div className='flex flex-col items-center justify-between gap-1 text-xs text-muted-foreground/70 sm:flex-row'>
-          <span>
-            {BRAND_NAME} · {systemName}
-          </span>
-          <span>蜀ICP备xxx号</span>
+          <span>{BRAND_NAME}</span>
+          <span>四川邮电职业技术学院 版权所有</span>
         </div>
       </footer>
     </div>
