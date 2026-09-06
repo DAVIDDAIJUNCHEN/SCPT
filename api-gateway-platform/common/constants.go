@@ -123,7 +123,9 @@ var TurnstileSecretKey = ""
 var TelegramBotToken = ""
 var TelegramBotName = ""
 
-var QuotaForNewUser = 0
+// 川邮·星语：新用户注册赠送额度（10 元人民币）
+// 换算: 10 元 = 10/7.3 USD ≈ $1.37, QuotaPerUnit=500000 → 1.37×500000 ≈ 684930
+var QuotaForNewUser = 684930
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
 var ChannelDisableThreshold = 5.0
