@@ -184,20 +184,66 @@ function getConfig(): CurrencyConfig {
   }
 }
 
+// 川邮·星语: 根据当前 UI 语言选择货币（符号 + 粗略汇率），避免单一货币误导
+type LocaleCurrency = { type: 'CNY' | 'USD' | 'CUSTOM'; symbol: string; rate: number }
+const LOCALE_CURRENCY_MAP: Record<string, LocaleCurrency> = {
+  zh: { type: 'CNY', symbol: '¥', rate: 7.3 },
+  'zh-TW': { type: 'CNY', symbol: '¥', rate: 7.3 },
+  ja: { type: 'CUSTOM', symbol: '¥', rate: 150 },
+  fr: { type: 'CUSTOM', symbol: '€', rate: 0.9 },
+  ru: { type: 'CUSTOM', symbol: '₽', rate: 90 },
+  vi: { type: 'CUSTOM', symbol: '₫', rate: 25000 },
+  en: { type: 'USD', symbol: '$', rate: 1 },
+}
+
+// 读取当前 UI 语言（优先 i18next localStorage，其次浏览器语言，兼容 zh-CN/zh-TW 等）
+function getCurrentLocale(): string {
+  try {
+    if (typeof window === 'undefined') return 'zh'
+    let lang: string | null = null
+    try {
+      lang = window.localStorage.getItem('i18nextLng')
+    } catch {
+      /* ignore */
+    }
+    if (!lang && navigator.language) lang = navigator.language
+    if (!lang) return 'zh'
+    // 归一化：zh-CN → zh，fr-FR → fr；但保留 zh-TW 明确标识
+    const normalized = lang.replace('_', '-').split('-')[0]
+    if (normalized === 'zh' && lang.toUpperCase().includes('TW')) return 'zh-TW'
+    return normalized
+  } catch {
+    return 'zh'
+  }
+}
+
 function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
-  switch (config.quotaDisplayType) {
+  // 由当前语言决定生效的货币显示
+  const locale = getCurrentLocale()
+  const localeCur = LOCALE_CURRENCY_MAP[locale] || LOCALE_CURRENCY_MAP['en']
+  // 中文 → CNY；英语 → USD；其他语言 → 当地货币(CUSTOM)
+  const effectiveType =
+    localeCur.type === 'CNY'
+      ? 'CNY'
+      : localeCur.type === 'USD'
+        ? 'USD'
+        : 'CUSTOM'
+
+  switch (effectiveType) {
     case 'CNY':
+      // 中文环境：系统配置的 CNY（¥）；汇率用语言映射或系统配置
       return {
         kind: 'currency',
-        symbol: '¥',
+        symbol: localeCur.symbol || '¥',
         currencyCode: 'CNY',
-        exchangeRate: config.usdExchangeRate,
+        exchangeRate: config.usdExchangeRate || localeCur.rate,
       }
     case 'CUSTOM':
+      // 非中文/非英语环境：使用语言对应的当地货币符号与粗略汇率
       return {
         kind: 'custom',
-        symbol: config.customCurrencySymbol,
-        exchangeRate: config.customCurrencyExchangeRate,
+        symbol: localeCur.symbol,
+        exchangeRate: localeCur.rate,
       }
     case 'TOKENS':
       return {
@@ -208,9 +254,9 @@ function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
     default:
       return {
         kind: 'currency',
-        symbol: '$',
+        symbol: localeCur.symbol || '$',
         currencyCode: 'USD',
-        exchangeRate: 1,
+        exchangeRate: localeCur.rate || 1,
       }
   }
 }
