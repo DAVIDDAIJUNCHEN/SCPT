@@ -13,7 +13,12 @@ import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { sendPhoneCode, phoneLogin, phonePasswordLogin } from '@/features/auth/api'
+import {
+  sendPhoneCode,
+  phoneLogin,
+  phonePasswordLogin,
+  setPhonePassword,
+} from '@/features/auth/api'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
@@ -43,6 +48,15 @@ export function PhoneAuthForm({
   const [isSending, setIsSending] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
+  // 忘记密码（重置密码）状态
+  const [forgot, setForgot] = useState(false)
+  const [forgotPhone, setForgotPhone] = useState('')
+  const [forgotCode, setForgotCode] = useState('')
+  const [forgotNewPwd, setForgotNewPwd] = useState('')
+  const [forgotCountdown, setForgotCountdown] = useState(0)
+  const [forgotSending, setForgotSending] = useState(false)
+  const [resetting, setResetting] = useState(false)
+
   const phoneValid = CN_PHONE.test(phone)
 
   useEffect(() => {
@@ -50,6 +64,70 @@ export function PhoneAuthForm({
     const timer = setInterval(() => setCountdown((c) => c - 1), 1000)
     return () => clearInterval(timer)
   }, [countdown])
+
+  useEffect(() => {
+    if (forgotCountdown <= 0) return
+    const timer = setInterval(() => setForgotCountdown((c) => c - 1), 1000)
+    return () => clearInterval(timer)
+  }, [forgotCountdown])
+
+  async function sendForgotCode() {
+    if (!CN_PHONE.test(forgotPhone)) {
+      toast.error(t('请输入正确的手机号'))
+      return
+    }
+    setForgotSending(true)
+    try {
+      const res = await sendPhoneCode(forgotPhone)
+      if (res.success) {
+        setForgotCountdown(60)
+        toast.success(t('验证码已发送'))
+        if (res.dev_code) toast.info(`${t('测试验证码')}: ${res.dev_code}`)
+      } else {
+        if (getServerErrorMessageKey(res)) return
+        toast.error(res.message || t('验证码发送失败，请稍后重试'))
+      }
+    } catch (error) {
+      if (getServerErrorMessageKey(error)) return
+      toast.error(t('验证码发送失败，请稍后重试'))
+    } finally {
+      setForgotSending(false)
+    }
+  }
+
+  async function handleResetPassword() {
+    if (!CN_PHONE.test(forgotPhone)) {
+      toast.error(t('请输入正确的手机号'))
+      return
+    }
+    if (forgotCode.trim().length < 4) {
+      toast.error(t('请输入验证码'))
+      return
+    }
+    if (forgotNewPwd.length < 8) {
+      toast.error(t('密码至少 8 位'))
+      return
+    }
+    setResetting(true)
+    try {
+      const res = await setPhonePassword(forgotPhone, forgotCode, forgotNewPwd, true)
+      if (res.success) {
+        toast.success(t('密码重置成功，请使用新密码登录'))
+        setForgot(false)
+        setMode('password')
+        setPassword('')
+        setPhone(forgotPhone)
+      } else {
+        if (getServerErrorMessageKey(res)) return
+        toast.error(res.message || t('重置失败'))
+      }
+    } catch (error) {
+      if (getServerErrorMessageKey(error)) return
+      toast.error(t('重置失败'))
+    } finally {
+      setResetting(false)
+    }
+  }
 
   async function handleSendCode() {
     if (!phoneValid) {
@@ -230,6 +308,78 @@ export function PhoneAuthForm({
             onChange={(e) => setPassword(e.target.value)}
             className='bg-[#0A1126]/55'
           />
+          <button
+            type='button'
+            onClick={() => setForgot(true)}
+            className='self-end text-xs text-muted-foreground transition-colors hover:text-[#7F77DD]'
+          >
+            {t('忘记密码？')}
+          </button>
+        </div>
+      )}
+
+      {forgot && (
+        <div className='space-y-3 rounded-lg border border-[#378ADD]/30 bg-[#0A1126]/40 p-3'>
+          <p className='text-xs font-medium text-[#FAEEDA]'>{t('重置密码')}</p>
+          <div className='flex gap-2'>
+            <div className='flex items-center rounded-lg border border-white/15 bg-[#0A1126]/55 px-3 text-sm text-muted-foreground'>
+              +86
+            </div>
+            <Input
+              type='tel'
+              inputMode='numeric'
+              maxLength={11}
+              placeholder={t('手机号')}
+              value={forgotPhone}
+              onChange={(e) => setForgotPhone(e.target.value.replace(/[^0-9]/g, ''))}
+              className='bg-[#0A1126]/55'
+            />
+          </div>
+          <div className='flex gap-2'>
+            <Input
+              inputMode='numeric'
+              maxLength={6}
+              placeholder={t('验证码')}
+              value={forgotCode}
+              onChange={(e) => setForgotCode(e.target.value.replace(/[^0-9]/g, ''))}
+              className='bg-[#0A1126]/55'
+            />
+            <Button
+              type='button'
+              variant='ghost'
+              onClick={() => sendForgotCode()}
+              disabled={forgotSending || forgotCountdown > 0}
+              className='shrink-0 border border-white/15 text-foreground'
+            >
+              {forgotCountdown > 0 ? `${forgotCountdown}s` : t('发送验证码')}
+            </Button>
+          </div>
+          <Input
+            type='password'
+            placeholder={t('新密码（至少 8 位）')}
+            value={forgotNewPwd}
+            onChange={(e) => setForgotNewPwd(e.target.value)}
+            className='bg-[#0A1126]/55'
+          />
+          <div className='flex gap-2'>
+            <Button
+              type='button'
+              variant='ghost'
+              onClick={() => setForgot(false)}
+              className='flex-1 border border-white/15 text-foreground'
+            >
+              {t('取消')}
+            </Button>
+            <Button
+              type='button'
+              onClick={handleResetPassword}
+              disabled={resetting || !agreed}
+              className='flex-1 bg-gradient-to-br from-[#378ADD] to-[#534AB7] text-white'
+            >
+              {resetting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
+              {t('确认重置')}
+            </Button>
+          </div>
         </div>
       )}
 

@@ -134,6 +134,21 @@ export async function phonePasswordLogin(
   return res.data
 }
 
+/** 验证码校验后设置/重置密码（reset=true 走忘记密码语义） */
+export async function setPhonePassword(
+  phone: string,
+  code: string,
+  password: string,
+  reset = false
+): Promise<ApiResponse> {
+  const res = await api.post<ApiResponse>(
+    reset ? '/api/user/phone/reset-password' : '/api/user/phone/set-password',
+    { phone, code, password },
+    { skipAuthRefresh: true }
+  )
+  return res.data
+}
+
 interface LogoutRuntime {
   getExpectedSID: () => string | undefined
   request: (expectedSID?: string) => Promise<ApiResponse>
