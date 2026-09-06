@@ -15,7 +15,7 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 import { CosmicBackground } from './components/cosmic-background'
 
 const BRAND_NAME = '川邮·星语'
-const TAGLINE = '使用川邮星语 API 构建你的应用'
+const TAGLINE = '使用川邮·星语 API 构建你的应用'
 const SUBTAGLINE = '人类的梦想是星辰大海'
 
 const HIGHLIGHTS = [
@@ -59,19 +59,16 @@ export function AuthLayout({ children }: AuthLayoutProps) {
         </Link>
       </header>
 
-      {/* 主体：左 hero 右登录卡片（文字左移到校徽右下角垂直下方） */}
-      <main className='relative z-10 mx-auto flex w-full max-w-6xl flex-1 items-center px-6 py-6 sm:py-10 sm:pl-10 lg:pl-14'>
-        <div className='grid w-full items-center gap-10 lg:grid-cols-[1fr_auto]'>
-          {/* 左：品牌 hero（文字起点对齐校徽左下缘，即顶部下方 + 靠左） */}
-          <div className='hidden max-w-xl lg:block lg:pr-6'>
-            <h2
-              className='text-3xl font-medium leading-tight tracking-tight text-foreground xl:text-4xl'
-              style={{ marginTop: 0 }}
-            >
+      {/* 主体：左 hero 右登录卡片 */}
+      <main className='relative z-10 mx-auto flex w-full max-w-6xl flex-1 items-center px-4 py-6 sm:px-6 sm:py-10 lg:pl-9'>
+        <div className='grid w-full items-center gap-8 lg:grid-cols-[minmax(0,1fr)_690px]'>
+          {/* 左：品牌 hero（文字从校徽左侧垂直下方开始，即靠最左对齐） */}
+          <div className='hidden lg:block'>
+            <h2 className='max-w-md text-3xl font-medium leading-tight tracking-tight text-foreground xl:text-4xl'>
               {TAGLINE}
             </h2>
-            <p className='mt-3 text-base italic text-muted-foreground'>{SUBTAGLINE}</p>
-            <ul className='mt-8 space-y-3'>
+            <p className='mt-3 max-w-md text-base italic text-muted-foreground'>{SUBTAGLINE}</p>
+            <ul className='mt-8 max-w-md space-y-3'>
               {HIGHLIGHTS.map((item, i) => (
                 <li key={i} className='flex items-center gap-2.5 text-sm text-foreground/90'>
                   <span
@@ -86,13 +83,13 @@ export function AuthLayout({ children }: AuthLayoutProps) {
             </ul>
           </div>
 
-          {/* 右：登录卡片（放大，顶部正上方放川邮·星语） */}
-          <div className='mx-auto w-full max-w-[460px]'>
-            {/* 品牌名放登录卡正上方 */}
+          {/* 右：登录卡片（1.5 倍加宽 690px） */}
+          <div className='mx-auto w-full max-w-[690px]'>
+            {/* 品牌名放登录卡正上方（移动端） */}
             <div className='mb-4 text-center lg:hidden'>
               <span className='text-2xl font-medium text-foreground'>{BRAND_NAME}</span>
             </div>
-            <div className='rounded-2xl border border-white/10 bg-[#1B2A4E]/55 p-7 shadow-[0_0_24px_rgba(55,138,221,0.18)] backdrop-blur-xl sm:p-9'>
+            <div className='rounded-2xl border border-white/10 bg-[#1B2A4E]/55 p-7 shadow-[0_0_28px_rgba(55,138,221,0.2)] backdrop-blur-xl sm:p-10'>
               {/* 桌面端：品牌名卡片内顶部 */}
               <div className='mb-5 hidden text-center lg:block'>
                 <span className='text-2xl font-medium tracking-wide text-foreground'>
