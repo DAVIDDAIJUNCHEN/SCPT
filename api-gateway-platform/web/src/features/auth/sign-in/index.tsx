@@ -19,9 +19,8 @@ export function SignIn() {
   return (
     <AuthLayout>
       <div className='space-y-6'>
-        <div className='space-y-1.5 text-center lg:text-left'>
+        <div className='space-y-1.5 text-center'>
           <h1 className='text-xl font-medium text-foreground'>{t('登录')}</h1>
-          <p className='text-sm text-muted-foreground'>{t('登录川邮星语，接入大模型能力')}</p>
         </div>
         <PhoneAuthForm redirectTo={redirect} />
         <p className='text-center text-sm text-muted-foreground'>

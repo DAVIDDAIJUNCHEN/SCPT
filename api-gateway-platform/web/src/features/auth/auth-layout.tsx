@@ -14,7 +14,7 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 
 import { CosmicBackground } from './components/cosmic-background'
 
-const BRAND_NAME = '川邮星语'
+const BRAND_NAME = '川邮·星语'
 const TAGLINE = '使用川邮星语 API 构建你的应用'
 const SUBTAGLINE = '人类的梦想是星辰大海'
 
@@ -37,36 +37,37 @@ export function AuthLayout({ children }: AuthLayoutProps) {
     <div className='dark relative grid min-h-svh w-full overflow-hidden bg-[#070D1F] text-foreground'>
       <CosmicBackground />
 
-      {/* 顶部导航 */}
+      {/* 顶部导航：校徽在左，API 文档按钮在右 */}
       <header className='relative z-10 flex items-center justify-between px-6 py-5 sm:px-10'>
-        <div className='flex items-center gap-4'>
-          <div className='relative h-36 w-36'>
-            {loading ? (
-              <Skeleton className='absolute inset-0 rounded-2xl' />
-            ) : (
-              <img
-                src={logo}
-                alt={BRAND_NAME}
-                className='h-36 w-36 object-contain'
-              />
-            )}
-          </div>
-          <span className='text-3xl font-medium text-foreground'>{BRAND_NAME}</span>
+        <div className='relative h-24 w-24 sm:h-36 sm:w-36'>
+          {loading ? (
+            <Skeleton className='absolute inset-0 rounded-2xl' />
+          ) : (
+            <img
+              src={logo}
+              alt={BRAND_NAME}
+              className='h-24 w-24 object-contain sm:h-36 sm:w-36'
+            />
+          )}
         </div>
+        {/* DeepSeek 风格 API 文档方框按钮 */}
         <Link
           to='/'
-          className='text-sm text-muted-foreground transition-colors hover:text-foreground'
+          className='inline-flex items-center rounded-md border border-[#378ADD]/50 bg-[#1B2A4E]/60 px-4 py-2 text-sm text-foreground shadow-sm backdrop-blur-sm transition-colors hover:border-[#378ADD] hover:bg-[#1B2A4E]/80'
         >
           {t('API 开发文档')}
         </Link>
       </header>
 
-      {/* 主体：左右分栏 */}
-      <main className='relative z-10 mx-auto flex w-full max-w-5xl flex-1 items-center px-6 py-8 sm:px-10'>
-        <div className='grid w-full items-center gap-12 lg:grid-cols-[1.1fr_0.9fr]'>
-          {/* 左：品牌 hero */}
-          <div className='hidden lg:block'>
-            <h2 className='text-3xl font-medium leading-tight tracking-tight text-foreground xl:text-4xl'>
+      {/* 主体：左 hero 右登录卡片（文字左移到校徽右下角垂直下方） */}
+      <main className='relative z-10 mx-auto flex w-full max-w-6xl flex-1 items-center px-6 py-6 sm:py-10 sm:pl-10 lg:pl-14'>
+        <div className='grid w-full items-center gap-10 lg:grid-cols-[1fr_auto]'>
+          {/* 左：品牌 hero（文字起点对齐校徽左下缘，即顶部下方 + 靠左） */}
+          <div className='hidden max-w-xl lg:block lg:pr-6'>
+            <h2
+              className='text-3xl font-medium leading-tight tracking-tight text-foreground xl:text-4xl'
+              style={{ marginTop: 0 }}
+            >
               {TAGLINE}
             </h2>
             <p className='mt-3 text-base italic text-muted-foreground'>{SUBTAGLINE}</p>
@@ -85,9 +86,21 @@ export function AuthLayout({ children }: AuthLayoutProps) {
             </ul>
           </div>
 
-          {/* 右：表单卡片（毛玻璃） */}
-          <div className='mx-auto w-full max-w-[400px] rounded-2xl border border-white/10 bg-[#1B2A4E]/55 p-6 shadow-[0_0_24px_rgba(55,138,221,0.18)] backdrop-blur-xl sm:p-8'>
-            {children}
+          {/* 右：登录卡片（放大，顶部正上方放川邮·星语） */}
+          <div className='mx-auto w-full max-w-[460px]'>
+            {/* 品牌名放登录卡正上方 */}
+            <div className='mb-4 text-center lg:hidden'>
+              <span className='text-2xl font-medium text-foreground'>{BRAND_NAME}</span>
+            </div>
+            <div className='rounded-2xl border border-white/10 bg-[#1B2A4E]/55 p-7 shadow-[0_0_24px_rgba(55,138,221,0.18)] backdrop-blur-xl sm:p-9'>
+              {/* 桌面端：品牌名卡片内顶部 */}
+              <div className='mb-5 hidden text-center lg:block'>
+                <span className='text-2xl font-medium tracking-wide text-foreground'>
+                  {BRAND_NAME}
+                </span>
+              </div>
+              {children}
+            </div>
           </div>
         </div>
       </main>
