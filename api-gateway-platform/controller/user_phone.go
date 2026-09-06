@@ -113,11 +113,11 @@ func PhoneLogin(c *gin.Context) {
 	setupLogin(user, c)
 }
 
-// autoRegisterByPhone 用手机号自动注册：username 用 u+手机号（手机号唯一保证用户名唯一），
-// 密码为空（验证码登录为主，用户可后设密码），DisplayName 脱敏展示。
+// autoRegisterByPhone 用手机号自动注册：username 直接用手机号（11 位，且手机号全局唯一，
+// 用户名天然唯一不冲突），密码为空（验证码登录为主，用户可后设密码），DisplayName 脱敏展示。
 func autoRegisterByPhone(phone string) (*model.User, error) {
 	cleanUser := model.User{
-		Username:      "u" + phone,
+		Username:      phone,
 		Password:      "",
 		DisplayName:   "用户" + phone[len(phone)-4:],
 		Phone:         phone,
