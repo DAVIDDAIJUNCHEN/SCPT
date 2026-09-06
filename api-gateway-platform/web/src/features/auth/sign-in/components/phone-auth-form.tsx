@@ -18,6 +18,7 @@ import {
   phoneLogin,
   phonePasswordLogin,
   setPhonePassword,
+  login,
 } from '@/features/auth/api'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { isAuthBundle } from '@/lib/api'
@@ -25,7 +26,7 @@ import { getServerErrorMessageKey } from '@/lib/server-error-message'
 
 const CN_PHONE = /^1[3-9][0-9]{9}$/
 
-type Mode = 'sms' | 'password'
+type Mode = 'sms' | 'password' | 'account'
 
 export function PhoneAuthForm({
   redirectTo,
@@ -43,6 +44,9 @@ export function PhoneAuthForm({
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
+  // 账号登录（admin 用用户名+密码）
+  const [accountName, setAccountName] = useState('')
+  const [accountPwd, setAccountPwd] = useState('')
   const [countdown, setCountdown] = useState(0)
   const [agreed, setAgreed] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -217,6 +221,37 @@ export function PhoneAuthForm({
     }
   }
 
+  async function handleAccountLogin() {
+    if (!agreed) {
+      toast.error(t('请先阅读并同意平台协议与隐私政策'))
+      return
+    }
+    if (!accountName || !accountPwd) {
+      toast.error(t('请输入用户名和密码'))
+      return
+    }
+    setIsSubmitting(true)
+    try {
+      const res = await login({
+        username: accountName,
+        password: accountPwd,
+        passwordEncryptionEnabled: false,
+      })
+      if (res.success && isAuthBundle(res.data)) {
+        await handleLoginSuccess(res.data, redirectTo)
+        toast.success(t('欢迎回来！'))
+      } else {
+        if (getServerErrorMessageKey(res)) return
+        toast.error(res.message || t('登录失败'))
+      }
+    } catch (error) {
+      if (getServerErrorMessageKey(error)) return
+      toast.error(t('登录失败'))
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   return (
     <div className='space-y-5'>
       {/* tab 切换 */}
@@ -242,6 +277,17 @@ export function PhoneAuthForm({
           }`}
         >
           {t('密码登录')}
+        </button>
+        <button
+          type='button'
+          onClick={() => setMode('account')}
+          className={`flex-1 pb-2.5 text-sm transition-colors ${
+            mode === 'account'
+              ? 'border-b-2 border-[#378ADD] font-medium text-foreground'
+              : 'text-muted-foreground'
+          }`}
+        >
+          {t('账号登录')}
         </button>
       </div>
 
@@ -285,7 +331,7 @@ export function PhoneAuthForm({
             {isSignUp ? t('仅支持手机号注册') : t('未注册的手机号将自动注册')}
           </p>
         </div>
-      ) : (
+      ) : mode === 'password' ? (
         <div className='space-y-3'>
           <div className='flex gap-2'>
             <div className='flex items-center rounded-lg border border-white/15 bg-[#0A1126]/55 px-3 text-sm text-muted-foreground'>
@@ -315,6 +361,30 @@ export function PhoneAuthForm({
           >
             {t('忘记密码？')}
           </button>
+        </div>
+      ) : (
+        <div className='space-y-3'>
+          <div className='flex gap-2'>
+            <div className='flex shrink-0 items-center rounded-lg border border-white/15 bg-[#0A1126]/55 px-3 text-sm text-muted-foreground'>
+              {t('账号')}
+            </div>
+            <Input
+              placeholder={t('用户名')}
+              value={accountName}
+              onChange={(e) => setAccountName(e.target.value)}
+              className='bg-[#0A1126]/55'
+            />
+          </div>
+          <Input
+            type='password'
+            placeholder={t('密码')}
+            value={accountPwd}
+            onChange={(e) => setAccountPwd(e.target.value)}
+            className='bg-[#0A1126]/55'
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleAccountLogin()
+            }}
+          />
         </div>
       )}
 
@@ -401,7 +471,13 @@ export function PhoneAuthForm({
 
       <Button
         type='button'
-        onClick={mode === 'sms' ? handleSmsLogin : handlePasswordLogin}
+        onClick={
+          mode === 'sms'
+            ? handleSmsLogin
+            : mode === 'password'
+              ? handlePasswordLogin
+              : handleAccountLogin
+        }
         disabled={isSubmitting || !agreed}
         className='w-full gap-2 bg-gradient-to-br from-[#378ADD] to-[#534AB7] text-white shadow-[0_4px_16px_rgba(55,138,221,0.32)] hover:opacity-90'
       >
