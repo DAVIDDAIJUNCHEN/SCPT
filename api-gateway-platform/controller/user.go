@@ -177,6 +177,11 @@ func recordLoginAudit(user *model.User, c *gin.Context) {
 	model.RecordLoginLog(user.Id, user.Username, content, ip, "login", map[string]interface{}{
 		"method": method,
 	}, extra)
+
+	// P0-1.2 方案B：管理员(role>=RoleAdminUser)从非白名单 IP 登录 → 飞书告警（含用户名）
+	if user.Role >= common.RoleAdminUser && !isKnownAdminIP(ip) {
+		notifyUnknownAdminLogin(user.Username, ip)
+	}
 }
 
 // setupLogin creates a server-controlled login Session and returns the shared
