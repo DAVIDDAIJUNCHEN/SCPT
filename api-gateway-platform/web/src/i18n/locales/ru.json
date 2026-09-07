@@ -3688,6 +3688,10 @@
     "Price ($/1K calls)": "Цена ($/1K вызовов)",
     "Price (local currency / USD)": "Цена (местная валюта / USD)",
     "Price display": "Отображение цены",
+    "Product Pricing": "Стоимость продукта",
+
+    "Audit Logs": "Журналы аудита",
+    "Usage Analysis": "Анализ использования",
     "Price display mode": "Режим отображения цены",
     "Price estimation": "Оценка стоимости",
     "Price estimation description": "После настройки типа оборудования, места размещения, количества реплик и т.д. стоимость будет рассчитана автоматически.",

@@ -3688,6 +3688,10 @@
     "Price ($/1K calls)": "Price ($/1K calls)",
     "Price (local currency / USD)": "Price (local currency / USD)",
     "Price display": "Price display",
+    "Product Pricing": "Product Pricing",
+
+    "Audit Logs": "Audit Logs",
+    "Usage Analysis": "Usage Analysis",
     "Price display mode": "Price display mode",
     "Price estimation": "Price estimation",
     "Price estimation description": "After completing the hardware type, deployment location, replica count, etc., the price will be automatically calculated.",

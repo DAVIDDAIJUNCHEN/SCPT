@@ -1,45 +1,40 @@
-.idea
-.review
-.vscode
-.zed
-.history
-upload
-*.exe
-*.db
-build
-*.db-journal
-logs
-web/dist
-web/node_modules
+# ===== 川邮·星语 部署源 .gitignore =====
+# 敏感/运行时/构建产物不入库（VPS 部署基线用）
+
+# 敏感配置
 .env
-one-api
-new-api
-/__debug_bin*
+*.env
+!.env.example
+
+# AppleDouble (Mac scp 元数据垃圾)
+._*
 .DS_Store
-tiktoken_cache
-.eslintcache
-.gocache
-.gomodcache/
-.cache
-.plans
-.claude
-.cursor
 
-electron/node_modules
-electron/dist
-/data/
-.gomodcache/
-.gocache-temp
-.gopath
-.test
-token_estimator_test.go
-skills-lock.json
-.playwright-mcp
+# 运行时数据
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+*.log
 
-# Local-only live probes and scratch test workspaces.
-.local-tests/
-relaykit/relayconvert/chat_responses_live_local_test.go
-service/openaicompat/chat_responses_live_local_test.go
-go.work
-go.work.sum
-images/
+# 构建产物
+web/node_modules/
+web/dist/
+web/.vite/
+dist/
+bin/
+
+# Go
+*.test
+*.out
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 部署临时
+deploy/*.tar*
+*.sql.gz
+backups/

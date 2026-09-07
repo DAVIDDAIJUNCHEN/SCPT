@@ -3688,6 +3688,10 @@
     "Price ($/1K calls)": "價格（$/1K 次）",
     "Price (local currency / USD)": "價格（本地貨幣/美元）",
     "Price display": "價格顯示",
+    "Product Pricing": "產品定價",
+
+    "Audit Logs": "稽核日誌",
+    "Usage Analysis": "用量分析",
     "Price display mode": "價格顯示模式",
     "Price estimation": "價格估算",
     "Price estimation description": "完成硬件類型、部署位置、副本數量等設定後，價格將自動計算。",

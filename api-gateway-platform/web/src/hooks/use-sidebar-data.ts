@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Activity,
   BadgeDollarSign,
+  BarChart3,
   BookOpen,
   Box,
   CreditCard,
@@ -27,11 +28,11 @@ import {
   Key,
   LayoutDashboard,
   ListTodo,
-  MessageSquare,
   PlugZap,
   Radio,
   ServerCog,
   Settings,
+  ShieldCheck,
   Ticket,
   User,
   Users,
@@ -62,11 +63,6 @@ export function useSidebarData(): SidebarData {
             url: '/playground',
             icon: FlaskConical,
           },
-          {
-            title: t('Chat'),
-            icon: MessageSquare,
-            type: 'chat-presets',
-          },
         ],
       },
       {
@@ -89,12 +85,7 @@ export function useSidebarData(): SidebarData {
             icon: Key,
           },
           {
-            title: t('Usage Logs'),
-            url: '/usage-logs/common',
-            icon: FileText,
-          },
-          {
-            title: t('价格'),
+            title: t('Product Pricing'),
             url: '/pricing',
             icon: BadgeDollarSign,
           },
@@ -102,6 +93,11 @@ export function useSidebarData(): SidebarData {
             title: t('API 文档'),
             url: '/docs',
             icon: BookOpen,
+          },
+          {
+            title: t('Usage Logs'),
+            url: '/usage-logs/common',
+            icon: FileText,
           },
           {
             title: t('Task Logs'),
@@ -174,6 +170,18 @@ export function useSidebarData(): SidebarData {
             url: '/system-settings/site',
             activeUrls: ['/system-settings'],
             icon: Settings,
+          },
+          {
+            title: t('Audit Logs'),
+            url: '/audit-logs',
+            activeUrls: ['/audit-logs'],
+            icon: ShieldCheck,
+          },
+          {
+            title: t('Usage Analysis'),
+            url: '/usage-analysis',
+            activeUrls: ['/usage-analysis'],
+            icon: BarChart3,
           },
         ],
       },

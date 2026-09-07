@@ -3688,6 +3688,10 @@
     "Price ($/1K calls)": "価格（$/1K 回）",
     "Price (local currency / USD)": "価格 (現地通貨 / USD)",
     "Price display": "価格表示",
+    "Product Pricing": "製品の料金",
+
+    "Audit Logs": "監査ログ",
+    "Usage Analysis": "利用分析",
     "Price display mode": "価格表示モード",
     "Price estimation": "料金見積もり",
     "Price estimation description": "ハードウェアタイプ、デプロイ場所、レプリカ数などを設定すると、料金が自動的に計算されます。",
