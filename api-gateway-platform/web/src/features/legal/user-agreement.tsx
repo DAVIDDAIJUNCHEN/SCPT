@@ -16,18 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useTranslation } from 'react-i18next'
+import { Link } from '@tanstack/react-router'
 
-import { PublicLayout } from '@/components/layout'
 import { RichContent } from '@/components/rich-content'
 
 const AGREEMENT_MD = `
-# 四川邮电职业技术学院「川邮·星语」开放平台服务协议
-
-**生效日期：2026 年 9 月**
-
-欢迎使用由四川邮电职业技术学院信息工程学院建设与运营的人工智能开放平台「川邮·星语」（以下简称"本平台"）。本平台向学院师生及授权用户提供大模型 API 接入与调用能力。**注册、登录或使用本平台，即表示您已阅读、理解并同意本协议的全部内容。**
-
 ## 一、服务说明
 
 1. 本平台基于 New API 开源项目（AGPL v3）二次开发，面向四川邮电职业技术学院教学、科研与校内应用场景，提供大模型（文本对话、图像生成、语音合成、语音识别等）的 API 网关服务。
@@ -83,19 +76,29 @@ const AGREEMENT_MD = `
 `
 
 export function UserAgreement() {
-  const { t } = useTranslation()
   return (
-    <PublicLayout>
-      <div className='mx-auto max-w-4xl space-y-6 py-12 px-4 sm:px-6'>
+    <div className='bg-background text-foreground min-h-svh px-4 py-10 sm:px-6'>
+      <div className='mx-auto max-w-3xl'>
+        <div className='mb-6 text-sm'>
+          <Link
+            to='/'
+            className='text-[#7F77DD] hover:underline'
+          >
+            ← 返回平台
+          </Link>
+        </div>
         <h1 className='text-2xl font-semibold tracking-tight'>
-          {t('四川邮电职业技术学院「川邮·星语」开放平台服务协议')}
+          《川邮·星语》开放平台服务协议
         </h1>
+        <p className='text-muted-foreground mt-1 text-xs'>
+          最近更新：2026 年 9 月 7 日 · 四川邮电职业技术学院
+        </p>
         <RichContent
           mode='markdown'
           content={AGREEMENT_MD}
           className='prose-neutral dark:prose-invert max-w-none'
         />
       </div>
-    </PublicLayout>
+    </div>
   )
 }
