@@ -303,6 +303,16 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/self", middleware.UserAuth(), controller.GetUserLogs)
 		logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
 
+		usageStatsRoute := apiRouter.Group("/usage-stats")
+		usageStatsRoute.Use(middleware.AdminAuth())
+		{
+			usageStatsRoute.GET("/overview", controller.GetUsageOverview)
+			usageStatsRoute.GET("/by-model", controller.GetUsageByModel)
+			usageStatsRoute.GET("/by-user", controller.GetUsageByUser)
+			usageStatsRoute.GET("/by-channel", controller.GetUsageByChannel)
+			usageStatsRoute.GET("/trend", controller.GetUsageTrend)
+		}
+
 		systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())
 		{
