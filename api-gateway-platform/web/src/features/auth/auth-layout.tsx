@@ -50,9 +50,9 @@ export function AuthLayout({ children }: AuthLayoutProps) {
             />
           )}
         </div>
-        {/* DeepSeek 风格 API 文档方框按钮 */}
+        {/* DeepSeek 风格 API 文档方框按钮 → 登录页也指向自建公开文档页 */}
         <Link
-          to='/'
+          to='/docs'
           className='inline-flex items-center rounded-md border border-[#378ADD]/50 bg-[#1B2A4E]/60 px-4 py-2 text-sm text-foreground shadow-sm backdrop-blur-sm transition-colors hover:border-[#378ADD] hover:bg-[#1B2A4E]/80'
         >
           {t('API 开发文档')}

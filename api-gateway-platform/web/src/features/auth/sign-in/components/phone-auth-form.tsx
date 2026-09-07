@@ -22,6 +22,7 @@ import {
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
+import { Link } from '@tanstack/react-router'
 
 const CN_PHONE = /^1[3-9][0-9]{9}$/
 
@@ -44,7 +45,6 @@ export function PhoneAuthForm({
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [countdown, setCountdown] = useState(0)
-  const [agreed, setAgreed] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -156,10 +156,6 @@ export function PhoneAuthForm({
   }
 
   async function handleSmsLogin() {
-    if (!agreed) {
-      toast.error(t('请先阅读并同意平台协议与隐私政策'))
-      return
-    }
     if (!phoneValid) {
       toast.error(t('请输入正确的手机号'))
       return
@@ -187,10 +183,6 @@ export function PhoneAuthForm({
   }
 
   async function handlePasswordLogin() {
-    if (!agreed) {
-      toast.error(t('请先阅读并同意平台协议与隐私政策'))
-      return
-    }
     if (!phone.trim()) {
       toast.error(t('请输入手机号或用户名'))
       return
@@ -370,7 +362,7 @@ export function PhoneAuthForm({
             <Button
               type='button'
               onClick={handleResetPassword}
-              disabled={resetting || !agreed}
+              disabled={resetting}
               className='flex-1 bg-gradient-to-br from-[#378ADD] to-[#534AB7] text-white'
             >
               {resetting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
@@ -380,26 +372,22 @@ export function PhoneAuthForm({
         </div>
       )}
 
-      {/* 协议勾选 */}
-      <label className='flex items-start gap-2 text-xs text-muted-foreground'>
-        <input
-          type='checkbox'
-          checked={agreed}
-          onChange={(e) => setAgreed(e.target.checked)}
-          className='mt-0.5 accent-[#378ADD]'
-        />
-        <span>
-          {t('已阅读并同意')}
-          <a className='text-[#7F77DD] hover:underline'>{t('《平台协议》')}</a>
-          {t('与')}
-          <a className='text-[#7F77DD] hover:underline'>{t('《隐私政策》')}</a>
-        </span>
-      </label>
+      {/* 川邮·星语：参考 DeepSeek，登录/注册即代表已阅读并同意协议 */}
+      <p className='text-xs leading-relaxed text-muted-foreground'>
+        {t('注册登录即代表已阅读并同意')}
+        <Link to='/user-agreement' className='text-[#7F77DD] hover:underline'>
+          {t('《川邮·星语开放平台协议》')}
+        </Link>
+        {t('与')}
+        <Link to='/privacy-policy' className='text-[#7F77DD] hover:underline'>
+          {t('《隐私政策》')}
+        </Link>
+      </p>
 
       <Button
         type='button'
         onClick={mode === 'sms' ? handleSmsLogin : handlePasswordLogin}
-        disabled={isSubmitting || !agreed}
+        disabled={isSubmitting}
         className='w-full gap-2 bg-gradient-to-br from-[#378ADD] to-[#534AB7] text-white shadow-[0_4px_16px_rgba(55,138,221,0.32)] hover:opacity-90'
       >
         {isSubmitting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
