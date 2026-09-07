@@ -239,3 +239,60 @@ docker exec allomax-postgres pg_dump -U allomax -d allomax -Fc \
 4. ⚠️ 定期备份（见 §8）
 5. ⚠️ 接真实短信前先申请签名模板，配 `SMS_PROVIDER` 并移除 mock 回显
 6. ⚠️ 生产环境把 `SMS_MOCK_RETURN_CODE` 置为 false（防验证码泄露）
+
+---
+
+## 11. 一键部署（第三方傻瓜式）
+
+若无特殊定制，直接使用 `deploy/deploy.sh` 可一键完成构建+启动+引导：
+
+```bash
+# 前置：仅需 docker + docker compose v2
+cd <仓库>/
+chmod +x deploy/deploy.sh
+./deploy.sh --all          # 构建镜像 → 生成/校验 .env → 启动 → 冒烟 → 初始化指引
+
+# 分步执行（按需）
+./deploy.sh --build        # 仅构建镜像
+./deploy.sh --up           # 仅启动容器
+./deploy.sh --smoke        # 冒烟测试平台状态
+./deploy.sh --gen-secrets  # 自动生成 SESSION_SECRET/POSTGRES/REDIS 随机密钥
+./deploy.sh --init         # 显示管理员初始化指引
+```
+
+> 数据目录默认 `/data/allomax`，可用环境变量 `DATA_DIR=/path` 覆盖；服务端口默认 3000，可用 `PORT=8080 ./deploy.sh` 覆盖。
+
+---
+
+## 12. 平台功能说明（二开新增）
+
+本平台在 New API 基础上二次开发，除原生能力外新增：
+
+| 功能 | 用途 | 使用 |
+|---|---|---|
+| **手机号注册/登录** | 免邮箱，实名手机号验证码登录即注册 | 登录页切换"手机号"模式 |
+| **真实短信** | 阿里云 Dysmsapi 真发验证码，落库脱敏 | `.env` 配 `SMS_PROVIDER=aliyun` + AK/SK/签名/模板 |
+| **两步验证 2FA** | 管理员 TOTP 双因素 | 管理员 → 个人设置 → 两步验证 → 扫码绑定 |
+| **审计日志页** | 操作审计(谁改了什么) + 登录日志台账 | 侧边栏 → 审计日志（admin） |
+| **未知IP告警** | 管理员非白名单 IP 登录 → 飞书通知(含用户名) | `.env` 配 `ADMIN_IP_WHITELIST` + `FEISHU_WEBHOOK_URL` |
+| **用量分析** | 总览/按模型·用户·渠道 调用量/额度/Token | 侧边栏 → 用量分析（admin） |
+| **能力管控** | per-token RPM/TPM/并发/配额熔断 + 模型白名单 | 令牌编辑 → 能力管控配置 |
+
+### 真实短信接入（阿里云）
+```bash
+# .env 配置
+SMS_PROVIDER=aliyun
+SMS_ACCESS_KEY_ID=<RAM子账号AK>
+SMS_ACCESS_KEY_SECRET=<SK>
+SMS_SIGN_NAME=<审核通过的签名，如"川邮智算中心">
+SMS_TEMPLATE_CODE=<短信模板CODE，变量必须为 ${code}>
+SMS_MOCK_RETURN_CODE=false
+```
+
+### 未知 IP 告警配置
+```bash
+# .env 配置；白名单留空 = 全放行仅记录（不拦截），填入已知管理员IP(逗号分隔)即告警
+ADMIN_IP_WHITELIST=203.0.113.1,198.51.100.2
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+```
+
