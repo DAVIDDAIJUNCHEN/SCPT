@@ -30,6 +30,13 @@ import { getServerErrorMessageKey } from '@/lib/server-error-message'
 // 后端 SVG 的 viewBox / 设计尺寸（需与 common/captcha.go 的 captchaCanvasSize 一致）
 const CANVAS = 260
 
+// 判断是否为后端限流（HTTP 429）
+function isRateLimited(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const response = (value as { response?: { status?: number } }).response
+  return response?.status === 429
+}
+
 interface CaptchaDialogProps {
   /** 打开状态（由父组件控制） */
   open: boolean
@@ -54,6 +61,8 @@ export function CaptchaDialog({
 }: CaptchaDialogProps) {
   const { t } = useTranslation()
   const svgRef = useRef<HTMLDivElement>(null)
+  // 防重入锁：防止"换一张/点错重试"连点触发并发请求，撞上后端限流刷不出图
+  const loadingRef = useRef(false)
 
   const [challenge, setChallenge] = useState<CaptchaChallengeResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -61,6 +70,9 @@ export function CaptchaDialog({
   const [pendingClick, setPendingClick] = useState(false)
 
   const loadChallenge = useCallback(async () => {
+    // 防重入：已在加载中则忽略本次调用（换一张/错误重试连点不会并发撞限流）
+    if (loadingRef.current) return
+    loadingRef.current = true
     setLoading(true)
     setChallenge(null)
     setPendingClick(false)
@@ -69,12 +81,19 @@ export function CaptchaDialog({
       if (res.success && res.challenge_id) {
         setChallenge(res)
       } else {
-        toast.error(t('人机校验加载失败，请重试'))
+        // 后端限流/异常：明确提示，避免无反馈
+        toast.error(t('人机校验加载失败，请稍后重试'))
       }
     } catch (error) {
       if (getServerErrorMessageKey(error)) return
-      toast.error(t('人机校验加载失败，请重试'))
+      // 识别 429 限流：给出友好提示，避免"加载失败"干瞪眼刷不出图
+      if (isRateLimited(error)) {
+        toast.error(t('操作太频繁，请稍后再试'))
+        return
+      }
+      toast.error(t('人机校验加载失败，请稍后重试'))
     } finally {
+      loadingRef.current = false
       setLoading(false)
     }
   }, [t])
