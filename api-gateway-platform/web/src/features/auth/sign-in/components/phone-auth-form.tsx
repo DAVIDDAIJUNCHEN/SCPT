@@ -7,14 +7,13 @@ published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
 import { Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
-  sendPhoneCode,
   phoneLogin,
   phonePasswordLogin,
   setPhonePassword,
@@ -22,6 +21,7 @@ import {
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
+import { CaptchaDialog } from '@/features/auth/sign-in/components/captcha-dialog'
 import { Link } from '@tanstack/react-router'
 
 const CN_PHONE = /^1[3-9][0-9]{9}$/
@@ -45,7 +45,6 @@ export function PhoneAuthForm({
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [countdown, setCountdown] = useState(0)
-  const [isSending, setIsSending] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // 忘记密码（重置密码）状态
@@ -54,8 +53,11 @@ export function PhoneAuthForm({
   const [forgotCode, setForgotCode] = useState('')
   const [forgotNewPwd, setForgotNewPwd] = useState('')
   const [forgotCountdown, setForgotCountdown] = useState(0)
-  const [forgotSending, setForgotSending] = useState(false)
   const [resetting, setResetting] = useState(false)
+
+  // 自研几何图形+颜色人机校验：点击"发送验证码"后弹出
+  const [captchaOpen, setCaptchaOpen] = useState(false)
+  const captchaTargetRef = useRef<'login' | 'forgot'>('login')
 
   const phoneValid = CN_PHONE.test(phone)
 
@@ -76,23 +78,22 @@ export function PhoneAuthForm({
       toast.error(t('请输入正确的手机号'))
       return
     }
-    setForgotSending(true)
-    try {
-      const res = await sendPhoneCode(forgotPhone)
-      if (res.success) {
-        setForgotCountdown(60)
-        toast.success(t('验证码已发送'))
-        if (res.dev_code) toast.info(`${t('测试验证码')}: ${res.dev_code}`)
-      } else {
-        if (getServerErrorMessageKey(res)) return
-        toast.error(res.message || t('验证码发送失败，请稍后重试'))
-      }
-    } catch (error) {
-      if (getServerErrorMessageKey(error)) return
-      toast.error(t('验证码发送失败，请稍后重试'))
-    } finally {
-      setForgotSending(false)
+    captchaTargetRef.current = 'forgot'
+    setCaptchaOpen(true)
+  }
+
+  // 人机校验通过、短信已发出后统一处理倒计时/提示
+  function handleCaptchaVerified(devCode?: string) {
+    if (captchaTargetRef.current === 'forgot') {
+      setForgotCountdown(60)
+      toast.success(t('验证码已发送'))
+      if (devCode) toast.info(`${t('测试验证码')}: ${devCode}`)
+    } else {
+      setCountdown(60)
+      toast.success(t('验证码已发送'))
+      if (devCode) toast.info(`${t('测试验证码')}: ${devCode}`)
     }
+    captchaTargetRef.current = 'login'
   }
 
   async function handleResetPassword() {
@@ -134,25 +135,9 @@ export function PhoneAuthForm({
       toast.error(t('请输入正确的手机号'))
       return
     }
-    setIsSending(true)
-    try {
-      const res = await sendPhoneCode(phone)
-      if (res.success) {
-        setCountdown(60)
-        toast.success(t('验证码已发送'))
-        if (res.dev_code) {
-          toast.info(`${t('测试验证码')}: ${res.dev_code}`)
-        }
-      } else {
-        if (getServerErrorMessageKey(res)) return
-        toast.error(res.message || t('验证码发送失败，请稍后重试'))
-      }
-    } catch (error) {
-      if (getServerErrorMessageKey(error)) return
-      toast.error(t('验证码发送失败，请稍后重试'))
-    } finally {
-      setIsSending(false)
-    }
+    // 先弹出自研"几何图形+颜色"人机校验，通过后才真正发码
+    captchaTargetRef.current = 'login'
+    setCaptchaOpen(true)
   }
 
   async function handleSmsLogin() {
@@ -266,10 +251,9 @@ export function PhoneAuthForm({
               type='button'
               variant='ghost'
               onClick={handleSendCode}
-              disabled={isSending || countdown > 0 || !phoneValid}
+              disabled={countdown > 0 || !phoneValid}
               className='shrink-0 border border-white/15 text-foreground'
             >
-              {isSending ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
               {countdown > 0 ? `${countdown}s` : t('发送验证码')}
             </Button>
           </div>
@@ -337,7 +321,7 @@ export function PhoneAuthForm({
               type='button'
               variant='ghost'
               onClick={() => sendForgotCode()}
-              disabled={forgotSending || forgotCountdown > 0}
+              disabled={forgotCountdown > 0}
               className='shrink-0 border border-white/15 text-foreground'
             >
               {forgotCountdown > 0 ? `${forgotCountdown}s` : t('发送验证码')}
@@ -393,6 +377,14 @@ export function PhoneAuthForm({
         {isSubmitting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
         {isSignUp ? t('注 册') : t('登 录')}
       </Button>
+
+      {/* 自研几何图形+颜色人机校验：点击"发送验证码"后弹出 */}
+      <CaptchaDialog
+        open={captchaOpen}
+        phone={captchaTargetRef.current === 'forgot' ? forgotPhone : phone}
+        onOpenChange={setCaptchaOpen}
+        onVerified={handleCaptchaVerified}
+      />
     </div>
   )
 }

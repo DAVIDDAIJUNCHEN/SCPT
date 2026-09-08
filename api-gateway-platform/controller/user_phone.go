@@ -31,13 +31,25 @@ func normalizeChinaPhone(raw string) (string, bool) {
 	return p, true
 }
 
-// SendPhoneCode GET /api/phone/verification?phone=138xxxxxxxx
+// SendPhoneCode GET /api/phone/verification?phone=138xxxxxxxx&captcha_id=...&captcha_x=..&captcha_y=..
 // 生成验证码 → 注册到内存验证码表（10 分钟有效）→ 走短信 Provider 发送
+// 安全：必须先通过自研"几何图形+颜色"人机校验（captcha_id + 点击坐标），否则拒绝发码。
 func SendPhoneCode(c *gin.Context) {
 	if !common.PhoneRegisterEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "手机号注册功能未启用",
+		})
+		return
+	}
+	// ---- 人机校验（防机器人滥刷短信/验证码）----
+	okCap, msgCap := verifyCaptchaFromQuery(c)
+	if !okCap {
+		c.JSON(http.StatusOK, gin.H{
+			"success":          false,
+			"message":          msgCap,
+			"need_captcha":     true,
+			"captcha_required": true,
 		})
 		return
 	}

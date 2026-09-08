@@ -97,14 +97,38 @@ export interface PhoneCodeResponse {
   message: string
   /** mock 通道回显验证码（生产短信通道不返回） */
   dev_code?: string
+  /** 需要人机验证（未通过或缺失校验时 true） */
+  need_captcha?: boolean
 }
 
-/** 请求发送手机号验证码 */
-export async function sendPhoneCode(phone: string): Promise<PhoneCodeResponse> {
-  const res = await api.get<PhoneCodeResponse>(
-    `/api/phone/verification?phone=${encodeURIComponent(phone)}`,
-    { skipAuthRefresh: true }
-  )
+/** 自研几何图形+颜色人机校验（后端下发 SVG + 题目） */
+export interface CaptchaChallengeResponse {
+  success: boolean
+  challenge_id: string
+  svg: string
+  prompt_cn: string
+}
+
+/** 获取人机校验挑战（SVG 图形 + 题目文字） */
+export async function getCaptchaChallenge(): Promise<CaptchaChallengeResponse> {
+  const res = await api.get<CaptchaChallengeResponse>('/api/phone/captcha', {
+    skipAuthRefresh: true,
+  })
+  return res.data
+}
+
+/** 请求发送手机号验证码（需先通过几何图形+颜色人机校验） */
+export async function sendPhoneCode(
+  phone: string,
+  captcha?: { id: string; x: number; y: number }
+): Promise<PhoneCodeResponse> {
+  let url = `/api/phone/verification?phone=${encodeURIComponent(phone)}`
+  if (captcha) {
+    url += `&captcha_id=${encodeURIComponent(captcha.id)}`
+    url += `&captcha_x=${captcha.x}`
+    url += `&captcha_y=${captcha.y}`
+  }
+  const res = await api.get<PhoneCodeResponse>(url, { skipAuthRefresh: true })
   return res.data
 }
 

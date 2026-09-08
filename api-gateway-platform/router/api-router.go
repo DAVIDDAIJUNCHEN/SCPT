@@ -42,6 +42,8 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		// AlloMax: 手机号验证码（发码 + 登录，频控防轰炸）
+		// 人机校验：发送验证码前先取 captcha 挑战
+		apiRouter.GET("/phone/captcha", middleware.SmsVerificationRateLimit(), middleware.DisableCache(), controller.GetCaptchaChallenge)
 		apiRouter.GET("/phone/verification", middleware.SmsVerificationRateLimit(), middleware.DisableCache(), controller.SendPhoneCode)
 		apiRouter.POST("/user/phone/login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhoneLogin)
 		apiRouter.POST("/user/phone/password-login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhonePasswordLogin)
