@@ -316,8 +316,8 @@ export function PhoneAuthForm({
           maxLength={11}
           placeholder={placeholder}
           value={value}
-          onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
-          className={`${phoneInputCls} ${extraCls ?? ''}`}
+          onChange={(e) => onChange(e.target.value)}
+          className={`${inputCls} ${phoneInputCls} ${extraCls ?? ''}`}
         />
       </div>
     )
@@ -341,7 +341,7 @@ export function PhoneAuthForm({
           maxLength={6}
           placeholder={t('验证码')}
           value={value}
-          onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
+          onChange={(e) => onChange(e.target.value)}
           className={inputCls}
         />
         <Button
@@ -363,8 +363,8 @@ export function PhoneAuthForm({
 
   return (
     <div className='space-y-5'>
-      {/* 标题 + 副标题 */}
-      <div className='space-y-1.5 text-center lg:text-left'>
+      {/* 标题 + 副标题（始终居中，确保登录视图品牌名"川邮·星语"居中） */}
+      <div className='space-y-1.5 text-center'>
         <h1 className='text-xl font-medium text-foreground'>{title}</h1>
         {subtitle && (
           <p className='text-sm text-muted-foreground'>{subtitle}</p>
