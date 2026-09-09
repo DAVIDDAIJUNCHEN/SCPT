@@ -31,7 +31,7 @@ type AuthLayoutProps = {
 
 export function AuthLayout({ children }: AuthLayoutProps) {
   const { t } = useTranslation()
-  const { systemName, logo, loading } = useSystemConfig()
+  const { logo, loading } = useSystemConfig()
 
   return (
     <div className='dark relative grid min-h-svh w-full overflow-hidden bg-[#070D1F] text-foreground'>

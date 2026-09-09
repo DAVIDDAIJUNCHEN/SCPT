@@ -275,11 +275,6 @@ function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
         symbol: localeCur.symbol,
         exchangeRate: localeCur.rate,
       }
-    case 'TOKENS':
-      return {
-        kind: 'tokens',
-        quotaPerUnit: config.quotaPerUnit,
-      }
     case 'USD':
     default:
       return {
