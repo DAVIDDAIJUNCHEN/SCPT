@@ -12,7 +12,9 @@ import { PhoneAuthForm } from '../sign-in/components/phone-auth-form'
 export function SignUp() {
   return (
     <AuthLayout>
-      <PhoneAuthForm initialView='register' />
+      {/* 川邮·星语：sign-up 路由与 sign-in 统一默认密码登录，
+          注册通过登录页"立即注册"入口进入，避免一进来就是注册页 */}
+      <PhoneAuthForm initialView='login' />
     </AuthLayout>
   )
 }
