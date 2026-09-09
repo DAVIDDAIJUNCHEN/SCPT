@@ -31,6 +31,76 @@ const CN_PHONE = /^1[3-9][0-9]{9}$/
 type View = 'login' | 'register' | 'forgot'
 type Mode = 'sms' | 'password'
 
+// ---------- 模块级输入框样式常量 ----------
+// 登录页统一输入框：44px 高 + 深色半透明底 + focus 蓝紫发光描边
+const INPUT_CLS =
+  'h-11 bg-[#0A1126]/55 focus-visible:border-[#378ADD]/70 focus-visible:ring-[#378ADD]/25'
+// 手机号输入框：+86 内嵌，左侧预留前缀空间
+const PHONE_INPUT_CLS = `${INPUT_CLS} pl-14`
+
+// ---------- 输入框小组件（必须定义在模块顶层） ----------
+// 注意：绝不能定义在 PhoneAuthForm 组件内部，否则每次父组件重渲染都会以新函数身份
+// 重建子组件 → input 反复卸载重挂 → 快速连续输入丢字（已实测根因）
+function PhoneField({
+  value,
+  onChange,
+  placeholder,
+  extraCls,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+  extraCls?: string
+}) {
+  // 与密码登录手机号框完全同构：Base UI Input + 无 replace + 简单受控
+  return (
+    <div className='relative'>
+      <span className='pointer-events-none absolute inset-y-0 left-3.5 z-10 flex items-center text-sm text-foreground/80'>
+        +86
+      </span>
+      <Input
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${INPUT_CLS} ${PHONE_INPUT_CLS} ${extraCls ?? ''}`}
+      />
+    </div>
+  )
+}
+
+function CodeField({
+  value,
+  onChange,
+  countdown,
+  onSend,
+}: {
+  value: string
+  onChange: (v: string) => void
+  countdown: number
+  onSend: () => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <div className='flex gap-2'>
+      <Input
+        placeholder={t('验证码')}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={INPUT_CLS}
+      />
+      <Button
+        type='button'
+        variant='ghost'
+        onClick={onSend}
+        disabled={countdown > 0}
+        className='h-11 shrink-0 border border-white/15 px-4 text-foreground transition-colors hover:border-[#378ADD]/60 disabled:opacity-50'
+      >
+        {countdown > 0 ? `${countdown}s` : t('发送验证码')}
+      </Button>
+    </div>
+  )
+}
+
 export function PhoneAuthForm({
   redirectTo,
   initialView = 'login',
@@ -74,11 +144,9 @@ export function PhoneAuthForm({
   const [captchaOpen, setCaptchaOpen] = useState(false)
   const captchaTargetRef = useRef<'login' | 'register' | 'forgot'>('login')
 
-  // 登录页统一输入框：44px 高 + 深色半透明底 + focus 蓝紫发光描边
+  // 登录页统一输入框：44px 高 + 深色半透明底 + focus 蓝紫发光描边（手机号/验证码框已用模块级 INPUT_CLS）
   const inputCls =
     'h-11 bg-[#0A1126]/55 focus-visible:border-[#378ADD]/70 focus-visible:ring-[#378ADD]/25'
-  // 手机号输入框：+86 内嵌，左侧预留前缀空间
-  const phoneInputCls = `${inputCls} pl-14`
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -292,70 +360,6 @@ export function PhoneAuthForm({
       : view === 'forgot'
         ? t('通过手机号验证重置您的登录密码')
         : ''
-
-  // ---------- 渲染：输入框小组件 ----------
-  function PhoneField({
-    value,
-    onChange,
-    placeholder,
-    extraCls,
-  }: {
-    value: string
-    onChange: (v: string) => void
-    placeholder: string
-    extraCls?: string
-  }) {
-    return (
-      <div className='relative'>
-        <span className='pointer-events-none absolute inset-y-0 left-3.5 z-10 flex items-center text-sm text-foreground/80'>
-          +86
-        </span>
-        <Input
-          type='tel'
-          inputMode='numeric'
-          maxLength={11}
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className={`${inputCls} ${phoneInputCls} ${extraCls ?? ''}`}
-        />
-      </div>
-    )
-  }
-
-  function CodeField({
-    value,
-    onChange,
-    countdown,
-    onSend,
-  }: {
-    value: string
-    onChange: (v: string) => void
-    countdown: number
-    onSend: () => void
-  }) {
-    return (
-      <div className='flex gap-2'>
-        <Input
-          inputMode='numeric'
-          maxLength={6}
-          placeholder={t('验证码')}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className={inputCls}
-        />
-        <Button
-          type='button'
-          variant='ghost'
-          onClick={onSend}
-          disabled={countdown > 0}
-          className='h-11 shrink-0 border border-white/15 px-4 text-foreground transition-colors hover:border-[#378ADD]/60 disabled:opacity-50'
-        >
-          {countdown > 0 ? `${countdown}s` : t('发送验证码')}
-        </Button>
-      </div>
-    )
-  }
 
   // ---------- 主按钮 ----------
   const primaryBtnCls =
