@@ -13,53 +13,72 @@ import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/password-input'
 import {
   phoneLogin,
   phonePasswordLogin,
+  phoneRegister,
   setPhonePassword,
 } from '@/features/auth/api'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
 import { CaptchaDialog } from '@/features/auth/sign-in/components/captcha-dialog'
-import { Link } from '@tanstack/react-router'
 
 const CN_PHONE = /^1[3-9][0-9]{9}$/
 
+// 三态：登录（密码/验证码双 tab）、注册、忘记密码
+type View = 'login' | 'register' | 'forgot'
 type Mode = 'sms' | 'password'
 
 export function PhoneAuthForm({
   redirectTo,
-  variant = 'sign-in',
+  initialView = 'login',
 }: {
   redirectTo?: string
-  variant?: 'sign-in' | 'sign-up'
+  initialView?: View
 }) {
   const { t } = useTranslation()
   const { handleLoginSuccess } = useAuthRedirect()
 
-  const isSignUp = variant === 'sign-up'
+  // 视图状态机
+  const [view, setView] = useState<View>(initialView)
+  // 登录 tab：密码 / 验证码（默认密码登录）
+  const [mode, setMode] = useState<Mode>('password')
 
-  const [mode, setMode] = useState<Mode>('sms')
+  // 登录字段
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [countdown, setCountdown] = useState(0)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // 忘记密码（重置密码）状态
-  const [forgot, setForgot] = useState(false)
+  // 注册字段（用户名默认=手机号）
+  const [regPhone, setRegPhone] = useState('')
+  const [regCode, setRegCode] = useState('')
+  const [regPwd, setRegPwd] = useState('')
+  const [regPwdConfirm, setRegPwdConfirm] = useState('')
+  const [regCountdown, setRegCountdown] = useState(0)
+  const [isRegistering, setIsRegistering] = useState(false)
+
+  // 忘记密码字段（分两步：Step1 手机号+验证码 → Step2 新密码+确认）
+  const [forgotStep, setForgotStep] = useState<1 | 2>(1)
   const [forgotPhone, setForgotPhone] = useState('')
   const [forgotCode, setForgotCode] = useState('')
   const [forgotNewPwd, setForgotNewPwd] = useState('')
+  const [forgotPwdConfirm, setForgotPwdConfirm] = useState('')
   const [forgotCountdown, setForgotCountdown] = useState(0)
   const [resetting, setResetting] = useState(false)
 
   // 自研几何图形+颜色人机校验：点击"发送验证码"后弹出
   const [captchaOpen, setCaptchaOpen] = useState(false)
-  const captchaTargetRef = useRef<'login' | 'forgot'>('login')
+  const captchaTargetRef = useRef<'login' | 'register' | 'forgot'>('login')
 
-  const phoneValid = CN_PHONE.test(phone)
+  // 登录页统一输入框：44px 高 + 深色半透明底 + focus 蓝紫发光描边
+  const inputCls =
+    'h-11 bg-[#0A1126]/55 focus-visible:border-[#378ADD]/70 focus-visible:ring-[#378ADD]/25'
+  // 手机号输入框：+86 内嵌，左侧预留前缀空间
+  const phoneInputCls = `${inputCls} pl-14`
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -68,80 +87,45 @@ export function PhoneAuthForm({
   }, [countdown])
 
   useEffect(() => {
+    if (regCountdown <= 0) return
+    const timer = setInterval(() => setRegCountdown((c) => c - 1), 1000)
+    return () => clearInterval(timer)
+  }, [regCountdown])
+
+  useEffect(() => {
     if (forgotCountdown <= 0) return
     const timer = setInterval(() => setForgotCountdown((c) => c - 1), 1000)
     return () => clearInterval(timer)
   }, [forgotCountdown])
 
-  async function sendForgotCode() {
-    if (!CN_PHONE.test(forgotPhone)) {
+  // ---------- 发送验证码（三态各自独立倒计时，共用同一个人机校验弹窗） ----------
+  function requestCaptcha(target: 'login' | 'register' | 'forgot', phoneToSend: string) {
+    if (!CN_PHONE.test(phoneToSend)) {
       toast.error(t('请输入正确的手机号'))
       return
     }
-    captchaTargetRef.current = 'forgot'
+    captchaTargetRef.current = target
     setCaptchaOpen(true)
   }
 
   // 人机校验通过、短信已发出后统一处理倒计时/提示
   function handleCaptchaVerified(devCode?: string) {
-    if (captchaTargetRef.current === 'forgot') {
+    const target = captchaTargetRef.current
+    if (target === 'register') {
+      setRegCountdown(60)
+    } else if (target === 'forgot') {
       setForgotCountdown(60)
-      toast.success(t('验证码已发送'))
-      if (devCode) toast.info(`${t('测试验证码')}: ${devCode}`)
     } else {
       setCountdown(60)
-      toast.success(t('验证码已发送'))
-      if (devCode) toast.info(`${t('测试验证码')}: ${devCode}`)
     }
+    toast.success(t('验证码已发送'))
+    if (devCode) toast.info(`${t('测试验证码')}: ${devCode}`)
     captchaTargetRef.current = 'login'
   }
 
-  async function handleResetPassword() {
-    if (!CN_PHONE.test(forgotPhone)) {
-      toast.error(t('请输入正确的手机号'))
-      return
-    }
-    if (forgotCode.trim().length < 4) {
-      toast.error(t('请输入验证码'))
-      return
-    }
-    if (forgotNewPwd.length < 8) {
-      toast.error(t('密码至少 8 位'))
-      return
-    }
-    setResetting(true)
-    try {
-      const res = await setPhonePassword(forgotPhone, forgotCode, forgotNewPwd, true)
-      if (res.success) {
-        toast.success(t('密码重置成功，请使用新密码登录'))
-        setForgot(false)
-        setMode('password')
-        setPassword('')
-        setPhone(forgotPhone)
-      } else {
-        if (getServerErrorMessageKey(res)) return
-        toast.error(res.message || t('重置失败'))
-      }
-    } catch (error) {
-      if (getServerErrorMessageKey(error)) return
-      toast.error(t('重置失败'))
-    } finally {
-      setResetting(false)
-    }
-  }
-
-  async function handleSendCode() {
-    if (!phoneValid) {
-      toast.error(t('请输入正确的手机号'))
-      return
-    }
-    // 先弹出自研"几何图形+颜色"人机校验，通过后才真正发码
-    captchaTargetRef.current = 'login'
-    setCaptchaOpen(true)
-  }
-
+  // ---------- 登录 ----------
   async function handleSmsLogin() {
-    if (!phoneValid) {
+    if (!CN_PHONE.test(phone)) {
       toast.error(t('请输入正确的手机号'))
       return
     }
@@ -194,194 +178,463 @@ export function PhoneAuthForm({
     }
   }
 
+  // ---------- 注册：手机号(用户名) + 密码 + 确认密码 + 验证码 ----------
+  async function handleRegister() {
+    if (!CN_PHONE.test(regPhone)) {
+      toast.error(t('请输入正确的手机号'))
+      return
+    }
+    if (regPwd.length < 8) {
+      toast.error(t('密码至少 8 位'))
+      return
+    }
+    if (regPwd !== regPwdConfirm) {
+      toast.error(t('两次输入的密码不一致'))
+      return
+    }
+    if (regCode.trim().length < 4) {
+      toast.error(t('请输入验证码'))
+      return
+    }
+    setIsRegistering(true)
+    try {
+      const res = await phoneRegister(regPhone, regCode, regPwd)
+      if (res.success && isAuthBundle(res.data)) {
+        await handleLoginSuccess(res.data, redirectTo)
+        toast.success(t('注册成功，已自动登录'))
+      } else {
+        if (getServerErrorMessageKey(res)) return
+        toast.error(res.message || t('注册失败'))
+      }
+    } catch (error) {
+      if (getServerErrorMessageKey(error)) return
+      toast.error(t('注册失败'))
+    } finally {
+      setIsRegistering(false)
+    }
+  }
+
+  // ---------- 忘记密码 Step1 → Step2：前端校验手机号+验证码后解锁下一步 ----------
+  function handleForgotNext() {
+    if (!CN_PHONE.test(forgotPhone)) {
+      toast.error(t('请输入正确的手机号'))
+      return
+    }
+    if (forgotCode.trim().length < 4) {
+      toast.error(t('请输入验证码'))
+      return
+    }
+    setForgotStep(2)
+  }
+
+  // ---------- 忘记密码：Step2 提交（手机号+验证码+新密码，验证码为一次性凭证） ----------
+  function handleResetPassword() {
+    if (!CN_PHONE.test(forgotPhone)) {
+      toast.error(t('请输入正确的手机号'))
+      return
+    }
+    if (forgotCode.trim().length < 4) {
+      toast.error(t('请输入验证码'))
+      return
+    }
+    if (forgotNewPwd.length < 8) {
+      toast.error(t('密码至少 8 位'))
+      return
+    }
+    if (forgotNewPwd !== forgotPwdConfirm) {
+      toast.error(t('两次输入的密码不一致'))
+      return
+    }
+    confirmResetPassword()
+  }
+
+  async function confirmResetPassword() {
+    setResetting(true)
+    try {
+      const res = await setPhonePassword(forgotPhone, forgotCode, forgotNewPwd, true)
+      if (res.success) {
+        toast.success(t('密码重置成功，请使用新密码登录'))
+        // 重置成功回到登录（密码登录 tab），预填手机号并复位忘记密码分步状态
+        setView('login')
+        setMode('password')
+        setPassword('')
+        setPhone(forgotPhone)
+        setForgotStep(1)
+        setForgotPhone('')
+        setForgotCode('')
+        setForgotNewPwd('')
+        setForgotPwdConfirm('')
+        setForgotCountdown(0)
+      } else {
+        if (getServerErrorMessageKey(res)) return
+        toast.error(res.message || t('重置失败'))
+      }
+    } catch (error) {
+      if (getServerErrorMessageKey(error)) return
+      toast.error(t('重置失败'))
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  // ---------- 标题 ----------
+  // 登录视图标题位置展示品牌名"川邮·星语"（替代单独的"登录"二字）；注册/忘记密码显示各自语义
+  const title =
+    view === 'register'
+      ? t('立即注册')
+      : view === 'forgot'
+        ? t('重置统一登录密码')
+        : t('川邮·星语')
+
+  const subtitle =
+    view === 'register'
+      ? t('使用手机号注册，一个账号访问全部服务')
+      : view === 'forgot'
+        ? t('通过手机号验证重置您的登录密码')
+        : ''
+
+  // ---------- 渲染：输入框小组件 ----------
+  function PhoneField({
+    value,
+    onChange,
+    placeholder,
+    extraCls,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    placeholder: string
+    extraCls?: string
+  }) {
+    return (
+      <div className='relative'>
+        <span className='pointer-events-none absolute inset-y-0 left-3.5 z-10 flex items-center text-sm text-foreground/80'>
+          +86
+        </span>
+        <Input
+          type='tel'
+          inputMode='numeric'
+          maxLength={11}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
+          className={`${phoneInputCls} ${extraCls ?? ''}`}
+        />
+      </div>
+    )
+  }
+
+  function CodeField({
+    value,
+    onChange,
+    countdown,
+    onSend,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    countdown: number
+    onSend: () => void
+  }) {
+    return (
+      <div className='flex gap-2'>
+        <Input
+          inputMode='numeric'
+          maxLength={6}
+          placeholder={t('验证码')}
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
+          className={inputCls}
+        />
+        <Button
+          type='button'
+          variant='ghost'
+          onClick={onSend}
+          disabled={countdown > 0}
+          className='h-11 shrink-0 border border-white/15 px-4 text-foreground transition-colors hover:border-[#378ADD]/60 disabled:opacity-50'
+        >
+          {countdown > 0 ? `${countdown}s` : t('发送验证码')}
+        </Button>
+      </div>
+    )
+  }
+
+  // ---------- 主按钮 ----------
+  const primaryBtnCls =
+    'w-full gap-2 bg-gradient-to-br from-[#378ADD] to-[#534AB7] py-6 text-base font-medium text-white shadow-[0_4px_16px_rgba(55,138,221,0.32)] transition-all hover:shadow-[0_6px_24px_rgba(83,74,183,0.45)] hover:opacity-95 active:scale-[0.99] disabled:opacity-50'
+
   return (
     <div className='space-y-5'>
-      {/* tab 切换 */}
-      <div className='flex border-b border-white/10'>
-        <button
-          type='button'
-          onClick={() => setMode('sms')}
-          className={`flex-1 pb-2.5 text-sm transition-colors ${
-            mode === 'sms'
-              ? 'border-b-2 border-[#378ADD] font-medium text-foreground'
-              : 'text-muted-foreground'
-          }`}
-        >
-          {t('验证码登录')}
-        </button>
-        <button
-          type='button'
-          onClick={() => setMode('password')}
-          className={`flex-1 pb-2.5 text-sm transition-colors ${
-            mode === 'password'
-              ? 'border-b-2 border-[#378ADD] font-medium text-foreground'
-              : 'text-muted-foreground'
-          }`}
-        >
-          {t('密码登录')}
-        </button>
+      {/* 标题 + 副标题 */}
+      <div className='space-y-1.5 text-center lg:text-left'>
+        <h1 className='text-xl font-medium text-foreground'>{title}</h1>
+        {subtitle && (
+          <p className='text-sm text-muted-foreground'>{subtitle}</p>
+        )}
       </div>
 
-      {mode === 'sms' ? (
-        <div className='space-y-3'>
-          <div className='flex gap-2'>
-            <div className='flex items-center rounded-lg border border-white/15 bg-[#0A1126]/55 px-3 text-sm text-muted-foreground'>
-              +86
-            </div>
-            <Input
-              type='tel'
-              inputMode='numeric'
-              maxLength={11}
-              placeholder={t('手机号')}
-              value={phone}
-              onChange={(e) => setPhone(e.target.value.replace(/[^0-9]/g, ''))}
-              className='bg-[#0A1126]/55'
-            />
-          </div>
-          <div className='flex gap-2'>
-            <Input
-              inputMode='numeric'
-              maxLength={6}
-              placeholder={t('验证码')}
-              value={code}
-              onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, ''))}
-              className='bg-[#0A1126]/55'
-            />
-            <Button
+      {/* ============ 登录视图 ============ */}
+      {view === 'login' && (
+        <>
+          {/* tab 切换：密码登录（默认）/ 验证码登录 */}
+          <div className='flex border-b border-white/10'>
+            <button
               type='button'
-              variant='ghost'
-              onClick={handleSendCode}
-              disabled={countdown > 0 || !phoneValid}
-              className='shrink-0 border border-white/15 text-foreground'
+              onClick={() => setMode('password')}
+              className={`relative flex-1 py-2.5 text-sm transition-colors ${
+                mode === 'password'
+                  ? 'font-medium text-foreground'
+                  : 'text-muted-foreground hover:text-foreground/80'
+              }`}
             >
-              {countdown > 0 ? `${countdown}s` : t('发送验证码')}
-            </Button>
+              {t('密码登录')}
+              <span
+                className={`absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-gradient-to-r from-[#378ADD] to-[#534AB7] transition-all duration-300 ${
+                  mode === 'password' ? 'opacity-100' : 'opacity-0'
+                }`}
+              />
+            </button>
+            <button
+              type='button'
+              onClick={() => setMode('sms')}
+              className={`relative flex-1 py-2.5 text-sm transition-colors ${
+                mode === 'sms'
+                  ? 'font-medium text-foreground'
+                  : 'text-muted-foreground hover:text-foreground/80'
+              }`}
+            >
+              {t('验证码登录')}
+              <span
+                className={`absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-gradient-to-r from-[#378ADD] to-[#534AB7] transition-all duration-300 ${
+                  mode === 'sms' ? 'opacity-100' : 'opacity-0'
+                }`}
+              />
+            </button>
           </div>
-          <p className='text-center text-xs text-muted-foreground'>
-            {isSignUp ? t('仅支持手机号注册') : t('未注册的手机号将自动注册')}
-          </p>
-        </div>
-      ) : (
-        <div className='space-y-3'>
-          <Input
-            placeholder={t('手机号 / 用户名')}
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            autoComplete='username'
-            className='bg-[#0A1126]/55'
-          />
-          <Input
-            type='password'
-            placeholder={t('密码')}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className='bg-[#0A1126]/55'
-            autoComplete='current-password'
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handlePasswordLogin()
-            }}
-          />
-          <button
+
+          {mode === 'password' ? (
+            <div className='space-y-3'>
+              <Input
+                placeholder={t('手机号 / 用户名')}
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete='username'
+                className={inputCls}
+              />
+              <PasswordInput
+                placeholder={t('密码')}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete='current-password'
+                className={inputCls}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handlePasswordLogin()
+                }}
+              />
+              <button
+                type='button'
+                onClick={() => setView('forgot')}
+                className='self-end text-xs text-muted-foreground transition-colors hover:text-[#7F77DD]'
+              >
+                {t('忘记密码？')}
+              </button>
+            </div>
+          ) : (
+            <div className='space-y-3'>
+              <PhoneField
+                value={phone}
+                onChange={setPhone}
+                placeholder={t('手机号')}
+              />
+              <CodeField
+                value={code}
+                onChange={setCode}
+                countdown={countdown}
+                onSend={() => requestCaptcha('login', phone)}
+              />
+            </div>
+          )}
+
+          <Button
             type='button'
-            onClick={() => setForgot(true)}
-            className='self-end text-xs text-muted-foreground transition-colors hover:text-[#7F77DD]'
+            onClick={mode === 'sms' ? handleSmsLogin : handlePasswordLogin}
+            disabled={isSubmitting}
+            className={primaryBtnCls}
           >
-            {t('忘记密码？')}
-          </button>
+            {isSubmitting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
+            {t('登 录')}
+          </Button>
+        </>
+      )}
+
+      {/* ============ 注册视图 ============ */}
+      {view === 'register' && (
+        <div className='space-y-3'>
+          <PhoneField
+            value={regPhone}
+            onChange={setRegPhone}
+            placeholder={t('手机号 / 用户名')}
+          />
+          <PasswordInput
+            placeholder={t('设置密码（至少 8 位）')}
+            value={regPwd}
+            onChange={(e) => setRegPwd(e.target.value)}
+            autoComplete='new-password'
+            className={inputCls}
+          />
+          <PasswordInput
+            placeholder={t('再次输入密码')}
+            value={regPwdConfirm}
+            onChange={(e) => setRegPwdConfirm(e.target.value)}
+            autoComplete='new-password'
+            className={inputCls}
+          />
+          <CodeField
+            value={regCode}
+            onChange={setRegCode}
+            countdown={regCountdown}
+            onSend={() => requestCaptcha('register', regPhone)}
+          />
+          <Button
+            type='button'
+            onClick={handleRegister}
+            disabled={isRegistering}
+            className={primaryBtnCls}
+          >
+            {isRegistering ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
+            {t('注 册')}
+          </Button>
         </div>
       )}
 
-      {forgot && (
-        <div className='space-y-3 rounded-lg border border-[#378ADD]/30 bg-[#0A1126]/40 p-3'>
-          <p className='text-xs font-medium text-[#FAEEDA]'>{t('重置密码')}</p>
-          <div className='flex gap-2'>
-            <div className='flex items-center rounded-lg border border-white/15 bg-[#0A1126]/55 px-3 text-sm text-muted-foreground'>
-              +86
-            </div>
-            <Input
-              type='tel'
-              inputMode='numeric'
-              maxLength={11}
-              placeholder={t('手机号')}
-              value={forgotPhone}
-              onChange={(e) => setForgotPhone(e.target.value.replace(/[^0-9]/g, ''))}
-              className='bg-[#0A1126]/55'
-            />
+      {/* ============ 忘记密码视图（分两步） ============ */}
+      {view === 'forgot' && (
+        <div className='space-y-3'>
+          {/* 分步指示 */}
+          <div className='flex items-center justify-center gap-2 text-xs text-muted-foreground'>
+            <span className={forgotStep === 1 ? 'font-medium text-[#378ADD]' : ''}>
+              {t('验证身份')}
+            </span>
+            <span className='text-muted-foreground/40'>·</span>
+            <span className={forgotStep === 2 ? 'font-medium text-[#378ADD]' : ''}>
+              {t('设置新密码')}
+            </span>
           </div>
-          <div className='flex gap-2'>
-            <Input
-              inputMode='numeric'
-              maxLength={6}
-              placeholder={t('验证码')}
-              value={forgotCode}
-              onChange={(e) => setForgotCode(e.target.value.replace(/[^0-9]/g, ''))}
-              className='bg-[#0A1126]/55'
-            />
-            <Button
-              type='button'
-              variant='ghost'
-              onClick={() => sendForgotCode()}
-              disabled={forgotCountdown > 0}
-              className='shrink-0 border border-white/15 text-foreground'
-            >
-              {forgotCountdown > 0 ? `${forgotCountdown}s` : t('发送验证码')}
-            </Button>
-          </div>
-          <Input
-            type='password'
-            placeholder={t('新密码（至少 8 位）')}
-            value={forgotNewPwd}
-            onChange={(e) => setForgotNewPwd(e.target.value)}
-            className='bg-[#0A1126]/55'
-          />
-          <div className='flex gap-2'>
-            <Button
-              type='button'
-              variant='ghost'
-              onClick={() => setForgot(false)}
-              className='flex-1 border border-white/15 text-foreground'
-            >
-              {t('取消')}
-            </Button>
-            <Button
-              type='button'
-              onClick={handleResetPassword}
-              disabled={resetting}
-              className='flex-1 bg-gradient-to-br from-[#378ADD] to-[#534AB7] text-white'
-            >
-              {resetting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
-              {t('确认重置')}
-            </Button>
-          </div>
+
+          {forgotStep === 1 && (
+            <>
+              <PhoneField
+                value={forgotPhone}
+                onChange={setForgotPhone}
+                placeholder={t('手机号')}
+              />
+              <CodeField
+                value={forgotCode}
+                onChange={setForgotCode}
+                countdown={forgotCountdown}
+                onSend={() => requestCaptcha('forgot', forgotPhone)}
+              />
+              <Button
+                type='button'
+                onClick={handleForgotNext}
+                className={primaryBtnCls}
+              >
+                {t('下一步')}
+              </Button>
+            </>
+          )}
+
+          {forgotStep === 2 && (
+            <>
+              <PasswordInput
+                placeholder={t('新密码（至少 8 位）')}
+                value={forgotNewPwd}
+                onChange={(e) => setForgotNewPwd(e.target.value)}
+                autoComplete='new-password'
+                className={inputCls}
+              />
+              <PasswordInput
+                placeholder={t('再次输入新密码')}
+                value={forgotPwdConfirm}
+                onChange={(e) => setForgotPwdConfirm(e.target.value)}
+                autoComplete='new-password'
+                className={inputCls}
+              />
+              <Button
+                type='button'
+                onClick={handleResetPassword}
+                disabled={resetting}
+                className={primaryBtnCls}
+              >
+                {resetting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
+                {t('确认重置')}
+              </Button>
+              <button
+                type='button'
+                onClick={() => setForgotStep(1)}
+                className='mx-auto block text-xs text-muted-foreground transition-colors hover:text-[#7F77DD]'
+              >
+                {t('上一步：修改手机号 / 验证码')}
+              </button>
+            </>
+          )}
         </div>
+      )}
+
+      {/* ============ 底部链接 ============ */}
+      {view === 'login' && mode === 'password' ? (
+        <p className='flex items-center justify-center gap-1 text-sm text-muted-foreground'>
+          {t('没有账号？')}
+          <button
+            type='button'
+            onClick={() => setView('register')}
+            className='font-medium text-[#7F77DD] transition-colors hover:text-[#9A93E8]'
+          >
+            {t('立即注册')}
+          </button>
+        </p>
+      ) : null}
+
+      {view !== 'login' && (
+        <button
+          type='button'
+          onClick={() => {
+            setView('login')
+            setMode('password')
+          }}
+          className='mx-auto block text-sm text-muted-foreground transition-colors hover:text-[#7F77DD]'
+        >
+          {t('返回登录')}
+        </button>
       )}
 
       {/* 川邮·星语：参考 DeepSeek，登录/注册即代表已阅读并同意协议 */}
-      <p className='text-xs leading-relaxed text-muted-foreground'>
+      <p className='text-xs leading-relaxed text-center text-muted-foreground'>
         {t('注册登录即代表已阅读并同意')}
-        <Link to='/user-agreement' className='text-[#7F77DD] hover:underline'>
+        <a href='/user-agreement' className='text-[#7F77DD] hover:underline'>
           {t('《川邮·星语开放平台协议》')}
-        </Link>
+        </a>
         {t('与')}
-        <Link to='/privacy-policy' className='text-[#7F77DD] hover:underline'>
+        <a href='/privacy-policy' className='text-[#7F77DD] hover:underline'>
           {t('《隐私政策》')}
-        </Link>
+        </a>
       </p>
 
-      <Button
-        type='button'
-        onClick={mode === 'sms' ? handleSmsLogin : handlePasswordLogin}
-        disabled={isSubmitting}
-        className='w-full gap-2 bg-gradient-to-br from-[#378ADD] to-[#534AB7] text-white shadow-[0_4px_16px_rgba(55,138,221,0.32)] hover:opacity-90'
-      >
-        {isSubmitting ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
-        {isSignUp ? t('注 册') : t('登 录')}
-      </Button>
+      {/* 验证码登录说明（置于隐私政策之后）：未注册手机号通过验证码登录会自动注册 */}
+      {view === 'login' && mode === 'sms' && (
+        <p className='text-center text-xs text-muted-foreground/80'>
+          {t('未注册的手机号将自动注册')}
+        </p>
+      )}
 
       {/* 自研几何图形+颜色人机校验：点击"发送验证码"后弹出 */}
       <CaptchaDialog
         open={captchaOpen}
-        phone={captchaTargetRef.current === 'forgot' ? forgotPhone : phone}
+        phone={
+          captchaTargetRef.current === 'register'
+            ? regPhone
+            : captchaTargetRef.current === 'forgot'
+              ? forgotPhone
+              : phone
+        }
         onOpenChange={setCaptchaOpen}
         onVerified={handleCaptchaVerified}
       />

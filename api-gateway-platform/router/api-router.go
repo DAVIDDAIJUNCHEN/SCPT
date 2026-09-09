@@ -47,6 +47,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/phone/captcha", middleware.CaptchaRateLimit(), middleware.DisableCache(), controller.GetCaptchaChallenge)
 		apiRouter.GET("/phone/verification", middleware.SmsVerificationRateLimit(), middleware.DisableCache(), controller.SendPhoneCode)
 		apiRouter.POST("/user/phone/login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhoneLogin)
+		apiRouter.POST("/user/phone/register", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhoneRegister)
 		apiRouter.POST("/user/phone/password-login", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PhonePasswordLogin)
 		apiRouter.POST("/user/phone/set-password", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.SetPhonePassword)
 		apiRouter.POST("/user/phone/reset-password", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.SetPhonePassword)

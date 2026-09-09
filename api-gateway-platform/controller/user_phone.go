@@ -79,6 +79,74 @@ func SendPhoneCode(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// PhoneRegister POST /api/user/phone/register {"phone":"...","code":"...","password":"..."}
+// 手机号 + 验证码 + 密码注册：验证码正确且一次性；用户不存在→创建带密码用户并直接登录；
+// 已存在→返回"该手机号已注册"。区别于 PhoneLogin（验证码登录即自动注册、密码为空）。
+func PhoneRegister(c *gin.Context) {
+	if !common.PhoneRegisterEnabled {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "手机号注册功能未启用",
+		})
+		return
+	}
+	var req struct {
+		Phone    string `json:"phone"`
+		Code     string `json:"code"`
+		Password string `json:"password"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	phone, ok := normalizeChinaPhone(req.Phone)
+	if !ok || strings.TrimSpace(req.Code) == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if len(req.Password) < 8 {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "密码至少 8 位"})
+		return
+	}
+	if !common.VerifyCodeWithKey(phone, req.Code, common.PhoneVerificationPurpose) {
+		common.ApiErrorI18n(c, i18n.MsgUserVerificationCodeError)
+		return
+	}
+	// 验证码一次性：校验通过即删除
+	common.DeleteKey(phone, common.PhoneVerificationPurpose)
+
+	// 已存在 → 拒绝重复注册
+	if _, err := model.GetUserByPhone(phone, false); err == nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "该手机号已注册，请直接登录"})
+		return
+	}
+
+	// 创建带密码用户（区别于 autoRegisterByPhone 的空密码）
+	cleanUser := model.User{
+		Username:      phone,
+		Password:      req.Password,
+		DisplayName:   phone,
+		Phone:         phone,
+		PhoneVerified: true,
+		Role:          common.RoleCommonUser,
+	}
+	if err := cleanUser.Insert(0); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	user, err := model.GetUserById(cleanUser.Id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if user.Status != common.UserStatusEnabled {
+		common.ApiErrorI18n(c, i18n.MsgAuthUserBanned)
+		return
+	}
+	// 注册即登录
+	setupLogin(user, c)
+}
+
 // PhoneLogin POST /api/user/phone/login {"phone":"...","code":"..."}
 // 验证码正确 → 查 phone 用户；不存在则自动注册并登录（验证码登录即注册）
 func PhoneLogin(c *gin.Context) {

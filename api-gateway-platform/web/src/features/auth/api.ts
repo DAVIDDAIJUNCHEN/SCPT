@@ -145,6 +145,20 @@ export async function phoneLogin(
   return res.data
 }
 
+/** 手机号 + 验证码 + 密码注册（需先发码并经人机校验）；成功即登录 */
+export async function phoneRegister(
+  phone: string,
+  code: string,
+  password: string
+): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>(
+    '/api/user/phone/register',
+    { phone, code, password },
+    { skipAuthRefresh: true }
+  )
+  return res.data
+}
+
 /** 密码登录（账号支持手机号或用户名，用户需已设置密码） */
 export async function phonePasswordLogin(
   account: string,

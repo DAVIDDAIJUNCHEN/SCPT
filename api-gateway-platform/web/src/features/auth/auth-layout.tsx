@@ -85,17 +85,7 @@ export function AuthLayout({ children }: AuthLayoutProps) {
 
           {/* 右：登录卡片（精致 440px） */}
           <div className='mx-auto w-full max-w-[440px]'>
-            {/* 品牌名放登录卡正上方（移动端） */}
-            <div className='mb-4 text-center lg:hidden'>
-              <span className='text-2xl font-medium text-foreground'>{BRAND_NAME}</span>
-            </div>
             <div className='rounded-3xl border border-white/10 bg-[#1B2A4E]/55 p-6 shadow-[0_0_28px_rgba(55,138,221,0.2)] backdrop-blur-xl sm:p-7'>
-              {/* 桌面端：品牌名卡片内顶部 */}
-              <div className='mb-5 hidden text-center lg:block'>
-                <span className='text-2xl font-medium tracking-wide text-foreground'>
-                  {BRAND_NAME}
-                </span>
-              </div>
               {children}
             </div>
           </div>
