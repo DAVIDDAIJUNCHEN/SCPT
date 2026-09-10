@@ -1035,6 +1035,50 @@ export function ApiKeysMutateDrawer({
                           />
                           <FormField
                             control={form.control}
+                            name='content_guard_history_sanitize'
+                            render={({ field }) => (
+                              <FormItem className='pt-2'>
+                                <FormLabel className='text-sm'>
+                                  {t('会话防污染（历史消息净化）')}
+                                </FormLabel>
+                                <Select
+                                  items={[
+                                    { value: 'inherit', label: t('跟随全局') },
+                                    { value: 'on', label: t('开启（推荐）') },
+                                    { value: 'off', label: t('关闭（严格拦截）') },
+                                  ]}
+                                  onValueChange={field.onChange}
+                                  value={field.value || 'inherit'}
+                                >
+                                  <FormControl>
+                                    <SelectTrigger size='sm'>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                  </FormControl>
+                                  <SelectContent alignItemWithTrigger={false}>
+                                    <SelectGroup>
+                                      <SelectItem value='inherit'>
+                                        {t('跟随全局')}
+                                      </SelectItem>
+                                      <SelectItem value='on'>
+                                        {t('开启（推荐）')}
+                                      </SelectItem>
+                                      <SelectItem value='off'>
+                                        {t('关闭（严格拦截）')}
+                                      </SelectItem>
+                                    </SelectGroup>
+                                  </SelectContent>
+                                </Select>
+                                <FormDescription className='text-[10px]'>
+                                  {t(
+                                    '开启后仅拦截本次新输入，历史中命中的内容替换为占位符后照常转发，避免整段会话被卡死'
+                                  )}
+                                </FormDescription>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
                             name='content_guard_extra_output_words'
                             render={({ field }) => (
                               <FormItem className='pt-2'>

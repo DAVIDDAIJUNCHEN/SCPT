@@ -43,6 +43,8 @@ type ContentGuardConfig struct {
 
 	// BlockMode 拦截呈现方式："message"（返回合规提示正文）/ "error"（返回 4xx 错误）
 	BlockMode string
+	// HistorySanitize 会话防污染：历史消息命中时净化（true）还是整单拦截（false）
+	HistorySanitize bool
 
 	HarmfulWords   []string
 	InjectionWords []string
@@ -57,6 +59,7 @@ type contentGuardTokenRule struct {
 	InjectionBlock   *bool    `json:"injection_block,omitempty"`
 	OutputBlock      *bool    `json:"output_block,omitempty"`
 	BlockMode        *string  `json:"block_mode,omitempty"`
+	HistorySanitize  *bool    `json:"history_sanitize,omitempty"`
 	ExtraOutputWords []string `json:"extra_output_words,omitempty"`
 }
 
@@ -80,6 +83,7 @@ func BuildContentGuardConfig(tokenRuleJSON string) *ContentGuardConfig {
 		InjectionBlock: setting.ContentGuardInjectionBlock,
 		OutputBlock:    setting.ContentGuardOutputBlock,
 		BlockMode:      setting.ContentGuardBlockMode,
+		HistorySanitize: setting.ContentGuardHistorySanitize,
 		HarmfulWords:   setting.SplitLinesToWords(setting.ContentGuardHarmfulWords),
 		InjectionWords: setting.SplitLinesToWords(setting.ContentGuardInjectionWords),
 		OutputWords:    setting.SplitLinesToWords(setting.ContentGuardOutputWords),
@@ -111,6 +115,9 @@ func BuildContentGuardConfig(tokenRuleJSON string) *ContentGuardConfig {
 	}
 	if rule.BlockMode != nil {
 		cfg.BlockMode = *rule.BlockMode
+	}
+	if rule.HistorySanitize != nil {
+		cfg.HistorySanitize = *rule.HistorySanitize
 	}
 	if len(rule.ExtraOutputWords) > 0 {
 		for _, w := range rule.ExtraOutputWords {
@@ -276,7 +283,27 @@ func containsAnyWord(text string, words []string, caseInsensitive bool) (string,
 	return "", false
 }
 
-// CheckInputBlock 输入侧有害内容 / 注入检测，命中返回拦截原因
+// blockReasonOf 对给定文本执行有害/注入检测，命中返回原因
+func blockReasonOf(text string, cfg *ContentGuardConfig) (string, bool) {
+	if cfg == nil || text == "" {
+		return "", false
+	}
+	if cfg.HarmfulBlock {
+		if w, hit := containsAnyWord(text, cfg.HarmfulWords, false); hit {
+			return "有害内容: " + w, true
+		}
+	}
+	if cfg.InjectionBlock {
+		if w, hit := containsAnyWord(text, cfg.InjectionWords, true); hit {
+			return "注入检测: " + w, true
+		}
+	}
+	return "", false
+}
+
+// CheckInputBlock 输入侧整体检测（对全部消息拼接文本），命中返回拦截原因。
+// 注意：这是"严格模式"（历史消息净化关闭 / 非 OpenAI 协议时的回退路径），
+// 会把历史消息也纳入判断，可能导致会话被永久卡死 —— 参见 CheckAndSanitizeInput。
 func CheckInputBlock(request dto.Request, cfg *ContentGuardConfig) (string, bool) {
 	if request == nil || cfg == nil || !cfg.Enabled {
 		return "", false
@@ -288,17 +315,182 @@ func CheckInputBlock(request dto.Request, cfg *ContentGuardConfig) (string, bool
 	if meta == nil || meta.CombineText == "" {
 		return "", false
 	}
-	if cfg.HarmfulBlock {
-		if w, hit := containsAnyWord(meta.CombineText, cfg.HarmfulWords, false); hit {
-			return "有害内容: " + w, true
+	return blockReasonOf(meta.CombineText, cfg)
+}
+
+// ============================================================
+// 会话防污染：区分「最新输入」与「历史消息」
+//
+// 问题：原实现扫描全部消息拼接文本，一旦某一轮出现管控内容，该内容会长期留在
+// 客户端会话历史中 → 之后每轮（哪怕用户发的是合规内容）都被命中拦截 →
+// 整个任务窗口不可用（Agent 类客户端尤其明显，因为 Agent 会持续重发完整历史）。
+//
+// 解决：只对"最新一条 user 消息"做拦截；历史消息改为就地净化（替换为占位符）。
+// 净化的内容不会到达模型，因此不构成绕过。
+// ============================================================
+
+// openAIMessageList 取出可逐条处理的消息列表（目前只有 OpenAI 协议可写）
+func openAIMessageList(request dto.Request) (*dto.GeneralOpenAIRequest, bool) {
+	req, ok := request.(*dto.GeneralOpenAIRequest)
+	if !ok || req == nil || len(req.Messages) == 0 {
+		return nil, false
+	}
+	return req, true
+}
+
+// messageText 读取一条消息的文本（多模态仅取 text 分片）
+func messageText(m *dto.Message) string {
+	if m == nil {
+		return ""
+	}
+	if m.IsStringContent() {
+		return m.StringContent()
+	}
+	var sb strings.Builder
+	for _, part := range m.ParseContent() {
+		if part.Type == dto.ContentTypeText {
+			sb.WriteString(part.Text)
 		}
 	}
-	if cfg.InjectionBlock {
-		if w, hit := containsAnyWord(meta.CombineText, cfg.InjectionWords, true); hit {
-			return "注入检测: " + w, true
+	return sb.String()
+}
+
+// replaceIgnoreCase 大小写不敏感地替换全部出现（不可用正则，避免 compile 开销与转义坑）
+func replaceIgnoreCase(text, word, repl string) (string, bool) {
+	if word == "" {
+		return text, false
+	}
+	lowerText := strings.ToLower(text)
+	lowerWord := strings.ToLower(word)
+	if !strings.Contains(lowerText, lowerWord) {
+		return text, false
+	}
+	var sb strings.Builder
+	i := 0
+	for {
+		idx := strings.Index(lowerText[i:], lowerWord)
+		if idx < 0 {
+			sb.WriteString(text[i:])
+			break
+		}
+		start := i + idx
+		sb.WriteString(text[i:start])
+		sb.WriteString(repl)
+		i = start + len(word)
+	}
+	return sb.String(), true
+}
+
+// sanitizeMessage 就地净化一条消息中的命中词，返回是否有改动
+func sanitizeMessage(m *dto.Message, cfg *ContentGuardConfig) bool {
+	if m == nil || cfg == nil {
+		return false
+	}
+	placeholder := setting.ContentGuardSanitizePlaceholder
+	if placeholder == "" {
+		placeholder = "【内容已被安全策略屏蔽】"
+	}
+
+	apply := func(text string) (string, bool) {
+		changed := false
+		if cfg.HarmfulBlock {
+			for _, w := range cfg.HarmfulWords {
+				if next, hit := replaceIgnoreCase(text, w, placeholder); hit {
+					text, changed = next, true
+				}
+			}
+		}
+		if cfg.InjectionBlock {
+			for _, w := range cfg.InjectionWords {
+				if next, hit := replaceIgnoreCase(text, w, placeholder); hit {
+					text, changed = next, true
+				}
+			}
+		}
+		return text, changed
+	}
+
+	if m.IsStringContent() {
+		next, hit := apply(m.StringContent())
+		if hit {
+			m.SetStringContent(next)
+		}
+		return hit
+	}
+
+	contents := m.ParseContent()
+	if len(contents) == 0 {
+		return false
+	}
+	modified := false
+	for j := range contents {
+		if contents[j].Type != dto.ContentTypeText || contents[j].Text == "" {
+			continue
+		}
+		if next, hit := apply(contents[j].Text); hit {
+			contents[j].Text = next
+			modified = true
 		}
 	}
-	return "", false
+	if modified {
+		m.Content = contents
+	}
+	return modified
+}
+
+// CheckAndSanitizeInput 输入侧统一入口（会话防污染版）。
+//
+// 返回：(拦截原因, 是否拦截, 被净化的历史消息条数)
+//   - 最新一条消息且角色为 user 命中 → 拦截（这是用户本次输入）
+//   - 其他历史消息命中 → 就地净化为占位符，不拦截，让会话可以继续
+//
+// 净化关闭（cfg.HistorySanitize=false）时退化为旧的"整体拦截"语义。
+// 非 OpenAI 协议无法逐条处理，同样退化为整体拦截（保守，不放过违规内容）。
+func CheckAndSanitizeInput(request dto.Request, cfg *ContentGuardConfig) (string, bool, int) {
+	if request == nil || cfg == nil || !cfg.Enabled {
+		return "", false, 0
+	}
+	if !cfg.HarmfulBlock && !cfg.InjectionBlock {
+		return "", false, 0
+	}
+
+	// 未开启净化 → 保持旧的严格语义
+	if !cfg.HistorySanitize {
+		if reason, hit := CheckInputBlock(request, cfg); hit {
+			return reason, true, 0
+		}
+		return "", false, 0
+	}
+
+	req, ok := openAIMessageList(request)
+	if !ok {
+		// 非 OpenAI 协议：无法定位/改写单条消息，保守走整体拦截
+		if reason, hit := CheckInputBlock(request, cfg); hit {
+			return reason, true, 0
+		}
+		return "", false, 0
+	}
+
+	// 1) 最新一条消息是本次输入：命中即拦截
+	lastIdx := len(req.Messages) - 1
+	lastIsUserInput := strings.EqualFold(strings.TrimSpace(req.Messages[lastIdx].Role), "user")
+	if lastIsUserInput {
+		if reason, hit := blockReasonOf(messageText(&req.Messages[lastIdx]), cfg); hit {
+			return reason, true, 0
+		}
+	}
+
+	// 2) 其余（历史）消息：命中则净化，来源清洁后继续转发
+	sanitized := 0
+	for i := range req.Messages {
+		if i == lastIdx && lastIsUserInput {
+			continue // 已在上一步判定为合规
+		}
+		if sanitizeMessage(&req.Messages[i], cfg) {
+			sanitized++
+		}
+	}
+	return "", false, sanitized
 }
 
 // CheckOutputBlock 输出侧高风险词检测，命中返回拦截原因

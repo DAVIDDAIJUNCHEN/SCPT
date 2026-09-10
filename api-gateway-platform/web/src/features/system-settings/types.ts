@@ -386,6 +386,9 @@ export type SecuritySettings = {
   ContentGuardOutputBlock: boolean
   // 拦截呈现方式：message=返回合规提示正文 / error=返回 4xx 错误码
   ContentGuardBlockMode: string
+  // 会话防污染：历史消息净化（true=只拦新输入，历史命中改净化）
+  ContentGuardHistorySanitize: boolean
+  ContentGuardSanitizePlaceholder: string
   ContentGuardRefusalTemplate: string
   ContentGuardHarmfulWords: string
   ContentGuardInjectionWords: string

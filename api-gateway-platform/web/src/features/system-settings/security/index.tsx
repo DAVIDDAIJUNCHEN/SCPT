@@ -40,6 +40,8 @@ const defaultSecuritySettings: SecuritySettings = {
   ContentGuardInjectionBlock: false,
   ContentGuardOutputBlock: false,
   ContentGuardBlockMode: 'message',
+  ContentGuardHistorySanitize: true,
+  ContentGuardSanitizePlaceholder: '',
   ContentGuardRefusalTemplate: '',
   ContentGuardHarmfulWords: '',
   ContentGuardInjectionWords: '',

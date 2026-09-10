@@ -67,6 +67,10 @@ const SECURITY_SECTIONS = [
           ContentGuardInjectionBlock: settings.ContentGuardInjectionBlock,
           ContentGuardOutputBlock: settings.ContentGuardOutputBlock,
           ContentGuardBlockMode: settings.ContentGuardBlockMode || 'message',
+          ContentGuardHistorySanitize:
+            settings.ContentGuardHistorySanitize !== false,
+          ContentGuardSanitizePlaceholder:
+            settings.ContentGuardSanitizePlaceholder || '',
           ContentGuardRefusalTemplate:
             settings.ContentGuardRefusalTemplate || '',
           ContentGuardHarmfulWords: settings.ContentGuardHarmfulWords,

@@ -58,6 +58,8 @@ const contentGuardSchema = z.object({
   ContentGuardInjectionBlock: z.boolean(),
   ContentGuardOutputBlock: z.boolean(),
   ContentGuardBlockMode: z.string(),
+  ContentGuardHistorySanitize: z.boolean(),
+  ContentGuardSanitizePlaceholder: z.string().optional(),
   ContentGuardRefusalTemplate: z.string().optional(),
   ContentGuardHarmfulWords: z.string().optional(),
   ContentGuardInjectionWords: z.string().optional(),
@@ -220,6 +222,52 @@ export function ContentGuardSection({
               )}
             />
           </div>
+
+          <FormField
+            control={form.control}
+            name='ContentGuardHistorySanitize'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('会话防污染：历史消息净化（强烈建议开启）')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      '开启后只拦截「本次新输入」，历史消息里命中的内容会被替换为占位符后照常转发。关闭后任意位置命中即整单拦截——注意：客户端会持续重发完整会话历史，这会导致某一轮违规后整个任务窗口永久不可用（Agent 类客户端尤其明显）。净化只是不告知用户，被剔除的内容同样不会到达模型。'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='ContentGuardSanitizePlaceholder'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('净化占位符')}</FormLabel>
+                <FormControl>
+                  <Textarea
+                    rows={2}
+                    placeholder={t('【内容已被安全策略屏蔽】')}
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    '历史消息中被屏蔽内容的替换文本。留空则使用默认值。'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           <FormField
             control={form.control}

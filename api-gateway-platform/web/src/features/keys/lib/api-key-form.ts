@@ -58,6 +58,7 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       content_guard_block_mode: z
         .enum(['inherit', 'message', 'error'])
         .optional(),
+      content_guard_history_sanitize: z.enum(['inherit', 'on', 'off']).optional(),
       content_guard_extra_output_words: z.string().optional(),
     })
     .superRefine((data, ctx) => {
@@ -138,6 +139,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   content_guard_injection_block: true,
   content_guard_output_block: true,
   content_guard_block_mode: 'inherit',
+  content_guard_history_sanitize: 'inherit',
   content_guard_extra_output_words: '',
 }
 
@@ -169,6 +171,7 @@ export function buildContentGuardPayload(data: {
   content_guard_injection_block?: boolean
   content_guard_output_block?: boolean
   content_guard_block_mode?: 'inherit' | 'message' | 'error'
+  content_guard_history_sanitize?: 'inherit' | 'on' | 'off'
   content_guard_extra_output_words?: string
 }): string {
   if (data.content_guard_mode !== 'custom') {
@@ -186,6 +189,11 @@ export function buildContentGuardPayload(data: {
       ? { block_mode: blockMode }
       : {}
 
+  // inherit 表示沿用全局设置，不在 per-token JSON 中写入
+  const hs = data.content_guard_history_sanitize
+  const historySanitizeField =
+    hs === 'on' ? { history_sanitize: true } : hs === 'off' ? { history_sanitize: false } : {}
+
   return JSON.stringify({
     enabled: true,
     pii_redact: !!data.content_guard_pii_redact,
@@ -193,6 +201,7 @@ export function buildContentGuardPayload(data: {
     injection_block: !!data.content_guard_injection_block,
     output_block: !!data.content_guard_output_block,
     ...blockModeField,
+    ...historySanitizeField,
     ...(extraWords.length > 0 ? { extra_output_words: extraWords } : {}),
   })
 }
@@ -207,6 +216,7 @@ export function parseContentGuard(raw?: string | null): {
   content_guard_injection_block: boolean
   content_guard_output_block: boolean
   content_guard_block_mode: 'inherit' | 'message' | 'error'
+  content_guard_history_sanitize: 'inherit' | 'on' | 'off'
   content_guard_extra_output_words: string
 } {
   const fallback = {
@@ -216,6 +226,7 @@ export function parseContentGuard(raw?: string | null): {
     content_guard_injection_block: true,
     content_guard_output_block: true,
     content_guard_block_mode: 'inherit' as const,
+    content_guard_history_sanitize: 'inherit' as const,
     content_guard_extra_output_words: '',
   }
   if (!raw) {
@@ -227,6 +238,9 @@ export function parseContentGuard(raw?: string | null): {
     const rawMode = parsed.block_mode
     const blockMode =
       rawMode === 'message' || rawMode === 'error' ? rawMode : 'inherit'
+    const rawHs = parsed.history_sanitize
+    const historySanitize =
+      rawHs === true ? 'on' : rawHs === false ? 'off' : 'inherit'
     return {
       content_guard_mode: 'custom',
       content_guard_pii_redact: !!parsed.pii_redact,
@@ -234,6 +248,7 @@ export function parseContentGuard(raw?: string | null): {
       content_guard_injection_block: !!parsed.injection_block,
       content_guard_output_block: !!parsed.output_block,
       content_guard_block_mode: blockMode,
+      content_guard_history_sanitize: historySanitize,
       content_guard_extra_output_words: Array.isArray(extra)
         ? extra.join('\n')
         : '',

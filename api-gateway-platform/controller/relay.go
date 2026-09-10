@@ -125,12 +125,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	// ---- AlloMax 二次开发：输入侧内容管控（ContentGuard）----
 	// 位置说明：必须在 GenRelayInfo 之前
 	//   1) 有害/注入拦截 → 预扣费前返回 → 天然 0 计费
-	//   2) PII 脱敏 → 改写内存 request，经 info.Request 传到上游（无需改写 body）
+	//   2) 历史消息净化 / PII 脱敏 → 改写内存 request，经 info.Request 传到上游（无需改写 body）
 	if contentGuard := service.ResolveContentGuard(c); contentGuard.Enabled {
 		// 缓存模型名：拦截提示需要回填 model 字段（不依赖 relayInfo，因其 OriginModelName 可能为空）
 		service.CacheRequestModelName(c)
 		if contentGuard.InputEnabled() {
-			if reason, hit := service.CheckInputBlock(request, contentGuard); hit {
+			// 会话防污染：只拦「最新一条 user 消息」；历史消息命中则就地净化后放行。
+			// 否则客户端（尤其 Agent）会持续重发含违规内容的历史，导致整个会话永久被拦。
+			reason, blocked, sanitized := service.CheckAndSanitizeInput(request, contentGuard)
+			if sanitized > 0 {
+				logger.LogInfo(c, fmt.Sprintf("content guard: sanitized %d historical message(s)", sanitized))
+				recordContentGuardSanitize(c, sanitized, request)
+			}
+			if blocked {
 				logger.LogWarn(c, "content guard blocked input: "+reason)
 
 				// 呈现方式（默认 message）：返回 HTTP 200 + 一条「合规提示」正文，
@@ -319,6 +326,41 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 // recordContentGuardBlock 记录内容管控（ContentGuard）输入侧拦截的审计日志。
 // 输入侧拦截发生在渠道选择之前，不走 processChannelError，故此处 channelId 记 0。
+// recordContentGuardSanitize 记录"历史消息净化"审计。
+// 与拦截不同，净化不阻断请求，但属于安全事件，需留痕（否则"某轮为何突然正常"无从追溯）。
+func recordContentGuardSanitize(c *gin.Context, count int, request dto.Request) {
+	modelName := c.GetString("original_model")
+	if modelName == "" {
+		if req, ok := request.(*dto.GeneralOpenAIRequest); ok && req != nil {
+			modelName = req.Model
+		}
+	}
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	reason := fmt.Sprintf("历史消息净化 %d 条（命中内容已从转发给模型的消息中剔除）", count)
+	other := map[string]interface{}{
+		"admin_info": map[string]interface{}{
+			"content_guard_sanitize": count,
+			"reject_stage":           "history_sanitize",
+			"exposure":               "passthrough(请求正常放行)",
+		},
+	}
+	model.RecordErrorLog(c,
+		c.GetInt("id"),
+		0,
+		modelName,
+		c.GetString("token_name"),
+		reason,
+		c.GetInt("token_id"),
+		int(time.Since(startTime).Seconds()),
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream),
+		c.GetString("group"),
+		other,
+	)
+}
+
 func recordContentGuardBlock(c *gin.Context, reason string, request dto.Request, deliveredAsMessage bool) {
 	modelName := c.GetString("original_model")
 	if modelName == "" {

@@ -192,6 +192,8 @@ func InitOptionMap() {
 	common.OptionMap["ContentGuardOutputWords"] = setting.ContentGuardOutputWords
 	common.OptionMap["ContentGuardBlockMode"] = setting.ContentGuardBlockMode
 	common.OptionMap["ContentGuardRefusalTemplate"] = setting.ContentGuardRefusalTemplate
+	common.OptionMap["ContentGuardHistorySanitize"] = strconv.FormatBool(setting.ContentGuardHistorySanitize)
+	common.OptionMap["ContentGuardSanitizePlaceholder"] = setting.ContentGuardSanitizePlaceholder
 	// AlloMax 二次开发：响应缓存（Response Cache）
 	common.OptionMap["ResponseCacheEnabled"] = strconv.FormatBool(setting.ResponseCacheEnabled)
 	common.OptionMap["ResponseCacheTTLSeconds"] = strconv.Itoa(setting.ResponseCacheTTLSeconds)
@@ -329,7 +331,7 @@ func updateOptionMap(key string, value string) (err error) {
 	// （否则选项 API / 界面设置不生效）。
 	switch key {
 	case "ContentGuardEnabled", "ContentGuardPIIRedact", "ContentGuardHarmfulBlock",
-		"ContentGuardInjectionBlock", "ContentGuardOutputBlock",
+		"ContentGuardInjectionBlock", "ContentGuardOutputBlock", "ContentGuardHistorySanitize",
 		"ResponseCacheEnabled", "ResponseCacheOnlyDeterministic",
 		"ModelLevelRateLimitEnabled":
 		boolValue := value == "true"
@@ -344,6 +346,8 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.ContentGuardInjectionBlock = boolValue
 		case "ContentGuardOutputBlock":
 			setting.ContentGuardOutputBlock = boolValue
+		case "ContentGuardHistorySanitize":
+			setting.ContentGuardHistorySanitize = boolValue
 		case "ResponseCacheEnabled":
 			setting.ResponseCacheEnabled = boolValue
 		case "ResponseCacheOnlyDeterministic":
@@ -700,6 +704,8 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.ContentGuardBlockMode = value
 	case "ContentGuardRefusalTemplate":
 		setting.ContentGuardRefusalTemplate = value
+	case "ContentGuardSanitizePlaceholder":
+		setting.ContentGuardSanitizePlaceholder = value
 	// AlloMax 二次开发：模型级限流规则 JSON
 	case "ModelLevelRateLimit":
 		setting.ModelLevelRateLimitFromString(value)

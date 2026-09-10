@@ -67,6 +67,28 @@ var ContentGuardBlockMode = "message"
 // ContentGuardRefusalTemplate 合规提示正文模板，其中 %s 会被替换为具体拦截原因
 var ContentGuardRefusalTemplate = "抱歉，你的提问未通过平台内容安全策略（%s），已被拦截。请调整表述后重试，如需帮助可联系平台管理员。"
 
+// ---- 会话防污染（历史消息净化）----
+
+// ContentGuardHistorySanitize 历史消息净化（默认开启，强烈建议保持开启）。
+//
+// 背景：输入侧检测若扫描「全部消息」，一旦某一轮出现过管控内容，该内容就会长期停留在
+// 客户端会话历史里 —— 之后**每一轮**（哪怕用户发的是完全合规的内容）都会被命中拦截，
+// 导致整个任务窗口不可用（Agent 类客户端尤其明显）。
+//
+// 开启后采用差异化处理：
+//   - **最新一条消息**（且为 user 角色）命中 → 拦截（这才是"用户这次的输入"）
+//   - **历史消息**命中 → 就地把命中词替换为占位符后再转发上游（不拦截）
+//
+// 安全性：被净化的内容**不会被送到模型**，因此不存在"靠翻历史绕过管控"的路径；
+// 拦截语义 = 告知用户，净化语义 = 静默剔除，两者都保证模型看不到违规内容。
+//
+// 关闭后恢复旧行为：任意位置命中即整单拦截（更严格，但会让会话卡死）。
+var ContentGuardHistorySanitize = true
+
+// ContentGuardSanitizePlaceholder 历史消息中被屏蔽内容的替换文本
+var ContentGuardSanitizePlaceholder = "【内容已被安全策略屏蔽】"
+
+
 
 // SplitLinesToWords 把换行分隔的词表转为切片（去空白、去空行）
 func SplitLinesToWords(s string) []string {
