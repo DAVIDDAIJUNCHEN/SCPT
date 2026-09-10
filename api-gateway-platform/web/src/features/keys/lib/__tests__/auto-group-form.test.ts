@@ -54,6 +54,7 @@ const baseApiKey: ApiKey = {
   rate_limit_rpm: 0,
   rate_limit_tpm: 0,
   max_concurrency: 0,
+  content_guard: '',
 }
 
 describe('API key Auto group form mapping', () => {

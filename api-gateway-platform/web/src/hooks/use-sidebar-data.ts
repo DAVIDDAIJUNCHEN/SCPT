@@ -170,6 +170,9 @@ export function useSidebarData(): SidebarData {
             url: '/system-settings/site',
             activeUrls: ['/system-settings'],
             icon: Settings,
+            // 系统设置走 /api/option/（RootAuth）→ 仅超级管理员可用，
+            // 置 requiredRole 避免普通管理员看到入口却处处 403
+            requiredRole: ROLE.SUPER_ADMIN,
           },
           {
             title: t('Audit Logs'),

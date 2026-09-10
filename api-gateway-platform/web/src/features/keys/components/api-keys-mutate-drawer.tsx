@@ -828,6 +828,175 @@ export function ApiKeysMutateDrawer({
                         )}
                       />
                     </div>
+
+                    {/* 川邮·星语：内容管控（ContentGuard）*/}
+                    <div className='flex flex-col gap-3 border-t pt-4'>
+                      <FormField
+                        control={form.control}
+                        name='content_guard_mode'
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t('内容管控')}</FormLabel>
+                            <FormControl>
+                              <div className='flex gap-2'>
+                                <Button
+                                  type='button'
+                                  size='sm'
+                                  variant={
+                                    field.value === 'inherit'
+                                      ? 'default'
+                                      : 'outline'
+                                  }
+                                  onClick={() => field.onChange('inherit')}
+                                >
+                                  {t('跟随全局')}
+                                </Button>
+                                <Button
+                                  type='button'
+                                  size='sm'
+                                  variant={
+                                    field.value === 'custom'
+                                      ? 'default'
+                                      : 'outline'
+                                  }
+                                  onClick={() => field.onChange('custom')}
+                                >
+                                  {t('自定义')}
+                                </Button>
+                              </div>
+                            </FormControl>
+                            <FormDescription className='text-[10px]'>
+                              {t(
+                                '跟随全局=继承系统设置；自定义=仅本令牌生效（优先于全局）'
+                              )}
+                            </FormDescription>
+                          </FormItem>
+                        )}
+                      />
+
+                      {form.watch('content_guard_mode') === 'custom' && (
+                        <div className='flex flex-col gap-1 rounded-md border p-3'>
+                          <FormField
+                            control={form.control}
+                            name='content_guard_pii_redact'
+                            render={({ field }) => (
+                              <FormItem
+                                className={sideDrawerSwitchItemClassName()}
+                              >
+                                <div className='flex flex-col gap-0.5'>
+                                  <FormLabel className='text-sm'>
+                                    {t('PII 脱敏')}
+                                  </FormLabel>
+                                  <FormDescription className='text-[10px]'>
+                                    {t('手机号/身份证/银行卡脱敏后放行')}
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={!!field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name='content_guard_harmful_block'
+                            render={({ field }) => (
+                              <FormItem
+                                className={sideDrawerSwitchItemClassName()}
+                              >
+                                <div className='flex flex-col gap-0.5'>
+                                  <FormLabel className='text-sm'>
+                                    {t('有害内容拦截')}
+                                  </FormLabel>
+                                  <FormDescription className='text-[10px]'>
+                                    {t('命中有害词表即拦截（不计费）')}
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={!!field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name='content_guard_injection_block'
+                            render={({ field }) => (
+                              <FormItem
+                                className={sideDrawerSwitchItemClassName()}
+                              >
+                                <div className='flex flex-col gap-0.5'>
+                                  <FormLabel className='text-sm'>
+                                    {t('注入检测')}
+                                  </FormLabel>
+                                  <FormDescription className='text-[10px]'>
+                                    {t('检测忽略之前/越狱等注入特征')}
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={!!field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name='content_guard_output_block'
+                            render={({ field }) => (
+                              <FormItem
+                                className={sideDrawerSwitchItemClassName()}
+                              >
+                                <div className='flex flex-col gap-0.5'>
+                                  <FormLabel className='text-sm'>
+                                    {t('输出侧拦截')}
+                                  </FormLabel>
+                                  <FormDescription className='text-[10px]'>
+                                    {t('拦截模型输出中的高风险词（不计费）')}
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={!!field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name='content_guard_extra_output_words'
+                            render={({ field }) => (
+                              <FormItem className='pt-2'>
+                                <FormLabel className='text-sm'>
+                                  {t('专属输出拦截词')}
+                                </FormLabel>
+                                <FormControl>
+                                  <Textarea
+                                    {...field}
+                                    className='min-h-16 resize-none'
+                                    placeholder={t('一行一个（可留空）')}
+                                    rows={2}
+                                  />
+                                </FormControl>
+                                <FormDescription className='text-[10px]'>
+                                  {t('仅本令牌生效，追加到全局输出词表')}
+                                </FormDescription>
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </CollapsibleContent>
               </SideDrawerSection>

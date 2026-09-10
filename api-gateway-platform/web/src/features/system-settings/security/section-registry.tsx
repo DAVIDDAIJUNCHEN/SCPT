@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { ContentGuardSection } from '../request-limits/content-guard-section'
 import { RateLimitSection } from '../request-limits/rate-limit-section'
 import { SensitiveWordsSection } from '../request-limits/sensitive-words-section'
 import { SSRFSection } from '../request-limits/ssrf-section'
@@ -50,6 +51,24 @@ const SECURITY_SECTIONS = [
           CheckSensitiveEnabled: settings.CheckSensitiveEnabled,
           CheckSensitiveOnPromptEnabled: settings.CheckSensitiveOnPromptEnabled,
           SensitiveWords: settings.SensitiveWords,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'content-guard',
+    titleKey: '内容管控',
+    build: (settings: SecuritySettings) => (
+      <ContentGuardSection
+        defaultValues={{
+          ContentGuardEnabled: settings.ContentGuardEnabled,
+          ContentGuardPIIRedact: settings.ContentGuardPIIRedact,
+          ContentGuardHarmfulBlock: settings.ContentGuardHarmfulBlock,
+          ContentGuardInjectionBlock: settings.ContentGuardInjectionBlock,
+          ContentGuardOutputBlock: settings.ContentGuardOutputBlock,
+          ContentGuardHarmfulWords: settings.ContentGuardHarmfulWords,
+          ContentGuardInjectionWords: settings.ContentGuardInjectionWords,
+          ContentGuardOutputWords: settings.ContentGuardOutputWords,
         }}
       />
     ),

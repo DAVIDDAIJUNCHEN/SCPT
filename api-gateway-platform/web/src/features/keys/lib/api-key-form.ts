@@ -49,6 +49,13 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       rate_limit_rpm: z.number().min(0).int().optional(),
       rate_limit_tpm: z.number().min(0).int().optional(),
       max_concurrency: z.number().min(0).int().optional(),
+      // 川邮·星语：内容管控（ContentGuard）
+      content_guard_mode: z.enum(['inherit', 'custom']),
+      content_guard_pii_redact: z.boolean().optional(),
+      content_guard_harmful_block: z.boolean().optional(),
+      content_guard_injection_block: z.boolean().optional(),
+      content_guard_output_block: z.boolean().optional(),
+      content_guard_extra_output_words: z.string().optional(),
     })
     .superRefine((data, ctx) => {
       if (data.group === 'auto') {
@@ -122,6 +129,12 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   rate_limit_rpm: 0,
   rate_limit_tpm: 0,
   max_concurrency: 0,
+  content_guard_mode: 'inherit',
+  content_guard_pii_redact: true,
+  content_guard_harmful_block: true,
+  content_guard_injection_block: true,
+  content_guard_output_block: true,
+  content_guard_extra_output_words: '',
 }
 
 export function getApiKeyFormDefaultValues(
@@ -133,6 +146,81 @@ export function getApiKeyFormDefaultValues(
     auto_groups_mode: 'inherit',
     auto_groups: [],
     cross_group_retry: defaultUseAutoGroup,
+  }
+}
+
+// ============================================================================
+// ContentGuard（川邮·星语：内容管控）
+// ============================================================================
+
+/**
+ * 表单值 → content_guard JSON 字符串。
+ * mode=inherit 时返回空串（表示"跟随全局"，后端按全局设置生效）；
+ * mode=custom 时把 4 个开关与专属输出词序列化为 JSON。
+ */
+export function buildContentGuardPayload(data: {
+  content_guard_mode?: 'inherit' | 'custom'
+  content_guard_pii_redact?: boolean
+  content_guard_harmful_block?: boolean
+  content_guard_injection_block?: boolean
+  content_guard_output_block?: boolean
+  content_guard_extra_output_words?: string
+}): string {
+  if (data.content_guard_mode !== 'custom') {
+    return ''
+  }
+  const extraWords = (data.content_guard_extra_output_words || '')
+    .split('\n')
+    .map((word) => word.trim())
+    .filter(Boolean)
+
+  return JSON.stringify({
+    enabled: true,
+    pii_redact: !!data.content_guard_pii_redact,
+    harmful_block: !!data.content_guard_harmful_block,
+    injection_block: !!data.content_guard_injection_block,
+    output_block: !!data.content_guard_output_block,
+    ...(extraWords.length > 0 ? { extra_output_words: extraWords } : {}),
+  })
+}
+
+/**
+ * content_guard JSON 字符串 → 表单值（空/非法时回退为"跟随全局"）。
+ */
+export function parseContentGuard(raw?: string | null): {
+  content_guard_mode: 'inherit' | 'custom'
+  content_guard_pii_redact: boolean
+  content_guard_harmful_block: boolean
+  content_guard_injection_block: boolean
+  content_guard_output_block: boolean
+  content_guard_extra_output_words: string
+} {
+  const fallback = {
+    content_guard_mode: 'inherit' as const,
+    content_guard_pii_redact: true,
+    content_guard_harmful_block: true,
+    content_guard_injection_block: true,
+    content_guard_output_block: true,
+    content_guard_extra_output_words: '',
+  }
+  if (!raw) {
+    return fallback
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const extra = parsed.extra_output_words
+    return {
+      content_guard_mode: 'custom',
+      content_guard_pii_redact: !!parsed.pii_redact,
+      content_guard_harmful_block: !!parsed.harmful_block,
+      content_guard_injection_block: !!parsed.injection_block,
+      content_guard_output_block: !!parsed.output_block,
+      content_guard_extra_output_words: Array.isArray(extra)
+        ? extra.join('\n')
+        : '',
+    }
+  } catch {
+    return fallback
   }
 }
 
@@ -174,6 +262,8 @@ export function transformFormDataToPayload(
     max_concurrency: data.max_concurrency && data.max_concurrency > 0
       ? data.max_concurrency
       : 0,
+    // 川邮·星语：内容管控（inherit → 空串表示跟随全局）
+    content_guard: buildContentGuardPayload(data),
   }
 }
 
@@ -215,5 +305,7 @@ export function transformApiKeyToFormDefaults(
     rate_limit_rpm: apiKey.rate_limit_rpm || undefined,
     rate_limit_tpm: apiKey.rate_limit_tpm || undefined,
     max_concurrency: apiKey.max_concurrency || undefined,
+    // 川邮·星语：内容管控回填
+    ...parseContentGuard(apiKey.content_guard),
   }
 }

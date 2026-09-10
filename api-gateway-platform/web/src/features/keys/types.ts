@@ -50,6 +50,8 @@ export const apiKeySchema = z.object({
   rate_limit_rpm: z.number().optional().default(0),
   rate_limit_tpm: z.number().optional().default(0),
   max_concurrency: z.number().optional().default(0),
+  // 川邮·星语：内容管控（ContentGuard，JSON 字符串；空=跟随全局）
+  content_guard: z.string().nullish().default(''),
 })
 
 export type ApiKey = z.infer<typeof apiKeySchema>
@@ -102,6 +104,8 @@ export interface ApiKeyFormData {
   rate_limit_rpm: number
   rate_limit_tpm: number
   max_concurrency: number
+  // 川邮·星语：内容管控（JSON 字符串；空=跟随全局）
+  content_guard: string
 }
 
 export interface TokenAutoGroupsConfig {
