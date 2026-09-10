@@ -107,7 +107,7 @@ function buildChatSample(lang: Lang, ctx: SampleContext): string {
   if (lang === 'curl') {
     return [
       `curl ${url} \\`,
-      `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
+      `  -H "Authorization: Bearer ${ctx.apiKeyEnv}" \\`,
       `  -H "Content-Type: application/json" \\`,
       `  -d '${bodyJson.replace(/\n/g, '\n     ')}'`,
     ].join('\n')
@@ -119,7 +119,7 @@ function buildChatSample(lang: Lang, ctx: SampleContext): string {
       '',
       'client = OpenAI(',
       `    base_url="${ctx.baseUrl}/v1",`,
-      `    api_key="<YOUR_API_KEY>",`,
+      `    api_key="YOUR_API_KEY",`,
       ')',
       '',
       isResponses
@@ -134,7 +134,7 @@ function buildChatSample(lang: Lang, ctx: SampleContext): string {
       '',
       `const client = new OpenAI({`,
       `  baseURL: '${ctx.baseUrl}/v1',`,
-      `  apiKey: process.env.${ctx.apiKeyEnv},`,
+      `  apiKey: '${ctx.apiKeyEnv}',`,
       `})`,
       '',
       isResponses
@@ -147,7 +147,7 @@ function buildChatSample(lang: Lang, ctx: SampleContext): string {
     `const response = await fetch('${url}', {`,
     `  method: 'POST',`,
     `  headers: {`,
-    `    Authorization: \`Bearer \${process.env.${ctx.apiKeyEnv}}\`,`,
+    `    Authorization: 'Bearer ${ctx.apiKeyEnv}',`,
     `    'Content-Type': 'application/json',`,
     `  },`,
     `  body: JSON.stringify(${bodyJson}),`,
@@ -174,7 +174,7 @@ function buildAnthropicSample(lang: Lang, ctx: SampleContext): string {
     )
     return [
       `curl ${url} \\`,
-      `  -H "x-api-key: $${ctx.apiKeyEnv}" \\`,
+      `  -H "x-api-key: ${ctx.apiKeyEnv}" \\`,
       `  -H "anthropic-version: 2023-06-01" \\`,
       `  -H "Content-Type: application/json" \\`,
       `  -d '${body.replace(/\n/g, '\n     ')}'`,
@@ -186,7 +186,7 @@ function buildAnthropicSample(lang: Lang, ctx: SampleContext): string {
       '',
       'client = anthropic.Anthropic(',
       `    base_url="${ctx.baseUrl}",`,
-      `    api_key="<YOUR_API_KEY>",`,
+      `    api_key="YOUR_API_KEY",`,
       ')',
       '',
       `message = client.messages.create(`,
@@ -204,7 +204,7 @@ function buildAnthropicSample(lang: Lang, ctx: SampleContext): string {
       '',
       `const client = new Anthropic({`,
       `  baseURL: '${ctx.baseUrl}',`,
-      `  apiKey: process.env.${ctx.apiKeyEnv},`,
+      `  apiKey: '${ctx.apiKeyEnv}',`,
       `})`,
       '',
       `const message = await client.messages.create({`,
@@ -220,7 +220,7 @@ function buildAnthropicSample(lang: Lang, ctx: SampleContext): string {
     `const response = await fetch('${url}', {`,
     `  method: 'POST',`,
     `  headers: {`,
-    `    'x-api-key': process.env.${ctx.apiKeyEnv},`,
+    `    'x-api-key': '${ctx.apiKeyEnv}',`,
     `    'anthropic-version': '2023-06-01',`,
     `    'Content-Type': 'application/json',`,
     `  },`,
@@ -237,7 +237,7 @@ function buildAnthropicSample(lang: Lang, ctx: SampleContext): string {
 }
 
 function buildGeminiSample(lang: Lang, ctx: SampleContext): string {
-  const url = `${ctx.baseUrl}${ctx.endpointPath}?key=$${ctx.apiKeyEnv}`
+  const url = `${ctx.baseUrl}${ctx.endpointPath}?key=${ctx.apiKeyEnv}`
   const userMessage = 'Explain quantum entanglement in one paragraph.'
 
   if (lang === 'curl') {
@@ -256,7 +256,7 @@ function buildGeminiSample(lang: Lang, ctx: SampleContext): string {
     return [
       'import google.generativeai as genai',
       '',
-      `genai.configure(api_key="<YOUR_API_KEY>")`,
+      `genai.configure(api_key="YOUR_API_KEY")`,
       '',
       `model = genai.GenerativeModel("${ctx.modelName}")`,
       `response = model.generate_content("${userMessage}")`,
@@ -268,7 +268,7 @@ function buildGeminiSample(lang: Lang, ctx: SampleContext): string {
     return [
       `import { GoogleGenerativeAI } from '@google/generative-ai'`,
       '',
-      `const genAI = new GoogleGenerativeAI(process.env.${ctx.apiKeyEnv}!)`,
+      `const genAI = new GoogleGenerativeAI('${ctx.apiKeyEnv}')`,
       `const model = genAI.getGenerativeModel({ model: '${ctx.modelName}' })`,
       '',
       `const result = await model.generateContent('${userMessage}')`,
@@ -297,7 +297,7 @@ function buildEmbeddingSample(lang: Lang, ctx: SampleContext): string {
     const body = JSON.stringify({ model: ctx.modelName, input: text }, null, 2)
     return [
       `curl ${url} \\`,
-      `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
+      `  -H "Authorization: Bearer ${ctx.apiKeyEnv}" \\`,
       `  -H "Content-Type: application/json" \\`,
       `  -d '${body.replace(/\n/g, '\n     ')}'`,
     ].join('\n')
@@ -306,7 +306,7 @@ function buildEmbeddingSample(lang: Lang, ctx: SampleContext): string {
     return [
       'from openai import OpenAI',
       '',
-      `client = OpenAI(base_url="${ctx.baseUrl}/v1", api_key="<YOUR_API_KEY>")`,
+      `client = OpenAI(base_url="${ctx.baseUrl}/v1", api_key="YOUR_API_KEY")`,
       '',
       'response = client.embeddings.create(',
       `    model="${ctx.modelName}",`,
@@ -322,7 +322,7 @@ function buildEmbeddingSample(lang: Lang, ctx: SampleContext): string {
       '',
       `const client = new OpenAI({`,
       `  baseURL: '${ctx.baseUrl}/v1',`,
-      `  apiKey: process.env.${ctx.apiKeyEnv},`,
+      `  apiKey: '${ctx.apiKeyEnv}',`,
       `})`,
       '',
       `const response = await client.embeddings.create({`,
@@ -337,7 +337,7 @@ function buildEmbeddingSample(lang: Lang, ctx: SampleContext): string {
     `const response = await fetch('${url}', {`,
     `  method: 'POST',`,
     `  headers: {`,
-    `    Authorization: \`Bearer \${process.env.${ctx.apiKeyEnv}}\`,`,
+    `    Authorization: 'Bearer ${ctx.apiKeyEnv}',`,
     `    'Content-Type': 'application/json',`,
     `  },`,
     `  body: JSON.stringify({`,
@@ -363,7 +363,7 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
     )
     return [
       `curl ${url} \\`,
-      `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
+      `  -H "Authorization: Bearer ${ctx.apiKeyEnv}" \\`,
       `  -H "Content-Type: application/json" \\`,
       `  -d '${body.replace(/\n/g, '\n     ')}'`,
     ].join('\n')
@@ -372,7 +372,7 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
     return [
       'from openai import OpenAI',
       '',
-      `client = OpenAI(base_url="${ctx.baseUrl}/v1", api_key="<YOUR_API_KEY>")`,
+      `client = OpenAI(base_url="${ctx.baseUrl}/v1", api_key="YOUR_API_KEY")`,
       '',
       'response = client.images.generate(',
       `    model="${ctx.modelName}",`,
@@ -390,7 +390,7 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
       '',
       `const client = new OpenAI({`,
       `  baseURL: '${ctx.baseUrl}/v1',`,
-      `  apiKey: process.env.${ctx.apiKeyEnv},`,
+      `  apiKey: '${ctx.apiKeyEnv}',`,
       `})`,
       '',
       `const response = await client.images.generate({`,
@@ -407,7 +407,7 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
     `const response = await fetch('${url}', {`,
     `  method: 'POST',`,
     `  headers: {`,
-    `    Authorization: \`Bearer \${process.env.${ctx.apiKeyEnv}}\`,`,
+    `    Authorization: 'Bearer ${ctx.apiKeyEnv}',`,
     `    'Content-Type': 'application/json',`,
     `  },`,
     `  body: JSON.stringify({`,
@@ -448,6 +448,23 @@ function CodeSamplesSection(props: {
   const { status } = useStatus()
 
   const baseUrl = useMemo(() => {
+    // 优先：用户当前浏览器实际访问的地址。访问什么网址，示例就给什么地址，
+    // 复制即用，不会落到后端默认的 localhost 内网地址。
+    if (typeof window !== 'undefined') {
+      const origin = window.location.origin
+      if (origin) {
+        const host = (() => {
+          try {
+            return new URL(origin).hostname
+          } catch {
+            return ''
+          }
+        })()
+        if (host && host !== 'localhost' && host !== '127.0.0.1') {
+          return origin.replace(/\/$/, '')
+        }
+      }
+    }
     const candidate =
       (status as Record<string, unknown> | null)?.server_address ??
       (status as Record<string, unknown> | null)?.serverAddress ??
@@ -456,7 +473,6 @@ function CodeSamplesSection(props: {
     if (candidate && typeof candidate === 'string') {
       return candidate.replace(/\/$/, '')
     }
-    if (typeof window !== 'undefined') return window.location.origin
     return 'https://api.example.com'
   }, [status])
 
@@ -489,7 +505,7 @@ function CodeSamplesSection(props: {
 
   const code = buildSample(lang, activeEndpoint.type, {
     baseUrl,
-    apiKeyEnv: 'NEW_API_KEY',
+    apiKeyEnv: 'YOUR_API_KEY',
     modelName: props.model.model_name || '',
     endpointType: activeEndpoint.type,
     endpointPath: activeEndpoint.path,
@@ -540,7 +556,7 @@ function CodeSamplesSection(props: {
       <p className='text-muted-foreground mt-2 text-xs'>
         {t('Replace')}{' '}
         <code className='bg-muted rounded px-1 py-0.5 font-mono text-[11px]'>
-          {'<YOUR_API_KEY>'}
+          {'YOUR_API_KEY'}
         </code>{' '}
         {t('with the API key from your token settings.')}
       </p>
