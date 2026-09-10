@@ -423,6 +423,205 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
   ].join('\n')
 }
 
+// 识别多模态模型的输入类型（音频 / 图像），仅用于生成更贴近真实用法的示例
+// 文本，不影响实际调用。可识别 ASR / 音频理解 / 视觉 / 文档解析等模型。
+function getMultimodalKind(modelName: string): 'audio' | 'image' | null {
+  const m = (modelName || '').toLowerCase()
+  if (/asr|audio/.test(m)) return 'audio'
+  if (/vl|vision|miner|ocr|doc\b/.test(m)) return 'image'
+  return null
+}
+
+// TTS / 语音合成示例：POST /v1/audio/speech，返回 wav 音频
+function buildSpeechSample(lang: Lang, ctx: SampleContext): string {
+  const url = `${ctx.baseUrl}${ctx.endpointPath}`
+  const model = ctx.modelName
+  const voice = '7bfd2603e70f' // 已实测可用的音色 id
+  const text = '你好，欢迎使用川邮·星语语音合成服务。'
+
+  if (lang === 'curl') {
+    const body = JSON.stringify({ model, input: text, voice }, null, 2)
+    return [
+      `# 文本转语音，保存为 speech.wav`,
+      `curl ${url} \\`,
+      `  -H "Authorization: Bearer ${ctx.apiKeyEnv}" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '${body.replace(/\n/g, '\n     ')}' \\`,
+      `  --output speech.wav`,
+    ].join('\n')
+  }
+
+  if (lang === 'python') {
+    return [
+      'from openai import OpenAI',
+      '',
+      `client = OpenAI(base_url="${ctx.baseUrl}/v1", api_key="YOUR_API_KEY")`,
+      '',
+      'response = client.audio.speech.create(',
+      `    model="${model}",`,
+      `    input="${text}",`,
+      `    voice="${voice}",`,
+      ')',
+      'response.stream_to_file("speech.wav")',
+    ].join('\n')
+  }
+
+  if (lang === 'typescript') {
+    return [
+      `import OpenAI from 'openai'`,
+      `import { writeFileSync } from 'node:fs'`,
+      '',
+      `const client = new OpenAI({`,
+      `  baseURL: '${ctx.baseUrl}/v1',`,
+      `  apiKey: '${ctx.apiKeyEnv}',`,
+      `})`,
+      '',
+      `const speech = await client.audio.speech.create({`,
+      `  model: '${model}',`,
+      `  input: '${text}',`,
+      `  voice: '${voice}',`,
+      `})`,
+      `writeFileSync('speech.wav', Buffer.from(await speech.arrayBuffer()))`,
+    ].join('\n')
+  }
+
+  return [
+    `const response = await fetch('${url}', {`,
+    `  method: 'POST',`,
+    `  headers: {`,
+    `    Authorization: 'Bearer ${ctx.apiKeyEnv}',`,
+    `    'Content-Type': 'application/json',`,
+    `  },`,
+    `  body: JSON.stringify({`,
+    `    model: '${model}',`,
+    `    input: '${text}',`,
+    `    voice: '${voice}',`,
+    `  }),`,
+    `})`,
+    '',
+    `const buffer = await response.arrayBuffer()`,
+    `// 将 buffer 写入 speech.wav 即可得到完整音频`,
+    `console.log('wav bytes:', buffer.byteLength)`,
+  ].join('\n')
+}
+
+// 多模态（音频 / 图像输入）示例：走 chat/completions，但 content 为多模态 parts
+function buildMultimodalSample(
+  lang: Lang,
+  ctx: SampleContext,
+  kind: 'audio' | 'image'
+): string {
+  const url = `${ctx.baseUrl}${ctx.endpointPath}`
+  const model = ctx.modelName
+
+  // 构造多模态 messages 的 JSON 片段
+  type ContentPart =
+    | { type: 'text'; text: string }
+    | { type: 'input_audio'; input_audio: { data: string; format: string } }
+    | { type: 'image_url'; image_url: { url: string } }
+  let contentParts: ContentPart[]
+  if (kind === 'audio') {
+    contentParts = [
+      { type: 'text', text: '请转写/理解这段音频' },
+      {
+        type: 'input_audio',
+        // 将本地 wav 文件 base64 编码后填入 data 字段
+        input_audio: { data: 'YOUR_AUDIO_BASE64', format: 'wav' },
+      },
+    ]
+  } else {
+    contentParts = [
+      { type: 'text', text: '请解析这张图片/文档页面' },
+      {
+        type: 'image_url',
+        // 支持图片 URL，或 base64 data URL
+        image_url: { url: 'https://example.com/input.png' },
+      },
+    ]
+  }
+  const bodyObj = {
+    model,
+    messages: [{ role: 'user', content: contentParts }],
+  }
+
+  if (lang === 'curl') {
+    const body = JSON.stringify(bodyObj, null, 2)
+    return [
+      `${kind === 'audio' ? '# 将音频文件 base64 编码后替换 YOUR_AUDIO_BASE64' : '# 将输入图片替换为你自己的图片 URL'}`,
+      `curl ${url} \\`,
+      `  -H "Authorization: Bearer ${ctx.apiKeyEnv}" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '${body.replace(/\n/g, '\n     ')}'`,
+    ].join('\n')
+  }
+
+  const partLines = bodyObj.messages[0].content.map((p) => {
+    if (p.type === 'text') return `        {"type": "text", "text": "${p.text}"}`
+    if (p.type === 'input_audio')
+      return `        {"type": "input_audio", "input_audio": {"data": "YOUR_AUDIO_BASE64", "format": "wav"}}`
+    return `        {"type": "image_url", "image_url": {"url": "https://example.com/input.png"}}`
+  })
+
+  if (lang === 'python') {
+    return [
+      'from openai import OpenAI',
+      '',
+      `client = OpenAI(base_url="${ctx.baseUrl}/v1", api_key="YOUR_API_KEY")`,
+      '',
+      'response = client.chat.completions.create(',
+      `    model="${model}",`,
+      '    messages=[',
+      '        {',
+      '            "role": "user",',
+      '            "content": [',
+      ...partLines,
+      '            ],',
+      '        },',
+      '    ],',
+      ')',
+      '',
+      'print(response.choices[0].message.content)',
+    ].join('\n')
+  }
+
+  if (lang === 'typescript') {
+    return [
+      `import OpenAI from 'openai'`,
+      '',
+      `const client = new OpenAI({`,
+      `  baseURL: '${ctx.baseUrl}/v1',`,
+      `  apiKey: '${ctx.apiKeyEnv}',`,
+      `})`,
+      '',
+      `const completion = await client.chat.completions.create({`,
+      `  model: '${model}',`,
+      `  messages: [{`,
+      `    role: 'user',`,
+      `    content: [`,
+      ...partLines,
+      `    ],`,
+      `  }],`,
+      `})`,
+      '',
+      `console.log(completion.choices[0].message.content)`,
+    ].join('\n')
+  }
+
+  return [
+    `const response = await fetch('${url}', {`,
+    `  method: 'POST',`,
+    `  headers: {`,
+    `    Authorization: 'Bearer ${ctx.apiKeyEnv}',`,
+    `    'Content-Type': 'application/json',`,
+    `  },`,
+    `  body: JSON.stringify(${JSON.stringify(bodyObj, null, 2)}),`,
+    `})`,
+    '',
+    `const data = await response.json()`,
+    `console.log(JSON.stringify(data, null, 2))`,
+  ].join('\n')
+}
+
 function buildSample(
   lang: Lang,
   endpointType: string,
@@ -433,6 +632,9 @@ function buildSample(
   if (endpointType === 'embeddings' || endpointType === 'jina-rerank')
     return buildEmbeddingSample(lang, ctx)
   if (endpointType === 'image-generation') return buildImageSample(lang, ctx)
+  if (endpointType === 'audio-speech') return buildSpeechSample(lang, ctx)
+  const multimodal = getMultimodalKind(ctx.modelName)
+  if (multimodal) return buildMultimodalSample(lang, ctx, multimodal)
   return buildChatSample(lang, ctx)
 }
 
