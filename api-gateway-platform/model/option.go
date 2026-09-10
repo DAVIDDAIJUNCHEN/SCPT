@@ -190,6 +190,8 @@ func InitOptionMap() {
 	common.OptionMap["ContentGuardHarmfulWords"] = setting.ContentGuardHarmfulWords
 	common.OptionMap["ContentGuardInjectionWords"] = setting.ContentGuardInjectionWords
 	common.OptionMap["ContentGuardOutputWords"] = setting.ContentGuardOutputWords
+	common.OptionMap["ContentGuardBlockMode"] = setting.ContentGuardBlockMode
+	common.OptionMap["ContentGuardRefusalTemplate"] = setting.ContentGuardRefusalTemplate
 	// AlloMax 二次开发：响应缓存（Response Cache）
 	common.OptionMap["ResponseCacheEnabled"] = strconv.FormatBool(setting.ResponseCacheEnabled)
 	common.OptionMap["ResponseCacheTTLSeconds"] = strconv.Itoa(setting.ResponseCacheTTLSeconds)
@@ -693,6 +695,11 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.ContentGuardInjectionWords = value
 	case "ContentGuardOutputWords":
 		setting.ContentGuardOutputWords = value
+	// AlloMax 二次开发：内容管控拦截呈现方式（message=返回合规提示正文 / error=返回 4xx）
+	case "ContentGuardBlockMode":
+		setting.ContentGuardBlockMode = value
+	case "ContentGuardRefusalTemplate":
+		setting.ContentGuardRefusalTemplate = value
 	// AlloMax 二次开发：模型级限流规则 JSON
 	case "ModelLevelRateLimit":
 		setting.ModelLevelRateLimitFromString(value)

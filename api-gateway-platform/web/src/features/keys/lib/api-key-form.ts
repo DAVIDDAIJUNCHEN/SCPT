@@ -55,6 +55,9 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       content_guard_harmful_block: z.boolean().optional(),
       content_guard_injection_block: z.boolean().optional(),
       content_guard_output_block: z.boolean().optional(),
+      content_guard_block_mode: z
+        .enum(['inherit', 'message', 'error'])
+        .optional(),
       content_guard_extra_output_words: z.string().optional(),
     })
     .superRefine((data, ctx) => {
@@ -134,6 +137,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   content_guard_harmful_block: true,
   content_guard_injection_block: true,
   content_guard_output_block: true,
+  content_guard_block_mode: 'inherit',
   content_guard_extra_output_words: '',
 }
 
@@ -164,6 +168,7 @@ export function buildContentGuardPayload(data: {
   content_guard_harmful_block?: boolean
   content_guard_injection_block?: boolean
   content_guard_output_block?: boolean
+  content_guard_block_mode?: 'inherit' | 'message' | 'error'
   content_guard_extra_output_words?: string
 }): string {
   if (data.content_guard_mode !== 'custom') {
@@ -174,12 +179,20 @@ export function buildContentGuardPayload(data: {
     .map((word) => word.trim())
     .filter(Boolean)
 
+  // inherit 表示沿用全局的呈现方式，不在 per-token JSON 中写入
+  const blockMode = data.content_guard_block_mode
+  const blockModeField =
+    blockMode === 'message' || blockMode === 'error'
+      ? { block_mode: blockMode }
+      : {}
+
   return JSON.stringify({
     enabled: true,
     pii_redact: !!data.content_guard_pii_redact,
     harmful_block: !!data.content_guard_harmful_block,
     injection_block: !!data.content_guard_injection_block,
     output_block: !!data.content_guard_output_block,
+    ...blockModeField,
     ...(extraWords.length > 0 ? { extra_output_words: extraWords } : {}),
   })
 }
@@ -193,6 +206,7 @@ export function parseContentGuard(raw?: string | null): {
   content_guard_harmful_block: boolean
   content_guard_injection_block: boolean
   content_guard_output_block: boolean
+  content_guard_block_mode: 'inherit' | 'message' | 'error'
   content_guard_extra_output_words: string
 } {
   const fallback = {
@@ -201,6 +215,7 @@ export function parseContentGuard(raw?: string | null): {
     content_guard_harmful_block: true,
     content_guard_injection_block: true,
     content_guard_output_block: true,
+    content_guard_block_mode: 'inherit' as const,
     content_guard_extra_output_words: '',
   }
   if (!raw) {
@@ -209,12 +224,16 @@ export function parseContentGuard(raw?: string | null): {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const extra = parsed.extra_output_words
+    const rawMode = parsed.block_mode
+    const blockMode =
+      rawMode === 'message' || rawMode === 'error' ? rawMode : 'inherit'
     return {
       content_guard_mode: 'custom',
       content_guard_pii_redact: !!parsed.pii_redact,
       content_guard_harmful_block: !!parsed.harmful_block,
       content_guard_injection_block: !!parsed.injection_block,
       content_guard_output_block: !!parsed.output_block,
+      content_guard_block_mode: blockMode,
       content_guard_extra_output_words: Array.isArray(extra)
         ? extra.join('\n')
         : '',

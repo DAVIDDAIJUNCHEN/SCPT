@@ -51,6 +51,23 @@ var ContentGuardOutputWords = strings.Join([]string{
 	"稳赚不赔", "保证收益", "100%安全",
 }, "\n")
 
+// ---- 拦截呈现方式 ----
+
+// ContentGuardBlockMode 拦截后的呈现方式（决定终端用户体验）：
+//
+//	"message"（默认）—— 返回 HTTP 200 + 一条对话式「合规提示」作为助手回复。
+//	                     客户端只会看到模型说"你的提问不合规"，不会弹"服务故障/请切换模型"。
+//	"error"          —— 返回 HTTP 4xx + 错误对象（error.code=sensitive_words_detected）。
+//	                     适合程序化调用方按错误码处理，但终端用户会看到报错。
+//
+// 说明：两种方式都**不做模型调用**（输入侧在预扣费前拦截，天然 0 计费），
+// 且都会在 logs 表留下审计记录，便于合规追溯。
+var ContentGuardBlockMode = "message"
+
+// ContentGuardRefusalTemplate 合规提示正文模板，其中 %s 会被替换为具体拦截原因
+var ContentGuardRefusalTemplate = "抱歉，你的提问未通过平台内容安全策略（%s），已被拦截。请调整表述后重试，如需帮助可联系平台管理员。"
+
+
 // SplitLinesToWords 把换行分隔的词表转为切片（去空白、去空行）
 func SplitLinesToWords(s string) []string {
 	out := make([]string, 0, 8)

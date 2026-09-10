@@ -1,12 +1,17 @@
 package service
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +41,9 @@ type ContentGuardConfig struct {
 	InjectionBlock bool
 	OutputBlock    bool
 
+	// BlockMode 拦截呈现方式："message"（返回合规提示正文）/ "error"（返回 4xx 错误）
+	BlockMode string
+
 	HarmfulWords   []string
 	InjectionWords []string
 	OutputWords    []string
@@ -48,6 +56,7 @@ type contentGuardTokenRule struct {
 	HarmfulBlock     *bool    `json:"harmful_block,omitempty"`
 	InjectionBlock   *bool    `json:"injection_block,omitempty"`
 	OutputBlock      *bool    `json:"output_block,omitempty"`
+	BlockMode        *string  `json:"block_mode,omitempty"`
 	ExtraOutputWords []string `json:"extra_output_words,omitempty"`
 }
 
@@ -70,6 +79,7 @@ func BuildContentGuardConfig(tokenRuleJSON string) *ContentGuardConfig {
 		HarmfulBlock:   setting.ContentGuardHarmfulBlock,
 		InjectionBlock: setting.ContentGuardInjectionBlock,
 		OutputBlock:    setting.ContentGuardOutputBlock,
+		BlockMode:      setting.ContentGuardBlockMode,
 		HarmfulWords:   setting.SplitLinesToWords(setting.ContentGuardHarmfulWords),
 		InjectionWords: setting.SplitLinesToWords(setting.ContentGuardInjectionWords),
 		OutputWords:    setting.SplitLinesToWords(setting.ContentGuardOutputWords),
@@ -98,6 +108,9 @@ func BuildContentGuardConfig(tokenRuleJSON string) *ContentGuardConfig {
 	}
 	if rule.OutputBlock != nil {
 		cfg.OutputBlock = *rule.OutputBlock
+	}
+	if rule.BlockMode != nil {
+		cfg.BlockMode = *rule.BlockMode
 	}
 	if len(rule.ExtraOutputWords) > 0 {
 		for _, w := range rule.ExtraOutputWords {
@@ -319,4 +332,251 @@ func CheckOutputGuardFromContext(c *gin.Context, cfg *ContentGuardConfig) (strin
 		return "", false
 	}
 	return CheckOutputBlock(text, cfg)
+}
+
+// ============================================================
+// 拦截呈现方式（message / error）
+//
+// 背景：直接返回 4xx 时，客户端会把它渲染成"服务暂时不可用，请切换模型"，
+// 终端用户完全看不出真实原因是内容触发，体验很差。
+// 因此默认改为返回一条「合规提示」正文（HTTP 200），让用户看到的是"助手说不可回答"。
+// 两种方式都不调用模型（输入侧在预扣费前拦截，天然 0 计费），也都会写审计日志。
+// ============================================================
+
+const (
+	// BlockModeMessage 返回合规提示正文（HTTP 200，对话式）
+	BlockModeMessage = "message"
+	// BlockModeError 返回 4xx 错误对象（API 式）
+	BlockModeError = "error"
+)
+
+// UseMessageMode 是否采用「返回合规提示正文」的呈现方式（默认 message）
+func (c *ContentGuardConfig) UseMessageMode() bool {
+	mode := ""
+	if c != nil {
+		mode = c.BlockMode
+	}
+	if strings.TrimSpace(mode) == "" {
+		mode = setting.ContentGuardBlockMode
+	}
+	return !strings.EqualFold(strings.TrimSpace(mode), BlockModeError)
+}
+
+// RefusalText 生成合规提示正文（模板可由系统设置维护）
+func RefusalText(reason string) string {
+	tpl := strings.TrimSpace(setting.ContentGuardRefusalTemplate)
+	if tpl == "" {
+		tpl = "抱歉，你的提问未通过平台内容安全策略（%s），已被拦截。"
+	}
+	if strings.Contains(tpl, "%s") {
+		return fmt.Sprintf(tpl, reason)
+	}
+	return tpl
+}
+
+// requestModelContextKey 本次请求的模型名缓存键（供拦截提示回填 model 字段）
+const requestModelContextKey = "content_guard_request_model"
+
+// CacheRequestModelName 从请求体读取模型名并缓存到上下文（best-effort，失败静默）。
+// 之所以自己读而不是用 relayInfo.OriginModelName：后者依赖 ContextKeyOriginalModel，
+// 而该 key 在生产代码中无人写入（仅测试写入），取值可能为空。
+func CacheRequestModelName(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.Get(requestModelContextKey); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	var meta struct {
+		Model string `json:"model"`
+	}
+	name := ""
+	if err := common.UnmarshalBodyReusable(c, &meta); err == nil {
+		name = strings.TrimSpace(meta.Model)
+	}
+	c.Set(requestModelContextKey, name)
+	return name
+}
+
+// GetRequestModelName 读取缓存的模型名
+func GetRequestModelName(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.Get(requestModelContextKey); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func contentGuardRefusalID(prefix string) string {
+	return prefix + common.GetRandomString(24)
+}
+
+// WriteRefusalResponse 以「合规提示正文」形式返回 200 响应（替代 4xx 错误）。
+// 支持 OpenAI（/v1/chat/completions）与 Claude（/v1/messages）两种客户端协议，
+// 均覆盖流式与非流式。返回 true 表示已完整处理，调用方应直接 return。
+// 其他协议（gemini / responses / realtime 等）返回 false，调用方回退到错误模式。
+func WriteRefusalResponse(c *gin.Context, relayFormat types.RelayFormat, model string, isStream bool, text string) bool {
+	if c == nil {
+		return false
+	}
+	if strings.TrimSpace(model) == "" {
+		model = GetRequestModelName(c)
+	}
+	if strings.TrimSpace(model) == "" {
+		model = "content-guard"
+	}
+	switch relayFormat {
+	case types.RelayFormatClaude:
+		writeClaudeRefusal(c, model, isStream, text)
+		return true
+	case types.RelayFormatOpenAI:
+		writeOpenAIRefusal(c, model, isStream, text)
+		return true
+	default:
+		return false
+	}
+}
+
+// ---- OpenAI 协议 ----
+
+// BuildOpenAIRefusalBody 构造非流式 OpenAI 合规提示响应体（供输出侧替换上游正文使用）
+func BuildOpenAIRefusalBody(model string, text string, usage *dto.Usage) []byte {
+	if strings.TrimSpace(model) == "" {
+		model = "content-guard"
+	}
+	payload := gin.H{
+		"id":      contentGuardRefusalID("chatcmpl-"),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []gin.H{{
+			"index":         0,
+			"message":       gin.H{"role": "assistant", "content": text},
+			"finish_reason": "stop",
+		}},
+	}
+	if usage != nil {
+		payload["usage"] = usage
+	} else {
+		payload["usage"] = gin.H{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func writeOpenAIRefusal(c *gin.Context, model string, isStream bool, text string) {
+	id := contentGuardRefusalID("chatcmpl-")
+	created := time.Now().Unix()
+
+	if !isStream {
+		c.JSON(http.StatusOK, gin.H{
+			"id":      id,
+			"object":  "chat.completion",
+			"created": created,
+			"model":   model,
+			"choices": []gin.H{{
+				"index":         0,
+				"message":       gin.H{"role": "assistant", "content": text},
+				"finish_reason": "stop",
+			}},
+			"usage": gin.H{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+		})
+		return
+	}
+
+	// 流式：按 OpenAI SSE 协议输出，最后以 [DONE] 收尾
+	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	chunk := func(delta gin.H, finishReason any) {
+		b, err := json.Marshal(gin.H{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []gin.H{{
+				"index":         0,
+				"delta":         delta,
+				"finish_reason": finishReason,
+			}},
+		})
+		if err != nil {
+			return
+		}
+		_, _ = c.Writer.WriteString("data: " + string(b) + "\n\n")
+	}
+	chunk(gin.H{"role": "assistant", "content": ""}, nil)
+	chunk(gin.H{"content": text}, nil)
+	chunk(gin.H{}, "stop")
+	_, _ = c.Writer.WriteString("data: [DONE]\n\n")
+	c.Writer.Flush()
+}
+
+// ---- Claude 协议 ----
+
+func writeClaudeRefusal(c *gin.Context, model string, isStream bool, text string) {
+	id := contentGuardRefusalID("msg_")
+
+	if !isStream {
+		c.JSON(http.StatusOK, gin.H{
+			"id":            id,
+			"type":          "message",
+			"role":          "assistant",
+			"model":         model,
+			"content":       []gin.H{{"type": "text", "text": text}},
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+			"usage":         gin.H{"input_tokens": 0, "output_tokens": 0},
+		})
+		return
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	emit := func(event string, payload gin.H) {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+		_, _ = c.Writer.WriteString("event: " + event + "\ndata: " + string(b) + "\n\n")
+	}
+
+	emit("message_start", gin.H{
+		"type": "message_start",
+		"message": gin.H{
+			"id": id, "type": "message", "role": "assistant", "model": model,
+			"content": []gin.H{}, "stop_reason": nil, "stop_sequence": nil,
+			"usage": gin.H{"input_tokens": 0, "output_tokens": 0},
+		},
+	})
+	emit("content_block_start", gin.H{
+		"type": "content_block_start", "index": 0,
+		"content_block": gin.H{"type": "text", "text": ""},
+	})
+	emit("content_block_delta", gin.H{
+		"type": "content_block_delta", "index": 0,
+		"delta": gin.H{"type": "text_delta", "text": text},
+	})
+	emit("content_block_stop", gin.H{"type": "content_block_stop", "index": 0})
+	emit("message_delta", gin.H{
+		"type":  "message_delta",
+		"delta": gin.H{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": gin.H{"output_tokens": 0},
+	})
+	emit("message_stop", gin.H{"type": "message_stop"})
+	c.Writer.Flush()
 }

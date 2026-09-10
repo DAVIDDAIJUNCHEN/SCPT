@@ -384,6 +384,9 @@ export type SecuritySettings = {
   ContentGuardHarmfulBlock: boolean
   ContentGuardInjectionBlock: boolean
   ContentGuardOutputBlock: boolean
+  // 拦截呈现方式：message=返回合规提示正文 / error=返回 4xx 错误码
+  ContentGuardBlockMode: string
+  ContentGuardRefusalTemplate: string
   ContentGuardHarmfulWords: string
   ContentGuardInjectionWords: string
   ContentGuardOutputWords: string

@@ -32,6 +32,14 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 import {
@@ -49,6 +57,8 @@ const contentGuardSchema = z.object({
   ContentGuardHarmfulBlock: z.boolean(),
   ContentGuardInjectionBlock: z.boolean(),
   ContentGuardOutputBlock: z.boolean(),
+  ContentGuardBlockMode: z.string(),
+  ContentGuardRefusalTemplate: z.string().optional(),
   ContentGuardHarmfulWords: z.string().optional(),
   ContentGuardInjectionWords: z.string().optional(),
   ContentGuardOutputWords: z.string().optional(),
@@ -150,7 +160,7 @@ export function ContentGuardSection({
                     <FormLabel>{t('有害内容拦截（输入侧）')}</FormLabel>
                     <FormDescription>
                       {t(
-                        '命中下方有害词表即返回 400，且不计费，并写入拦截审计日志。'
+                        '命中下方有害词表即拦截，不调用模型、不计费，并写入拦截审计日志。返回形式由下方「拦截呈现方式」决定。'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>
@@ -196,7 +206,7 @@ export function ContentGuardSection({
                     <FormLabel>{t('输出侧拦截')}</FormLabel>
                     <FormDescription>
                       {t(
-                        '检查模型输出，命中下方输出词表即拦截、不计费（商业合规常用）。'
+                        '检查模型输出，命中下方输出词表即拦截（商业合规常用）。命中后按「拦截呈现方式」返回合规提示或错误码。'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>
@@ -210,6 +220,77 @@ export function ContentGuardSection({
               )}
             />
           </div>
+
+          <FormField
+            control={form.control}
+            name='ContentGuardBlockMode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('拦截呈现方式')}</FormLabel>
+                <Select
+                  items={[
+                    {
+                      value: 'message',
+                      label: t('返回合规提示（推荐）'),
+                    },
+                    {
+                      value: 'error',
+                      label: t('返回错误码（4xx）'),
+                    },
+                  ]}
+                  onValueChange={field.onChange}
+                  value={field.value || 'message'}
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      <SelectItem value='message'>
+                        {t('返回合规提示（推荐）')}
+                      </SelectItem>
+                      <SelectItem value='error'>
+                        {t('返回错误码（4xx）')}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t(
+                    '命中拦截后如何返回给用户：选「返回合规提示」时以 HTTP 200 返回一条助手回复（如"你的提问未通过内容安全策略，已被拦截"），客户端不会显示服务故障；选「返回错误码」则返回 4xx 错误对象，适合程序化调用方按错误码处理。两种方式都不调用模型、不计费，并都会写入拦截审计日志。'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='ContentGuardRefusalTemplate'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('合规提示文案模板')}</FormLabel>
+                <FormControl>
+                  <Textarea
+                    rows={3}
+                    placeholder={t(
+                      '抱歉，你的提问未通过平台内容安全策略（%s），已被拦截。'
+                    )}
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    '%s 会被替换为具体拦截原因（如"有害内容: 制作炸弹"）。留空则使用默认文案。'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           <FormField
             control={form.control}

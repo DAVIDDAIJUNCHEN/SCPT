@@ -60,6 +60,14 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useStatus } from '@/hooks/use-status'
@@ -969,6 +977,59 @@ export function ApiKeysMutateDrawer({
                                     onCheckedChange={field.onChange}
                                   />
                                 </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name='content_guard_block_mode'
+                            render={({ field }) => (
+                              <FormItem className='pt-2'>
+                                <FormLabel className='text-sm'>
+                                  {t('拦截呈现方式')}
+                                </FormLabel>
+                                <Select
+                                  items={[
+                                    {
+                                      value: 'inherit',
+                                      label: t('跟随全局'),
+                                    },
+                                    {
+                                      value: 'message',
+                                      label: t('返回合规提示（推荐）'),
+                                    },
+                                    {
+                                      value: 'error',
+                                      label: t('返回错误码（4xx）'),
+                                    },
+                                  ]}
+                                  onValueChange={field.onChange}
+                                  value={field.value || 'inherit'}
+                                >
+                                  <FormControl>
+                                    <SelectTrigger size='sm'>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                  </FormControl>
+                                  <SelectContent alignItemWithTrigger={false}>
+                                    <SelectGroup>
+                                      <SelectItem value='inherit'>
+                                        {t('跟随全局')}
+                                      </SelectItem>
+                                      <SelectItem value='message'>
+                                        {t('返回合规提示（推荐）')}
+                                      </SelectItem>
+                                      <SelectItem value='error'>
+                                        {t('返回错误码（4xx）')}
+                                      </SelectItem>
+                                    </SelectGroup>
+                                  </SelectContent>
+                                </Select>
+                                <FormDescription className='text-[10px]'>
+                                  {t(
+                                    '「返回合规提示」时拦截以一条助手回复返回，客户端不显示服务故障'
+                                  )}
+                                </FormDescription>
                               </FormItem>
                             )}
                           />

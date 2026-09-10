@@ -124,25 +124,46 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	// ---- AlloMax 二次开发：输入侧内容管控（ContentGuard）----
 	// 位置说明：必须在 GenRelayInfo 之前
-	//   1) 有害/注入拦截 → 预扣费前返回 error → 天然 0 计费
+	//   1) 有害/注入拦截 → 预扣费前返回 → 天然 0 计费
 	//   2) PII 脱敏 → 改写内存 request，经 info.Request 传到上游（无需改写 body）
-	if contentGuard := service.ResolveContentGuard(c); contentGuard.InputEnabled() {
-		if reason, hit := service.CheckInputBlock(request, contentGuard); hit {
-			logger.LogWarn(c, "content guard blocked input: "+reason)
-			newAPIError = types.NewError(
-				fmt.Errorf("%s", reason),
-				types.ErrorCodeSensitiveWordsDetected,
-				types.ErrOptionWithStatusCode(http.StatusBadRequest),
-				types.ErrOptionWithSkipRetry(),
-			)
-			// 审计留痕：输入侧拦截发生在渠道选择之前、不走 processChannelError，
-			// 故显式记录错误日志（channelId=0），供合规审计与拦截统计。
-			recordContentGuardBlock(c, reason, request)
-			return
-		}
-		if contentGuard.PIIRedact {
-			if n := service.RedactPIIInRequest(request); n > 0 {
-				logger.LogInfo(c, fmt.Sprintf("content guard: PII redacted in %d message(s)", n))
+	if contentGuard := service.ResolveContentGuard(c); contentGuard.Enabled {
+		// 缓存模型名：拦截提示需要回填 model 字段（不依赖 relayInfo，因其 OriginModelName 可能为空）
+		service.CacheRequestModelName(c)
+		if contentGuard.InputEnabled() {
+			if reason, hit := service.CheckInputBlock(request, contentGuard); hit {
+				logger.LogWarn(c, "content guard blocked input: "+reason)
+
+				// 呈现方式（默认 message）：返回 HTTP 200 + 一条「合规提示」正文，
+				// 终端用户看到的是"助手回复不可回答"，而不是客户端弹"服务故障/请切换模型"。
+				// 配成 error 时保持 4xx + error.code 语义（供程序化调用方按码处理）。
+				deliveredAsMessage := false
+				if contentGuard.UseMessageMode() {
+					deliveredAsMessage = service.WriteRefusalResponse(c, relayFormat,
+						service.GetRequestModelName(c), request.IsStream(c.Request), service.RefusalText(reason))
+					if !deliveredAsMessage {
+						logger.LogWarn(c, "content guard: relay format unsupported for message mode, fallback to error")
+					}
+				}
+
+				// 审计留痕：输入侧拦截发生在渠道选择之前、不走 processChannelError，
+				// 故显式记录错误日志（channelId=0），供合规审计与拦截统计。
+				recordContentGuardBlock(c, reason, request, deliveredAsMessage)
+
+				if deliveredAsMessage {
+					return
+				}
+				newAPIError = types.NewError(
+					fmt.Errorf("%s", reason),
+					types.ErrorCodeSensitiveWordsDetected,
+					types.ErrOptionWithStatusCode(http.StatusBadRequest),
+					types.ErrOptionWithSkipRetry(),
+				)
+				return
+			}
+			if contentGuard.PIIRedact {
+				if n := service.RedactPIIInRequest(request); n > 0 {
+					logger.LogInfo(c, fmt.Sprintf("content guard: PII redacted in %d message(s)", n))
+				}
 			}
 		}
 	}
@@ -298,7 +319,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 // recordContentGuardBlock 记录内容管控（ContentGuard）输入侧拦截的审计日志。
 // 输入侧拦截发生在渠道选择之前，不走 processChannelError，故此处 channelId 记 0。
-func recordContentGuardBlock(c *gin.Context, reason string, request dto.Request) {
+func recordContentGuardBlock(c *gin.Context, reason string, request dto.Request, deliveredAsMessage bool) {
 	modelName := c.GetString("original_model")
 	if modelName == "" {
 		if req, ok := request.(*dto.GeneralOpenAIRequest); ok && req != nil {
@@ -309,10 +330,18 @@ func recordContentGuardBlock(c *gin.Context, reason string, request dto.Request)
 	if startTime.IsZero() {
 		startTime = time.Now()
 	}
+	// 忠实记录客户端实际收到的结果：message 模式返回 200 + 合规提示，error 模式返回 400
+	exposure := "error(400)"
+	content := "status_code=400, " + reason
+	if deliveredAsMessage {
+		exposure = "message(200+合规提示)"
+		content = "拦截已以合规提示返回(200), " + reason
+	}
 	other := map[string]interface{}{
 		"admin_info": map[string]interface{}{
 			"content_guard_block": reason,
 			"reject_stage":        "input",
+			"exposure":            exposure,
 		},
 	}
 	model.RecordErrorLog(c,
@@ -320,7 +349,7 @@ func recordContentGuardBlock(c *gin.Context, reason string, request dto.Request)
 		0, // 输入侧拦截时尚未选定渠道
 		modelName,
 		c.GetString("token_name"),
-		"status_code=400, "+reason,
+		content,
 		c.GetInt("token_id"),
 		int(time.Since(startTime).Seconds()),
 		common.GetContextKeyBool(c, constant.ContextKeyIsStream),

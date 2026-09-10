@@ -361,8 +361,23 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 		if outText.Len() > 0 {
 			service.SetResponseText(c, outText.String())
-			if outReason, blocked := service.CheckOutputGuardFromContext(c, service.ResolveContentGuard(c)); blocked {
+			outCfg := service.ResolveContentGuard(c)
+			if outReason, blocked := service.CheckOutputGuardFromContext(c, outCfg); blocked {
 				logger.LogWarn(c, "content guard blocked output: "+outReason)
+				// 呈现方式（默认 message）：丢弃上游生成的非合规正文，改回写一条「合规提示」，
+				// 让终端用户看到"助手拒绝回答"而不是客户端弹报错。
+				// 说明：保留上游 usage 正常计费 —— 模型确实已生成，算力已实际消耗。
+				if outCfg.UseMessageMode() {
+					modelName := info.OriginModelName
+					if modelName == "" {
+						modelName = service.GetRequestModelName(c)
+					}
+					if refusalBody := service.BuildOpenAIRefusalBody(
+						modelName, service.RefusalText(outReason), &simpleResponse.Usage); refusalBody != nil {
+						service.IOCopyBytesGracefully(c, resp, refusalBody)
+						return &simpleResponse.Usage, nil
+					}
+				}
 				return nil, types.NewErrorWithStatusCode(
 					fmt.Errorf("%s", outReason),
 					types.ErrorCodeSensitiveWordsDetected,

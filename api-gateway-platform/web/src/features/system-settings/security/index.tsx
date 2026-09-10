@@ -39,6 +39,8 @@ const defaultSecuritySettings: SecuritySettings = {
   ContentGuardHarmfulBlock: false,
   ContentGuardInjectionBlock: false,
   ContentGuardOutputBlock: false,
+  ContentGuardBlockMode: 'message',
+  ContentGuardRefusalTemplate: '',
   ContentGuardHarmfulWords: '',
   ContentGuardInjectionWords: '',
   ContentGuardOutputWords: '',
