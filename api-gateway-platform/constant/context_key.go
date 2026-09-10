@@ -65,6 +65,14 @@ const (
 	// It is not returned to end users, but can be persisted into consume/error logs for debugging.
 	ContextKeyAdminRejectReason ContextKey = "admin_reject_reason"
 
+	// AlloMax 二次开发：ContextKeyResponseText 存放本次响应的输出文本，
+	// 供输出侧内容管控（ContentGuard）在「计费提交前」检查（命中则拦截且不计费）。
+	ContextKeyResponseText ContextKey = "content_guard_response_text"
+
+	// AlloMax 二次开发：ContextKeyResponseCacheHit 标记本次请求命中了响应缓存，
+	// 计费提交时据此按 ResponseCacheDiscountRatio 打折。
+	ContextKeyResponseCacheHit ContextKey = "response_cache_hit"
+
 	// ContextKeyLanguage stores the user's language preference for i18n
 	ContextKeyLanguage ContextKey = "language"
 	ContextKeyIsStream ContextKey = "is_stream"

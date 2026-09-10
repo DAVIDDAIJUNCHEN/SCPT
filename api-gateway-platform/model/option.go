@@ -181,6 +181,26 @@ func InitOptionMap() {
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	common.OptionMap["StopOnSensitiveEnabled"] = strconv.FormatBool(setting.StopOnSensitiveEnabled)
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
+	// AlloMax 二次开发：内容管控（ContentGuard）
+	common.OptionMap["ContentGuardEnabled"] = strconv.FormatBool(setting.ContentGuardEnabled)
+	common.OptionMap["ContentGuardPIIRedact"] = strconv.FormatBool(setting.ContentGuardPIIRedact)
+	common.OptionMap["ContentGuardHarmfulBlock"] = strconv.FormatBool(setting.ContentGuardHarmfulBlock)
+	common.OptionMap["ContentGuardInjectionBlock"] = strconv.FormatBool(setting.ContentGuardInjectionBlock)
+	common.OptionMap["ContentGuardOutputBlock"] = strconv.FormatBool(setting.ContentGuardOutputBlock)
+	common.OptionMap["ContentGuardHarmfulWords"] = setting.ContentGuardHarmfulWords
+	common.OptionMap["ContentGuardInjectionWords"] = setting.ContentGuardInjectionWords
+	common.OptionMap["ContentGuardOutputWords"] = setting.ContentGuardOutputWords
+	// AlloMax 二次开发：响应缓存（Response Cache）
+	common.OptionMap["ResponseCacheEnabled"] = strconv.FormatBool(setting.ResponseCacheEnabled)
+	common.OptionMap["ResponseCacheTTLSeconds"] = strconv.Itoa(setting.ResponseCacheTTLSeconds)
+	common.OptionMap["ResponseCacheDiscountRatio"] = strconv.FormatFloat(setting.ResponseCacheDiscountRatio, 'f', -1, 64)
+	common.OptionMap["ResponseCacheOnlyDeterministic"] = strconv.FormatBool(setting.ResponseCacheOnlyDeterministic)
+	common.OptionMap["ResponseCacheMinTokens"] = strconv.Itoa(setting.ResponseCacheMinTokens)
+	common.OptionMap["ResponseCacheMaxBodyKB"] = strconv.Itoa(setting.ResponseCacheMaxBodyKB)
+	// AlloMax 二次开发：模型级限流（per-model RPM）
+	common.OptionMap["ModelLevelRateLimitEnabled"] = strconv.FormatBool(setting.ModelLevelRateLimitEnabled)
+	common.OptionMap["ModelLevelRateLimitWindowSeconds"] = strconv.Itoa(setting.ModelLevelRateLimitWindowSeconds)
+	common.OptionMap["ModelLevelRateLimit"] = setting.ModelLevelRateLimit
 	common.OptionMap["StreamCacheQueueLength"] = strconv.Itoa(setting.StreamCacheQueueLength)
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
@@ -299,6 +319,63 @@ func updateOptionMap(key string, value string) (err error) {
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handleConfigUpdate(key, value) {
 		return nil // 已由配置系统处理
+	}
+
+	// AlloMax 二次开发：新增布尔开关
+	// 注意：ContentGuardPIIRedact / HarmfulBlock / InjectionBlock / OutputBlock
+	// 不以 "Enabled" 结尾，无法命中下方 legacy 布尔分支，必须在此单独处理
+	// （否则选项 API / 界面设置不生效）。
+	switch key {
+	case "ContentGuardEnabled", "ContentGuardPIIRedact", "ContentGuardHarmfulBlock",
+		"ContentGuardInjectionBlock", "ContentGuardOutputBlock",
+		"ResponseCacheEnabled", "ResponseCacheOnlyDeterministic",
+		"ModelLevelRateLimitEnabled":
+		boolValue := value == "true"
+		switch key {
+		case "ContentGuardEnabled":
+			setting.ContentGuardEnabled = boolValue
+		case "ContentGuardPIIRedact":
+			setting.ContentGuardPIIRedact = boolValue
+		case "ContentGuardHarmfulBlock":
+			setting.ContentGuardHarmfulBlock = boolValue
+		case "ContentGuardInjectionBlock":
+			setting.ContentGuardInjectionBlock = boolValue
+		case "ContentGuardOutputBlock":
+			setting.ContentGuardOutputBlock = boolValue
+		case "ResponseCacheEnabled":
+			setting.ResponseCacheEnabled = boolValue
+		case "ResponseCacheOnlyDeterministic":
+			setting.ResponseCacheOnlyDeterministic = boolValue
+		case "ModelLevelRateLimitEnabled":
+			setting.ModelLevelRateLimitEnabled = boolValue
+		}
+		return nil
+	}
+
+	// AlloMax 二次开发：新增整型选项
+	switch key {
+	case "ResponseCacheTTLSeconds", "ResponseCacheMinTokens",
+		"ResponseCacheMaxBodyKB", "ModelLevelRateLimitWindowSeconds":
+		intValue, _ := strconv.Atoi(value)
+		switch key {
+		case "ResponseCacheTTLSeconds":
+			setting.ResponseCacheTTLSeconds = intValue
+		case "ResponseCacheMinTokens":
+			setting.ResponseCacheMinTokens = intValue
+		case "ResponseCacheMaxBodyKB":
+			setting.ResponseCacheMaxBodyKB = intValue
+		case "ModelLevelRateLimitWindowSeconds":
+			setting.ModelLevelRateLimitWindowSeconds = intValue
+		}
+		return nil
+	}
+
+	// AlloMax 二次开发：新增浮点选项
+	if key == "ResponseCacheDiscountRatio" {
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			setting.ResponseCacheDiscountRatio = f
+		}
+		return nil
 	}
 
 	// 处理传统配置项...
@@ -609,6 +686,16 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
 	case "SensitiveWords":
 		setting.SensitiveWordsFromString(value)
+	// AlloMax 二次开发：内容管控（ContentGuard）词表
+	case "ContentGuardHarmfulWords":
+		setting.ContentGuardHarmfulWords = value
+	case "ContentGuardInjectionWords":
+		setting.ContentGuardInjectionWords = value
+	case "ContentGuardOutputWords":
+		setting.ContentGuardOutputWords = value
+	// AlloMax 二次开发：模型级限流规则 JSON
+	case "ModelLevelRateLimit":
+		setting.ModelLevelRateLimitFromString(value)
 	case "AutomaticDisableKeywords":
 		operation_setting.AutomaticDisableKeywordsFromString(value)
 	case "AutomaticDisableStatusCodes":

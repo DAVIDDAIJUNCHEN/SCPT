@@ -122,6 +122,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
+	// ---- AlloMax 二次开发：输入侧内容管控（ContentGuard）----
+	// 位置说明：必须在 GenRelayInfo 之前
+	//   1) 有害/注入拦截 → 预扣费前返回 error → 天然 0 计费
+	//   2) PII 脱敏 → 改写内存 request，经 info.Request 传到上游（无需改写 body）
+	if contentGuard := service.ResolveContentGuard(c); contentGuard.InputEnabled() {
+		if reason, hit := service.CheckInputBlock(request, contentGuard); hit {
+			logger.LogWarn(c, "content guard blocked input: "+reason)
+			newAPIError = types.NewError(
+				fmt.Errorf("%s", reason),
+				types.ErrorCodeSensitiveWordsDetected,
+				types.ErrOptionWithStatusCode(http.StatusBadRequest),
+				types.ErrOptionWithSkipRetry(),
+			)
+			// 审计留痕：输入侧拦截发生在渠道选择之前、不走 processChannelError，
+			// 故显式记录错误日志（channelId=0），供合规审计与拦截统计。
+			recordContentGuardBlock(c, reason, request)
+			return
+		}
+		if contentGuard.PIIRedact {
+			if n := service.RedactPIIInRequest(request); n > 0 {
+				logger.LogInfo(c, fmt.Sprintf("content guard: PII redacted in %d message(s)", n))
+			}
+		}
+	}
+
 	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
@@ -193,6 +218,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
+	// ---- AlloMax 二次开发：响应缓存（Response Cache）----
+	// 位置说明：放在「预扣费之后、渠道选择之前」
+	//   · 预扣费已建立 Billing → 命中时 PostTextConsumeQuota 可正常结算（含折扣）
+	//   · 不选渠道、不调模型 → 命中即零 GPU 消耗，毫秒级返回
+	if setting.ResponseCacheEnabled {
+		if cacheKey, ok := service.ResponseCacheKeyOf(request, relayInfo.OriginModelName); ok {
+			if cachedBody, hit := service.GetResponseCacheBody(c.Request.Context(), cacheKey); hit {
+				if service.ServeFromResponseCache(c, relayInfo, cacheKey, cachedBody) {
+					return
+				}
+			}
+		}
+	}
+
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
@@ -255,6 +294,39 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+// recordContentGuardBlock 记录内容管控（ContentGuard）输入侧拦截的审计日志。
+// 输入侧拦截发生在渠道选择之前，不走 processChannelError，故此处 channelId 记 0。
+func recordContentGuardBlock(c *gin.Context, reason string, request dto.Request) {
+	modelName := c.GetString("original_model")
+	if modelName == "" {
+		if req, ok := request.(*dto.GeneralOpenAIRequest); ok && req != nil {
+			modelName = req.Model
+		}
+	}
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	other := map[string]interface{}{
+		"admin_info": map[string]interface{}{
+			"content_guard_block": reason,
+			"reject_stage":        "input",
+		},
+	}
+	model.RecordErrorLog(c,
+		c.GetInt("id"),
+		0, // 输入侧拦截时尚未选定渠道
+		modelName,
+		c.GetString("token_name"),
+		"status_code=400, "+reason,
+		c.GetInt("token_id"),
+		int(time.Since(startTime).Seconds()),
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream),
+		c.GetString("group"),
+		other,
+	)
 }
 
 // CountClaudeTokens implements Anthropic's token-counting utility endpoint.

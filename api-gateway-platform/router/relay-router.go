@@ -71,6 +71,8 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	// AlloMax: 模型级限流（per-model RPM，保护共享稀缺算力）
+	relayV1Router.Use(middleware.ModelLevelRateLimit())
 	// AlloMax: per-token 能力管控（RPM / 并发）
 	relayV1Router.Use(middleware.TokenQuotaControl())
 	{

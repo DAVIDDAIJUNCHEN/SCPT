@@ -339,6 +339,7 @@ func AddToken(c *gin.Context) {
 		RateLimitTPM:       token.RateLimitTPM,
 		MaxConcurrency:     token.MaxConcurrency,
 		ModelGuard:         token.ModelGuard,
+		ContentGuard:       token.ContentGuard,
 		AllowIps:           token.AllowIps,
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
@@ -423,6 +424,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.RateLimitTPM = token.RateLimitTPM
 		cleanToken.MaxConcurrency = token.MaxConcurrency
 		cleanToken.ModelGuard = token.ModelGuard
+		cleanToken.ContentGuard = token.ContentGuard
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry

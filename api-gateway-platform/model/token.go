@@ -29,6 +29,7 @@ type Token struct {
 	RateLimitTPM     int    `json:"rate_limit_tpm" gorm:"default:0"`  // 每分钟 token 上限（0=不限制，粗粒度估算）
 	MaxConcurrency   int    `json:"max_concurrency" gorm:"default:0"` // 最大并发请求数（0=不限制）
 	ModelGuard       string `json:"model_guard" gorm:"type:text"`     // 模型级能力管控 JSON（禁用/输出上限/思考档位白名单）
+	ContentGuard     string `json:"content_guard" gorm:"type:text"`   // 内容管控 JSON（PII 脱敏/有害拦截/注入检测/输出拦截）
 	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
 	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
 	Group              string         `json:"group" gorm:"default:''"`
@@ -318,7 +319,9 @@ func (token *Token) Update() (err error) {
 		common.SysLog("failed to invalidate token cache before update: " + cacheErr.Error())
 	}
 	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
+		// AlloMax 二次开发：per-token 能力管控字段（限流 / 模型级管控 / 内容管控）
+		"rate_limit_rpm", "rate_limit_tpm", "max_concurrency", "model_guard", "content_guard").Updates(token).Error
 }
 
 func (token *Token) SelectUpdate() (err error) {

@@ -351,6 +351,31 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		responseBody = geminiRespStr
 	}
 
+	// AlloMax 二次开发：输出侧内容管控（ContentGuard）
+	// ⚠️ 必须在 IOCopyBytesGracefully 写回客户端之前检查 —— 命中即返回错误，不写回响应体；
+	//    随后 compatible_handler 不提交计费 + controller/relay.go deferred Refund → 0 计费。
+	{
+		var outText strings.Builder
+		for _, choice := range simpleResponse.Choices {
+			outText.WriteString(choice.Message.StringContent())
+		}
+		if outText.Len() > 0 {
+			service.SetResponseText(c, outText.String())
+			if outReason, blocked := service.CheckOutputGuardFromContext(c, service.ResolveContentGuard(c)); blocked {
+				logger.LogWarn(c, "content guard blocked output: "+outReason)
+				return nil, types.NewErrorWithStatusCode(
+					fmt.Errorf("%s", outReason),
+					types.ErrorCodeSensitiveWordsDetected,
+					http.StatusBadRequest,
+					types.ErrOptionWithSkipRetry(),
+				)
+			}
+		}
+	}
+
+	// AlloMax 二次开发：写入响应缓存（同样需在写回之前 —— responseBody 已就绪）
+	service.StoreResponseCacheFromBody(c, info.Request, info.OriginModelName, responseBody, &simpleResponse.Usage)
+
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil

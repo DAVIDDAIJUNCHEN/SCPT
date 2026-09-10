@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -110,6 +111,10 @@ func TokenQuotaControl() gin.HandlerFunc {
 			}
 		}
 
+		// ---- AlloMax 二次开发：内容管控（ContentGuard）配置解析与缓存 ----
+		// 复用本次已读取的 token，避免 relay 侧二次查库；缺失时 relay 侧按全局设置兜底
+		service.CacheContentGuardConfig(c, service.BuildContentGuardConfig(token.ContentGuard))
+
 		c.Next()
 	}
 }
@@ -190,15 +195,17 @@ func estimateRequestTokens(c *gin.Context) int {
 // ModelGuardRule 与 Token.ModelGuard JSON 对应
 type ModelGuardRule struct {
 	// 全局默认（无 per-model 命中时生效）
-	Disabled         bool                   `json:"disabled,omitempty"`
-	MaxOutputTokens  int                    `json:"max_output_tokens,omitempty"`
-	ReasoningEfforts []string               `json:"reasoning_efforts,omitempty"`
+	Disabled         bool                       `json:"disabled,omitempty"`
+	MaxOutputTokens  int                        `json:"max_output_tokens,omitempty"`
+	MaxInputTokens   int                        `json:"max_input_tokens,omitempty"`
+	ReasoningEfforts []string                   `json:"reasoning_efforts,omitempty"`
 	Models           map[string]ModelGuardModel `json:"models,omitempty"`
 }
 
 type ModelGuardModel struct {
 	Disabled         bool     `json:"disabled,omitempty"`
 	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
+	MaxInputTokens   int      `json:"max_input_tokens,omitempty"`
 	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 }
 
@@ -234,15 +241,17 @@ func applyModelGuard(c *gin.Context, token *model.Token) error {
 	cfg := ModelGuardModel{
 		Disabled:         rule.Disabled,
 		MaxOutputTokens:  rule.MaxOutputTokens,
+		MaxInputTokens:   rule.MaxInputTokens,
 		ReasoningEfforts: rule.ReasoningEfforts,
 	}
 	if hasModel {
 		cfg.Disabled = gm.Disabled
 		cfg.MaxOutputTokens = gm.MaxOutputTokens
+		cfg.MaxInputTokens = gm.MaxInputTokens
 		cfg.ReasoningEfforts = gm.ReasoningEfforts
 	}
 	// 规则全空 → 无管控
-	if !cfg.Disabled && cfg.MaxOutputTokens <= 0 && len(cfg.ReasoningEfforts) == 0 {
+	if !cfg.Disabled && cfg.MaxOutputTokens <= 0 && cfg.MaxInputTokens <= 0 && len(cfg.ReasoningEfforts) == 0 {
 		return nil
 	}
 
@@ -254,6 +263,14 @@ func applyModelGuard(c *gin.Context, token *model.Token) error {
 		return &modelGuardError{http.StatusBadRequest,
 			fmt.Sprintf("模型 %s 的输出长度上限为 %d tokens（请求 %d）",
 				meta.Model, cfg.MaxOutputTokens, meta.MaxTokens), "max_tokens_exceeded"}
+	}
+	// 输入长度上限：防止误传超长文档打爆额度（粗粒度估算，与 TPM 一致用 body 字节/4）
+	if cfg.MaxInputTokens > 0 {
+		if estIn := estimateRequestInputTokens(c); estIn > cfg.MaxInputTokens {
+			return &modelGuardError{http.StatusBadRequest,
+				fmt.Sprintf("模型 %s 的输入长度上限约 %d tokens（本次约 %d），请缩短输入或改用长上下文模型",
+					meta.Model, cfg.MaxInputTokens, estIn), "max_input_tokens_exceeded"}
+		}
 	}
 	if len(cfg.ReasoningEfforts) > 0 && meta.ReasoningEffort != "" {
 		allowed := false
@@ -271,6 +288,21 @@ func applyModelGuard(c *gin.Context, token *model.Token) error {
 		}
 	}
 	return nil
+}
+
+// estimateRequestInputTokens 粗粒度估算输入 token（与 TPM 估算口径一致：body 字节/4）
+func estimateRequestInputTokens(c *gin.Context) int {
+	bodyLen := 0
+	if storage, err := common.GetBodyStorage(c); err == nil {
+		if bs, err := storage.Bytes(); err == nil {
+			bodyLen = len(bs)
+		}
+	}
+	est := bodyLen / 4
+	if est < 1 {
+		est = 1
+	}
+	return est
 }
 
 func abortModelGuard(c *gin.Context, err error) {
