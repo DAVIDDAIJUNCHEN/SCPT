@@ -515,18 +515,20 @@ function buildMultimodalSample(
   const model = ctx.modelName
 
   // 构造多模态 messages 的 JSON 片段
+  // 注意：音频类模型（Qwen2-Audio 等，SGLang 后端）只认 audio_url + data URL，
+  //      用 OpenAI 的 input_audio 会被后端 400 拒绝 —— 已实测。
   type ContentPart =
     | { type: 'text'; text: string }
-    | { type: 'input_audio'; input_audio: { data: string; format: string } }
+    | { type: 'audio_url'; audio_url: { url: string } }
     | { type: 'image_url'; image_url: { url: string } }
   let contentParts: ContentPart[]
   if (kind === 'audio') {
     contentParts = [
-      { type: 'text', text: '请转写/理解这段音频' },
+      { type: 'text', text: '请理解这段音频' },
       {
-        type: 'input_audio',
-        // 将本地 wav 文件 base64 编码后填入 data 字段
-        input_audio: { data: 'YOUR_AUDIO_BASE64', format: 'wav' },
+        type: 'audio_url',
+        // 本地 wav 转 base64 后拼成 data URL；示例用省略写法占位
+        audio_url: { url: 'data:audio/wav;base64,YOUR_AUDIO_BASE64' },
       },
     ]
   } else {
@@ -557,8 +559,8 @@ function buildMultimodalSample(
 
   const partLines = bodyObj.messages[0].content.map((p) => {
     if (p.type === 'text') return `        {"type": "text", "text": "${p.text}"}`
-    if (p.type === 'input_audio')
-      return `        {"type": "input_audio", "input_audio": {"data": "YOUR_AUDIO_BASE64", "format": "wav"}}`
+    if (p.type === 'audio_url')
+      return `        {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,YOUR_AUDIO_BASE64"}}`
     return `        {"type": "image_url", "image_url": {"url": "https://example.com/input.png"}}`
   })
 

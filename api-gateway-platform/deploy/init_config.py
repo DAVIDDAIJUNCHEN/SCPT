@@ -34,8 +34,9 @@ CHANNELS = [
     ("qwen3.8-flash-next", "http://10.32.1.3:30577", "qwen3.8-flash-next", "default"),
     ("glm-5.3-flash", "http://10.32.1.3:30569", "glm-5.3-flash", "default"),
     ("Qwen3-VL-30B", "http://10.32.1.3:30473", "Qwen3-VL-30B-A3B-Instruct", "default"),
-    ("Qwen2-Audio-7B", "http://10.32.1.3:30474", "Qwen2-Audio-7B-Instruct", "default"),
-    ("FLUX.2-klein-4B", "http://10.32.1.3:30475", "FLUX.2-klein-4B", "default"),
+    # MIG 部署（node003，all-1g.18gb × 4 片跨 2 张物理卡，tp=2）
+    ("Qwen2-Audio-7B", "http://10.32.1.3:30686", "Qwen2-Audio-7B-Instruct", "default"),
+    ("FLUX.2-klein-4B", "http://10.32.1.3:30606", "FLUX.2-klein-4B", "default"),
     ("MinerU2.5-Pro", "http://10.32.1.3:30556", "MinerU2.5-Pro-2605-1.2B", "default"),
     ("Qwen3-ASR-1.7B", "http://10.32.1.3:30555", "Qwen3-ASR-1.7B", "default"),
     ("cosyvoice-v3", "http://10.32.1.3:30492", "cosyvoice-v3", "default"),
