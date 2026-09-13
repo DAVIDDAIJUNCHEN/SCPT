@@ -15,10 +15,10 @@ import { PublicLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { resolveServerAddress } from '@/lib/server-address'
 
 // 平台 base_url（OpenAI 兼容），动态取当前来源
-const BASE_URL =
-  (typeof window !== 'undefined' ? window.location.origin : '') + '/v1'
+const BASE_URL = `${resolveServerAddress()}/v1`
 
 // 对外开放的模型（后期可改为从后端拉取）
 const MODELS = {

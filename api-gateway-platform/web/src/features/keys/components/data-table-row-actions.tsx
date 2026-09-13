@@ -52,6 +52,7 @@ import { resolveChatUrl, type ChatPreset } from '@/features/chat/lib/chat-links'
 import { sendToFluent } from '@/features/chat/lib/send-to-fluent'
 import { encodeChannelConnectionInfo } from '@/lib/channel-connection-info'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
+import { resolveServerAddress } from '@/lib/server-address'
 
 import { updateApiKeyStatus } from '../api'
 import { API_KEY_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
@@ -59,16 +60,9 @@ import { apiKeySchema } from '../types'
 import { useApiKeys } from './api-keys-provider'
 
 function getServerAddress(): string {
-  try {
-    const raw = localStorage.getItem('status')
-    if (raw) {
-      const status = JSON.parse(raw)
-      if (status.server_address) return status.server_address as string
-    }
-  } catch {
-    /* empty */
-  }
-  return window.location.origin
+  // 统一走共享解析：优先当前浏览器地址，后端配置仅作兜底，
+  // 避免把 localhost:3000 这种本机地址发给学生。
+  return resolveServerAddress()
 }
 
 type DataTableRowActionsProps<TData> = {

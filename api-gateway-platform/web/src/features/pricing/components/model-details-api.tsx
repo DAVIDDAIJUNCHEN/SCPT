@@ -39,6 +39,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useStatus } from '@/hooks/use-status'
+import { resolveServerAddress } from '@/lib/server-address'
 
 import {
   buildRateLimits,
@@ -652,32 +653,11 @@ function CodeSamplesSection(props: {
   const { status } = useStatus()
 
   const baseUrl = useMemo(() => {
-    // 优先：用户当前浏览器实际访问的地址。访问什么网址，示例就给什么地址，
-    // 复制即用，不会落到后端默认的 localhost 内网地址。
-    if (typeof window !== 'undefined') {
-      const origin = window.location.origin
-      if (origin) {
-        const host = (() => {
-          try {
-            return new URL(origin).hostname
-          } catch {
-            return ''
-          }
-        })()
-        if (host && host !== 'localhost' && host !== '127.0.0.1') {
-          return origin.replace(/\/$/, '')
-        }
-      }
-    }
-    const candidate =
-      (status as Record<string, unknown> | null)?.server_address ??
-      (status as Record<string, unknown> | null)?.serverAddress ??
-      (status?.data as Record<string, unknown> | undefined)?.server_address ??
-      (status?.data as Record<string, unknown> | undefined)?.serverAddress
-    if (candidate && typeof candidate === 'string') {
-      return candidate.replace(/\/$/, '')
-    }
-    return 'https://api.example.com'
+    // 统一走共享解析：
+    // ① 浏览器地址栏优先 —— 使用者访问什么地址，示例就给什么地址，复制即用；
+    // ② 其次才用后台「系统设置 → 服务器地址」；
+    // ③ 屏蔽 localhost:3000 这类外网不可达的内部地址。
+    return resolveServerAddress(status)
   }, [status])
 
   const endpoints = useMemo(() => {

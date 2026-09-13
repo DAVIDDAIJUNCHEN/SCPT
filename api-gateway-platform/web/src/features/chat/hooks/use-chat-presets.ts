@@ -20,6 +20,7 @@ import { useMemo } from 'react'
 
 import type { SystemStatus } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
+import { resolveServerAddress } from '@/lib/server-address'
 
 import {
   type ChatPreset,
@@ -40,21 +41,8 @@ function getStoredStatusChats(): RawChatConfig {
 }
 
 function extractServerAddress(status: SystemStatus | null) {
-  const fromStatus =
-    (status?.server_address as string | undefined) ??
-    (status?.serverAddress as string | undefined) ??
-    status?.data?.server_address ??
-    (status?.data as Record<string, unknown> | undefined)?.serverAddress
-
-  if (fromStatus && typeof fromStatus === 'string') {
-    return fromStatus
-  }
-
-  if (typeof window !== 'undefined') {
-    return window.location.origin
-  }
-
-  return ''
+  // 统一走共享解析：浏览器地址优先，避免分享链接里出现 localhost:3000
+  return resolveServerAddress(status)
 }
 
 function extractChats(status: SystemStatus | null): RawChatConfig {

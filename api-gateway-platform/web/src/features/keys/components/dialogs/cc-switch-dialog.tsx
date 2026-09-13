@@ -27,6 +27,7 @@ import { ComboboxInput } from '@/components/ui/combobox-input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { getUserModels } from '@/lib/api'
+import { resolveServerAddress } from '@/lib/server-address'
 
 const APP_CONFIGS = {
   claude: {
@@ -54,16 +55,8 @@ const APP_CONFIGS = {
 type AppType = keyof typeof APP_CONFIGS
 
 function getServerAddress(): string {
-  try {
-    const raw = localStorage.getItem('status')
-    if (raw) {
-      const status = JSON.parse(raw)
-      if (status.server_address) return status.server_address
-    }
-  } catch {
-    /* empty */
-  }
-  return window.location.origin
+  // 统一走共享解析：优先当前浏览器地址，避免导出配置里带 localhost:3000
+  return resolveServerAddress()
 }
 
 function buildCCSwitchURL(
