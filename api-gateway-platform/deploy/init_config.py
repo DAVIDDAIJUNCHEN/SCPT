@@ -33,13 +33,15 @@ CHANNELS = [
     ("deepseek-v4-flash-0731 (DGX)", "http://10.254.1.25:18000", "deepseek-v4-flash-0731", "default,vip"),
     ("qwen3.8-flash-next", "http://10.32.1.3:30577", "qwen3.8-flash-next", "default"),
     ("glm-5.3-flash", "http://10.32.1.3:30569", "glm-5.3-flash", "default"),
-    ("Qwen3-VL-30B", "http://10.32.1.3:30473", "Qwen3-VL-30B-A3B-Instruct", "default"),
+    ("Qwen3-VL-30B", "http://10.32.1.3:30694", "Qwen3-VL-30B-A3B-Instruct", "default"),
     # MIG 部署（node003，all-1g.18gb × 4 片跨 2 张物理卡，tp=2）
     ("Qwen2-Audio-7B", "http://10.32.1.3:30686", "Qwen2-Audio-7B-Instruct", "default"),
     ("FLUX.2-klein-4B", "http://10.32.1.3:30606", "FLUX.2-klein-4B", "default"),
     ("MinerU2.5-Pro", "http://10.32.1.3:30556", "MinerU2.5-Pro-2605-1.2B", "default"),
     ("Qwen3-ASR-1.7B", "http://10.32.1.3:30555", "Qwen3-ASR-1.7B", "default"),
-    ("cosyvoice-v3", "http://10.32.1.3:30492", "cosyvoice-v3", "default"),
+    ("cosyvoice-v3", "http://10.32.1.3:30691", "cosyvoice-v3", "default"),
+    ("Campus-DeepSeek-V4-Pro-0813", "http://10.32.1.3:30598", "DeepSeek-V4-Pro-0813", "default"),
+    ("Campus-DeepSeek-V4.1-Flash", "http://10.32.1.3:30604", "DeepSeek-V4.1-Flash", "default"),
 ]
 
 # 渠道 key（内网模型源通常无独立鉴权，用统一占位 key）
@@ -55,6 +57,8 @@ MODEL_PRICES = {
     "glm-5.3-flash": (0.054795, 3.5),
     "Qwen3-VL-30B-A3B-Instruct": (0.061644, 4.0),
     "Qwen2-Audio-7B-Instruct": (0.034247, 1.0),
+    "DeepSeek-V4-Pro-0813": (0.109589, 2.0),
+    "DeepSeek-V4.1-Flash": (0.068493, 2.0),
     # 按次/按量模型：用低 token 价（图像/TTS/ASR/文档）
     "FLUX.2-klein-4B": (0.068493, 1.0),
     "MinerU2.5-Pro-2605-1.2B": (0.068493, 1.0),
