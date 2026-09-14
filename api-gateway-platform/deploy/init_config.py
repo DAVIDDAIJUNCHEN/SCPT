@@ -42,6 +42,8 @@ CHANNELS = [
     ("cosyvoice-v3", "http://10.32.1.3:30691", "cosyvoice-v3", "default"),
     ("Campus-DeepSeek-V4-Pro-0813", "http://10.32.1.3:30598", "DeepSeek-V4-Pro-0813", "default"),
     ("Campus-DeepSeek-V4.1-Flash", "http://10.32.1.3:30604", "DeepSeek-V4.1-Flash", "default"),
+    # GLM-5.3 满血版（node004，8×H20-141G，TP8，SGLang dev-cu13）
+    ("Campus-GLM-5.3", "http://10.32.1.3:30608", "glm-5.3", "default"),
 ]
 
 # 渠道 key（内网模型源通常无独立鉴权，用统一占位 key）
@@ -59,6 +61,8 @@ MODEL_PRICES = {
     "Qwen2-Audio-7B-Instruct": (0.034247, 1.0),
     "DeepSeek-V4-Pro-0813": (0.109589, 2.0),
     "DeepSeek-V4.1-Flash": (0.068493, 2.0),
+    # GLM-5.3 满血版：官网 8元/M 输入、28元/M 输出、2元/M 缓存命中
+    "glm-5.3": (0.547945, 3.5),
     # 按次/按量模型：用低 token 价（图像/TTS/ASR/文档）
     "FLUX.2-klein-4B": (0.068493, 1.0),
     "MinerU2.5-Pro-2605-1.2B": (0.068493, 1.0),
