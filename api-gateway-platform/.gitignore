@@ -38,6 +38,7 @@ bin/
 deploy/*.tar*
 *.sql.gz
 backups/
+pricing-backup/
 
 # Python 缓存
 __pycache__/
