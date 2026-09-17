@@ -1,0 +1,73 @@
+# 星语 Chat 容器编排：Open WebUI + SearXNG
+# 部署位置：VPS 10.255.12.210 /data/owui/docker-compose.yml
+# 用法：docker compose -f /data/owui/docker-compose.yml up -d
+# 前置：镜像 ghcr.io/open-webui/open-webui:main 已在本地（7.16GB，2026-09-04 版）
+#       searxng/searxng:latest 由 nohup 后台拉取（日志 /tmp/pull-searxng.log）
+
+networks:
+  owui-net:
+    name: owui-net
+    driver: bridge
+
+services:
+  owui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: owui
+    restart: unless-stopped
+    networks: [owui-net]
+    # 只绑回环：外部一律走 nginx（443 /chat/ 与 8443），不直接暴露
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /data/owui/data:/app/backend/data
+    environment:
+      # ---- 基础 ----
+      - WEBUI_AUTH=true
+      - WEBUI_NAME=星语
+      - WEBUI_URL=https://10.255.12.210:8443
+      - ENABLE_OLLAMA_API=false          # 不用本地 Ollama，全部走星语网关
+      # ---- 后端为自签证书的星语网关，必须关 SSL 校验（POC 验证过）----
+      - AIOHTTP_CLIENT_SESSION_SSL=false
+      # ---- HF 走国内镜像：VPS 出站 huggingface.co 不通，默认源会导致启动卡死在
+      #      下载 embedding 模型 all-MiniLM-L6-v2 的无限重试上（2026-09-17 实测）----
+      - HF_ENDPOINT=https://hf-mirror.com
+      # ---- 预置星语网关连接（S1.3 在 OWUI 管理台核对，token 建号后替换）----
+      - OPENAI_API_BASE_URL=https://10.255.12.210/v1
+      - OPENAI_API_KEY=xy_admin_token_placeholder
+      # ---- 联网搜索：SearXNG（容器网内直连，容器端口 8080）----
+      - RAG_WEB_SEARCH_ENGINE=searxng
+      - RAG_WEB_SEARCH_SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>
+      - ENABLE_RAG_WEB_SEARCH=true
+      # ---- 资源上限（VPS 与星语网关混部，避免抢内存）----
+      - WEBUI_CONCURRENCY=4
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    networks: [owui-net]
+    # 仅调试用回环映射；OWUI 走容器网 searxng:8080 访问
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - /data/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          memory: 1g

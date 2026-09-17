@@ -1,0 +1,38 @@
+# SearXNG 最小可用配置（星语 Chat 联网搜索后端）
+# 部署位置：VPS /data/searxng/settings.yml
+# 关键点：
+#  1. search.formats 必须含 json —— OWUI 走 JSON API，默认只有 html 会 403
+#  2. server.limiter=false —— 校园内网直连，无需反爬限流（对外暴露的是 OWUI 不是 SearXNG）
+#  3. secret_key 必填，否则容器启动即退出（已用 openssl rand -hex 32 生成）
+#  4. 引擎仅启用 bing + baidu：2026-09-17 实测 VPS 出站 baidu/bing 可达，
+#     duckduckgo 超时、默认引擎组（brave/ddg/google）在国内校园网全部 timeout
+
+use_default_settings:
+  engines:
+    keep_only:
+      - sogou
+      - chinaso
+
+# 2026-09-17 实测（SearXNG 2026.9.16）：
+#  - bing 引擎解析 0 结果（上游 HTML 可达，疑似新版 XPath 失配，待上游修复）
+#  - baidu 触发 CAPTCHA（校园网出口 IP 风控）
+#  - 改用国产引擎 sogou + chinaso，国内直连速度快
+engines:
+  - name: sogou
+    disabled: false
+    timeout: 8.0
+  - name: chinaso
+    disabled: false
+    timeout: 8.0
+
+server:
+  secret_key: "48cd8c1e2b34d5f4bd3ad7e5bd36507c3ffd1bbf1453c77f1a8e2bb814e417f6"
+  limiter: false
+  image_proxy: true
+  port: 8080
+  bind_address: "0.0.0.0"
+
+search:
+  formats:
+    - html
+    - json
