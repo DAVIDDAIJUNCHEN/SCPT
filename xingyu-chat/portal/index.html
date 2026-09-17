@@ -288,6 +288,8 @@ var CHAT_URL = (location.protocol === 'http:' || location.protocol === 'https:')
   ? location.origin.replace(/:(443|80)$/, '') + ':8443' : FALLBACK_ORIGIN + ':8443';
 // OWUI 0.11.3 无 BASE_PATH：子路径 /chat/ 与星语绝对路径冲突（实测 /api/config 404），
 // Chat 固定走 8443 独立端口；域名到位后改为 https://ai-chat.scpt.edu.cn
+// 「和星语对话」按钮同步指向 8443（href="/chat" 仅为无 JS 时的语义回退）
+document.getElementById('btn-chat-link').href = CHAT_URL + '/';
 
 // ===== i18n：DS 同款语言切换（中文 | EN），localStorage 记忆 =====
 var I18N = {
