@@ -5547,6 +5547,17 @@
     "Phone number": "Phone number",
     "Please enter a valid phone number": "Please enter a valid phone number",
     "Sign in with phone number": "Sign in with phone number",
-    "Verification code sent": "Verification code sent"
-  }
+    "Verification code sent": "Verification code sent",
+    "Authorize sign-in": "Authorize sign-in",
+    "The app will receive the following account info": "The app will receive the following account info",
+    "After authorization, {{client}} will get these permissions": "After authorization, {{client}} will get these permissions",
+    "Read your username and display name (profile)": "Read your username and display name (profile)",
+    "Read your email address (email)": "Read your email address (email)",
+    "Approve and continue": "Approve and continue",
+    "Authorizing...": "Authorizing...",
+    "Deny": "Deny",
+    "You will be redirected to {{redirect}}": "You will be redirected to {{redirect}}",
+    "Authorization failed": "Authorization failed",
+    "Authorization failed, please retry": "Authorization failed, please retry",
+    "third-party app": "third-party app"  }
 }

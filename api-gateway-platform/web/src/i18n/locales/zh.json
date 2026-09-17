@@ -5557,6 +5557,17 @@
     "Phone number": "手机号",
     "Please enter a valid phone number": "请输入正确的手机号",
     "Sign in with phone number": "手机号验证码登录",
-    "Verification code sent": "验证码已发送"
-  }
+    "Verification code sent": "验证码已发送",
+    "Authorize sign-in": "授权登录",
+    "The app will receive the following account info": "应用将获取你的以下账号信息",
+    "After authorization, {{client}} will get these permissions": "授权后，{{client}} 将获得以下权限",
+    "Read your username and display name (profile)": "读取你的用户名与显示名称（profile）",
+    "Read your email address (email)": "读取你的邮箱地址（email）",
+    "Approve and continue": "同意并继续",
+    "Authorizing...": "授权中...",
+    "Deny": "拒绝",
+    "You will be redirected to {{redirect}}": "授权后你将跳转至 {{redirect}}",
+    "Authorization failed": "授权失败",
+    "Authorization failed, please retry": "授权失败，请重试",
+    "third-party app": "第三方应用"  }
 }
