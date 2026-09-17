@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/common/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -185,11 +186,42 @@ func OIDCAuthorize(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// AlloMax S2.x B1: 授权码签发成功即视为用户同意（首次）或复用既有授权，
+	// 落库授权记忆，后续登录前端查询到 consent 后自动跳过同意页。
+	if err := model.SaveOIDCConsent(identity.UserID, request.ClientID, strings.Join(scopes, " ")); err != nil {
+		// 授权记忆落库失败不影响登录主流程，仅记日志
+		logger.LogError(c.Request.Context(), fmt.Sprintf("[OIDC-Provider] save consent failed: %s", err.Error()))
+	} else {
+		model.TouchOIDCConsent(identity.UserID, request.ClientID)
+	}
 	common.ApiSuccess(c, gin.H{
 		"code":       code,
 		"state":      request.State,
 		"expires_at": expiresAt.Unix(),
 	})
+}
+
+// OIDCConsentStatus GET /api/oidc/consent?client_id=&scope= — 前端授权页查询
+// 当前用户对该 client 是否已有覆盖请求 scope 的授权记忆（有则自动跳过同意页）。
+func OIDCConsentStatus(c *gin.Context) {
+	clientId := strings.TrimSpace(c.Query("client_id"))
+	scope := strings.TrimSpace(c.Query("scope"))
+	if clientId == "" {
+		common.ApiErrorMsg(c, "缺少 client_id")
+		return
+	}
+	identity, ok := middleware.GetSessionAuthIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "请先登录"})
+		return
+	}
+	if clientId != oidcClientID() {
+		// 未知 client 一律要求显式同意
+		common.ApiSuccess(c, gin.H{"granted": false})
+		return
+	}
+	granted := model.HasOIDCConsent(identity.UserID, clientId, scope)
+	common.ApiSuccess(c, gin.H{"granted": granted})
 }
 
 func parseOIDCScopes(scope string) []string {

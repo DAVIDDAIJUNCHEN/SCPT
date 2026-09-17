@@ -365,6 +365,7 @@ func migrateDB() error {
 		&CasbinRule{},
 		&AuthzRole{},
 		&SmsLog{},
+		&OIDCConsent{},
 	)
 	if err != nil {
 		return err

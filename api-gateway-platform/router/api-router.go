@@ -69,6 +69,7 @@ func SetApiRouter(router *gin.Engine) {
 		oidcProviderRoute := apiRouter.Group("/oidc")
 		{
 			oidcProviderRoute.GET("/config", controller.OIDCProviderConfigured)
+			oidcProviderRoute.GET("/consent", middleware.UserAuth(), controller.OIDCConsentStatus)
 			oidcProviderRoute.POST("/authorize", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.OIDCAuthorize)
 			oidcProviderRoute.POST("/token", middleware.CriticalRateLimit(), controller.OIDCToken)
 			oidcProviderRoute.GET("/userinfo", middleware.CriticalRateLimit(), controller.OIDCUserinfo)
