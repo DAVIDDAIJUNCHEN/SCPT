@@ -1,0 +1,95 @@
+/* ===== 川邮·星语 Chat · 主题 v1（DS 风格深色板 + 星语品牌色 #4562f0）=====
+ * 覆盖 Tailwind 工具类（custom.css 在 app CSS 之后加载 + !important）
+ * 深色：中性灰（DS #292a2d 系，去 Tailwind 蓝灰调）；主色：星语 #4562f0
+ */
+
+/* ---------- 主色：blue-500 族 → 星语品牌 ---------- */
+.bg-blue-500 { background-color: #4562f0 !important; }
+.dark .dark\:bg-blue-500 { background-color: #4562f0 !important; }
+.hover\:bg-blue-600:hover { background-color: #3b53e0 !important; }
+.dark .dark\:hover\:bg-blue-600:hover { background-color: #3b53e0 !important; }
+.text-blue-500 { color: #4562f0 !important; }
+.dark .dark\:text-blue-400 { color: #6d84f5 !important; }
+.text-blue-400 { color: #4562f0 !important; }
+.border-blue-500 { border-color: #4562f0 !important; }
+.dark .dark\:border-blue-400 { border-color: #4562f0 !important; }
+.focus\:border-blue-500:focus { border-color: #4562f0 !important; }
+.ring-blue-500 { --tw-ring-color: #4562f0 !important; }
+.bg-blue-50 { background-color: #eef1fe !important; }
+.dark .dark\:bg-blue-50 { background-color: #2a3150 !important; }
+
+/* ---------- 深色板：Tailwind 蓝灰 → DS 中性灰 ---------- */
+.dark .bg-gray-950 { background-color: #131316 !important; }
+.dark .dark\:bg-gray-950 { background-color: #131316 !important; }
+.dark .bg-gray-900 { background-color: #1f2023 !important; }
+.dark .dark\:bg-gray-900 { background-color: #1f2023 !important; }
+.dark .bg-gray-850 { background-color: #292a2d !important; }
+.dark .dark\:bg-gray-850 { background-color: #292a2d !important; }
+.dark .bg-gray-800 { background-color: #323337 !important; }
+.dark .dark\:bg-gray-800 { background-color: #323337 !important; }
+.dark .bg-gray-700 { background-color: #3b3c41 !important; }
+.dark .dark\:bg-gray-700 { background-color: #3b3c41 !important; }
+.dark .bg-gray-800\/40 { background-color: rgba(50,51,55,.4) !important; }
+.dark .dark\:bg-gray-800\/40 { background-color: rgba(50,51,55,.4) !important; }
+.dark .bg-gray-800\/25 { background-color: rgba(50,51,55,.25) !important; }
+.dark .bg-gray-800\/20 { background-color: rgba(50,51,55,.2) !important; }
+.dark .bg-gray-50\/40 { background-color: rgba(50,51,55,.4) !important; }
+.dark .dark\:bg-gray-50\/40 { background-color: rgba(50,51,55,.4) !important; }
+.dark .bg-gray-50 { background-color: #292a2d !important; }
+.dark .dark\:bg-gray-50 { background-color: #292a2d !important; }
+.dark .bg-gray-100 { background-color: #323337 !important; }
+.dark .dark\:bg-gray-100 { background-color: #323337 !important; }
+.dark .bg-gray-200 { background-color: #3b3c41 !important; }
+
+/* 悬停态统一加深 */
+.dark .dark\:hover\:bg-gray-800:hover { background-color: #323337 !important; }
+.dark .dark\:hover\:bg-gray-700:hover { background-color: #3b3c41 !important; }
+.dark .dark\:hover\:bg-gray-100:hover { background-color: #323337 !important; }
+.dark .hover\:bg-gray-850:hover { background-color: #323337 !important; }
+
+/* 边框 */
+.dark .border-gray-850 { border-color: #2e2f33 !important; }
+.dark .dark\:border-gray-850 { border-color: #2e2f33 !important; }
+.dark .border-gray-800 { border-color: #2e2f33 !important; }
+.dark .dark\:border-gray-800 { border-color: #2e2f33 !important; }
+.dark .border-gray-700 { border-color: #3b3c41 !important; }
+.dark .dark\:border-gray-700 { border-color: #3b3c41 !important; }
+
+/* ---------- 全局底色（body / html 兜底） ---------- */
+html.dark body { background-color: #292a2d !important; color-scheme: dark; }
+html.dark { background-color: #1f2023 !important; }
+
+/* ---------- 滚动条（DS 细滚动条） ---------- */
+html.dark ::-webkit-scrollbar { width: 6px; height: 6px; }
+html.dark ::-webkit-scrollbar-thumb { background: #3b3c41; border-radius: 3px; }
+html.dark ::-webkit-scrollbar-thumb:hover { background: #4a4b50; }
+html.dark ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- v1.1 补充：真主色是 indigo 族（发送按钮/主 CTA）→ 星语 #4562f0 ---------- */
+.bg-indigo-500 { background-color: #4562f0 !important; }
+.dark .dark\:bg-indigo-500 { background-color: #4562f0 !important; }
+.bg-indigo-400 { background-color: #4562f0 !important; }
+.dark .dark\:bg-indigo-400 { background-color: #4562f0 !important; }
+.bg-indigo-300 { background-color: #6d84f5 !important; }
+.hover\:bg-indigo-600:hover, .dark .dark\:hover\:bg-indigo-600:hover { background-color: #3b53e0 !important; }
+.text-indigo-400 { color: #4562f0 !important; }
+.dark .dark\:text-indigo-400 { color: #6d84f5 !important; }
+.text-indigo-600 { color: #3b53e0 !important; }
+.text-indigo-300 { color: #6d84f5 !important; }
+.border-indigo-500 { border-color: #4562f0 !important; }
+
+/* loading/进度 spinner 主色 */
+.dark .text-indigo-300\/80 { color: rgba(109,132,245,.8) !important; }
+
+/* ---------- v1.1: OWUI 主题持久化键修正 ----------
+ * OWUI 用 localStorage.theme（dark/light/system），新用户默认 system
+ * DS 风格要深色默认 → 在 custom.css 前无法注入 JS，改用 CSS 侧兜底：
+ * light 模式不强制（尊重用户选择），但默认 system 下白色体验也可接受
+ * （后续如需强制深色默认，在 / location sub_filter 注入一行 JS 设置 localStorage）
+ */
+
+/* ---------- v1.2：透明度变体（发送按钮空态 bg-indigo-400/20 等）---------- */
+.bg-indigo-400\/20 { background-color: rgba(69,98,240,.2) !important; }
+.dark .dark\:bg-indigo-400\/20 { background-color: rgba(69,98,240,.2) !important; }
+.dark .dark\:bg-indigo-400\/20:hover { background-color: rgba(69,98,240,.35) !important; }
+.bg-indigo-500\/20 { background-color: rgba(69,98,240,.2) !important; }
