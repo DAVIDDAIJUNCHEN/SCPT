@@ -72,6 +72,7 @@ func SetApiRouter(router *gin.Engine) {
 			oidcProviderRoute.POST("/authorize", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.OIDCAuthorize)
 			oidcProviderRoute.POST("/token", middleware.CriticalRateLimit(), controller.OIDCToken)
 			oidcProviderRoute.GET("/userinfo", middleware.CriticalRateLimit(), controller.OIDCUserinfo)
+			oidcProviderRoute.GET("/jwks", middleware.CriticalRateLimit(), controller.OIDCJWKS)
 		}
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
 

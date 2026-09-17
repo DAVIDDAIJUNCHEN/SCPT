@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,13 +14,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// AlloMax S2.1a: 星语作为 OIDC Provider 的三端点实现。
+// AlloMax S2.1a: 星语作为 OIDC Provider 的端点实现。
 // 客户端凭据走环境变量（当前唯一客户端 = OWUI / xingyu-chat）：
-//   OIDC_PROVIDER_CLIENT_ID / OIDC_PROVIDER_CLIENT_SECRET / OIDC_PROVIDER_REDIRECT_URIS（逗号分隔）
+//   OIDC_PROVIDER_ISSUER / OIDC_PROVIDER_CLIENT_ID / OIDC_PROVIDER_CLIENT_SECRET / OIDC_PROVIDER_REDIRECT_URIS（逗号分隔）
 //
 // 授权码复用 AuthFlow（purpose=oidc_code，HMAC 防伪 + 一次性原子消费 + TTL）。
+// 签名 RS256 + JWKS：OWUI 的 authlib 客户端要求非对称验签（见 /api/oidc/jwks）。
 
 const oidcAuthCodeTTL = 5 * time.Minute
+
+// oidcEmailFallbackDomain 无 email 用户（手机号注册）的合成 email 域，
+// OWUI 默认无 email 即拒绝登录（ENABLE_OAUTH_EMAIL_FALLBACK 才有兜底，不可依赖），
+// 因此星语侧永远返回 email。
+const oidcEmailFallbackDomain = "oidc.xingyu.local"
 
 type oidcAuthorizeRequest struct {
 	ClientID            string `json:"client_id"`
@@ -70,8 +77,44 @@ func oidcRedirectURIs() []string {
 
 // OIDCProviderConfigured GET /api/oidc/config — 前端授权页探测 Provider 是否启用
 func OIDCProviderConfigured(c *gin.Context) {
-	enabled := oidcClientID() != "" && oidcClientSecret() != ""
+	enabled := service.OIDCProviderIssuer() != "" && oidcClientID() != "" && oidcClientSecret() != ""
 	common.ApiSuccess(c, gin.H{"enabled": enabled})
+}
+
+// OIDCDiscovery GET /.well-known/openid-configuration — OIDC Discovery 文档。
+// authlib 用 urljoin(base_url, '/.well-known/openid-configuration') 探测，必须挂根路径。
+func OIDCDiscovery(c *gin.Context) {
+	if service.OIDCProviderIssuer() == "" || oidcClientID() == "" {
+		oidcOAuthError(c, http.StatusNotFound, "not_configured", "OIDC Provider 未启用")
+		return
+	}
+	issuer := service.OIDCProviderIssuer()
+	c.JSON(http.StatusOK, gin.H{
+		"issuer":                                issuer,
+		"authorization_endpoint":                issuer + "/oidc/authorize",
+		"token_endpoint":                        issuer + "/api/oidc/token",
+		"userinfo_endpoint":                     issuer + "/api/oidc/userinfo",
+		"jwks_uri":                              issuer + "/api/oidc/jwks",
+		"registration_endpoint":                 "",
+		"scopes_supported":                      []string{"openid", "profile", "email"},
+		"response_types_supported":              []string{"code"},
+		"response_modes_supported":              []string{"query"},
+		"grant_types_supported":                 []string{"authorization_code"},
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": []string{"RS256"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic"},
+		"claims_supported":                      []string{"sub", "iss", "aud", "exp", "iat", "nonce", "preferred_username", "name", "email", "email_verified"},
+	})
+}
+
+// OIDCJWKS GET /api/oidc/jwks — RSA 公钥曝光（authlib 验 id_token 签名用）。
+func OIDCJWKS(c *gin.Context) {
+	jwk, err := service.OIDCJWK()
+	if err != nil {
+		oidcOAuthError(c, http.StatusInternalServerError, "server_error", "签名密钥不可用")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"keys": []gin.H{jwk}})
 }
 
 // OIDCAuthorize POST /api/oidc/authorize — UserAuth 鉴权，用户已登录并确认授权后签发授权码
@@ -86,7 +129,7 @@ func OIDCAuthorize(c *gin.Context) {
 	request.Scope = strings.TrimSpace(request.Scope)
 	request.Nonce = strings.TrimSpace(request.Nonce)
 
-	if request.ClientID == "" || oidcClientID() == "" || oidcClientSecret() == "" {
+	if request.ClientID == "" || service.OIDCProviderIssuer() == "" || oidcClientID() == "" || oidcClientSecret() == "" {
 		common.ApiErrorMsg(c, "OIDC Provider 未启用")
 		return
 	}
@@ -248,12 +291,14 @@ func OIDCToken(c *gin.Context) {
 		Username: user.Username,
 		Scopes:   strings.Fields(payload.Scope),
 	}
-	accessToken, accessExpires, err := service.IssueOIDCAccessToken(identity, payload.Nonce)
+	// audience = client_id（authlib 校验 id_token.aud 含 client_id）
+	accessToken, accessExpires, err := service.IssueOIDCAccessToken(identity, clientID, payload.Nonce)
 	if err != nil {
 		oidcOAuthError(c, http.StatusInternalServerError, "server_error", "签发访问令牌失败")
 		return
 	}
-	idToken, _, err := service.IssueOIDCIDToken(identity, payload.Nonce)
+	// id_token 携带身份 claim（OWUI 从 id_token backfill userinfo 缺失项，email 必须有）
+	idToken, _, err := service.IssueOIDCIDToken(identity, clientID, payload.Nonce, oidcUserEmail(user), oidcUserDisplayName(user))
 	if err != nil {
 		oidcOAuthError(c, http.StatusInternalServerError, "server_error", "签发身份令牌失败")
 		return
@@ -268,6 +313,22 @@ func OIDCToken(c *gin.Context) {
 	})
 }
 
+// oidcUserEmail 返回用户 email；无 email 用户（手机号注册）合成占位 email，
+// 保证 OWUI（默认无 email 即拒）始终可登录。
+func oidcUserEmail(user *model.User) string {
+	if user.Email != "" {
+		return user.Email
+	}
+	return fmt.Sprintf("%d@%s", user.Id, oidcEmailFallbackDomain)
+}
+
+func oidcUserDisplayName(user *model.User) string {
+	if user.DisplayName != "" {
+		return user.DisplayName
+	}
+	return user.Username
+}
+
 // OIDCUserinfo GET /api/oidc/userinfo — Bearer access_token → 标准声明
 func OIDCUserinfo(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
@@ -275,7 +336,7 @@ func OIDCUserinfo(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token", "error_description": "缺少 Bearer 令牌"})
 		return
 	}
-	identity, err := service.ParseOIDCAccessToken(strings.TrimPrefix(authHeader, "Bearer "))
+	identity, err := service.ParseOIDCAccessToken(strings.TrimPrefix(authHeader, "Bearer "), oidcClientID())
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token", "error_description": "令牌无效或已过期"})
 		return
@@ -289,12 +350,9 @@ func OIDCUserinfo(c *gin.Context) {
 	claims := gin.H{
 		"sub":                strconv.Itoa(user.Id),
 		"preferred_username": user.Username,
-	}
-	if user.DisplayName != "" {
-		claims["name"] = user.DisplayName
-	}
-	if user.Email != "" {
-		claims["email"] = user.Email
+		"name":               oidcUserDisplayName(user),
+		"email":              oidcUserEmail(user),
+		"email_verified":     user.Email != "",
 	}
 	c.JSON(http.StatusOK, claims)
 }
