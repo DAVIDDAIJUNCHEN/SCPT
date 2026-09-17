@@ -5565,6 +5565,7 @@
     "Read your email address (email)": "读取你的邮箱地址（email）",
     "Approve and continue": "同意并继续",
     "Authorizing...": "授权中...",
+    "Checking authorization...": "正在检查授权记录...",
     "Deny": "拒绝",
     "You will be redirected to {{redirect}}": "授权后你将跳转至 {{redirect}}",
     "Authorization failed": "授权失败",

@@ -6,9 +6,10 @@ it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
+import { useEffect } from 'react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -25,6 +26,31 @@ interface OIDCAuthorizeResponse {
     state?: string
     expires_at: number
   }
+}
+
+interface OIDCConsentResponse {
+  success: boolean
+  message?: string
+  data?: {
+    granted: boolean
+  }
+}
+
+// B1 授权记忆：查询用户是否已对该 client 授权过（scope 完全覆盖则跳过同意页）
+function useOIDCConsentStatus(enabled: boolean, clientId?: string, scope?: string) {
+  return useQuery({
+    queryKey: ['oidc-consent', clientId, scope],
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    queryFn: async () => {
+      const res = await api.get<OIDCConsentResponse>('/api/oidc/consent', {
+        params: { client_id: clientId, scope },
+      })
+      return res.data.data?.granted === true
+    },
+  })
 }
 
 export function OIDCAuthorizePage() {
@@ -67,8 +93,35 @@ export function OIDCAuthorizePage() {
     },
   })
 
+  // B1 授权记忆：已授权过（scope 覆盖）则自动提交，跳过同意页
+  const consentQuery = useOIDCConsentStatus(
+    !!user && !!search.client_id,
+    search.client_id,
+    search.scope,
+  )
+  useEffect(() => {
+    if (consentQuery.isSuccess && consentQuery.data === true && !authorizeMutation.isPending && !authorizeMutation.isSuccess) {
+      authorizeMutation.mutate()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consentQuery.isSuccess, consentQuery.data])
+
   const displayName = user?.display_name || user?.username || ''
   const clientName = search.client_id || t('third-party app')
+
+  // 正在检查授权记忆时显示加载态，避免同意页闪现
+  if (user && consentQuery.isPending) {
+    return (
+      <AuthLayout>
+        <div className='flex flex-col items-center gap-4 py-8'>
+          <div className='h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-[#378ADD]' />
+          <p className='text-sm text-muted-foreground'>
+            {t('Checking authorization...')}
+          </p>
+        </div>
+      </AuthLayout>
+    )
+  }
 
   return (
     <AuthLayout>

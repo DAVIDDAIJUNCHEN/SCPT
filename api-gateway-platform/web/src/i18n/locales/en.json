@@ -5555,6 +5555,7 @@
     "Read your email address (email)": "Read your email address (email)",
     "Approve and continue": "Approve and continue",
     "Authorizing...": "Authorizing...",
+    "Checking authorization...": "Checking authorization...",
     "Deny": "Deny",
     "You will be redirected to {{redirect}}": "You will be redirected to {{redirect}}",
     "Authorization failed": "Authorization failed",
