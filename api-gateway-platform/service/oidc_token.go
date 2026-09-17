@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -110,13 +112,18 @@ func OIDCJWK() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// RFC 7518 §6.3.1.2: exponent 编码为不含符号位的**大端二进制**的 base64url
+	// （65537 -> b'\x01\x00\x01' -> "AQAB"），绝不能编码 "65537" 的 ASCII 字节串。
+	eBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(eBytes, uint32(key.PublicKey.E))
+	eBytes = bytes.TrimLeft(eBytes, "\x00")
 	return map[string]any{
 		"kty": "RSA",
 		"use": "sig",
 		"alg": "RS256",
 		"kid": kid,
-	"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
-	"e":   base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(key.PublicKey.E))),
+		"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(eBytes),
 	}, nil
 }
 
