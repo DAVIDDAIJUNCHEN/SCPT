@@ -303,7 +303,9 @@ func WriteRefreshCookie(c *gin.Context, rawToken string) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     RefreshCookieName,
 		Value:    rawToken,
-		Path:     "/api/user/auth",
+		// AlloMax B1+: Path 从 /api/user/auth 放宽为 /，
+		// OIDC GET /oidc/authorize 顶层导航需要携带会话 cookie 供服务端直通识别
+		Path:     "/",
 		MaxAge:   maxAge,
 		Expires:  expiresAt,
 		HttpOnly: true,
@@ -316,7 +318,7 @@ func ClearRefreshCookie(c *gin.Context) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     RefreshCookieName,
 		Value:    "",
-		Path:     "/api/user/auth",
+		Path:     "/",
 		MaxAge:   -1,
 		Expires:  time.Unix(1, 0),
 		HttpOnly: true,

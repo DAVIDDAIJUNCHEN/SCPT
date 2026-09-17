@@ -49,6 +49,13 @@ export function useAuthRedirect() {
 
     const targetPath =
       sanitizeAuthRedirect(redirectTo, window.location.origin) ?? '/dashboard'
+    // AlloMax B1+: OIDC 授权链接必须整页导航，触发服务端
+    // GET /oidc/authorize 直通（会话有效 + 授权记忆覆盖 scope 时
+    // 直接 302 回 callback，无过渡页）；SPA 内部导航不会命中该路由。
+    if (targetPath.startsWith('/oidc/authorize')) {
+      window.location.href = targetPath
+      return
+    }
     navigate({ href: targetPath, replace: true })
   }
 

@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,10 @@ import (
 // 签名 RS256 + JWKS：OWUI 的 authlib 客户端要求非对称验签（见 /api/oidc/jwks）。
 
 const oidcAuthCodeTTL = 5 * time.Minute
+
+// AssetsIndexPage SPA 首页（index.html），由 router 层初始化时注入，
+// 供 OIDCAuthorizeRedirect 不满足直通条件时放行到 SPA 授权页（保留原 URL query）。
+var AssetsIndexPage []byte
 
 // oidcEmailFallbackDomain 无 email 用户（手机号注册）的合成 email 域，
 // OWUI 默认无 email 即拒绝登录（ENABLE_OAUTH_EMAIL_FALLBACK 才有兜底，不可依赖），
@@ -199,6 +204,112 @@ func OIDCAuthorize(c *gin.Context) {
 		"state":      request.State,
 		"expires_at": expiresAt.Unix(),
 	})
+}
+
+// OIDCAuthorizeRedirect GET /oidc/authorize — B1+ 服务端直通。
+// 顶层导航（登录后整页跳转 / 用户直接访问授权 URL）时，若会话有效且已有
+// 覆盖请求 scope 的授权记忆，直接签发授权码并 302 回 callback，浏览器零页面
+// 渲染，彻底消除授权页闪现。任一条件不满足则放行到 SPA 授权页（原流程）。
+func OIDCAuthorizeRedirect(c *gin.Context) {
+	// 放行到 SPA 授权页（登录页/同意页流程由前端路由接管）
+	spaFallback := func() {
+		c.Header("Cache-Control", "no-cache")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", AssetsIndexPage)
+	}
+
+	// 基本参数校验（与 POST authorize 同口径）
+	clientID := strings.TrimSpace(c.Query("client_id"))
+	redirectURI := strings.TrimSpace(c.Query("redirect_uri"))
+	scope := strings.TrimSpace(c.Query("scope"))
+	if clientID == "" || redirectURI == "" || service.OIDCProviderIssuer() == "" || oidcClientID() == "" || oidcClientSecret() == "" {
+		spaFallback()
+		return
+	}
+	if clientID != oidcClientID() {
+		spaFallback()
+		return
+	}
+	allowed := false
+	for _, uri := range oidcRedirectURIs() {
+		if uri == redirectURI {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		spaFallback()
+		return
+	}
+
+	// 会话识别：顶层 GET 无 Authorization 头，从 refresh cookie 提取 sid。
+	// 只验证 sid 对应 session 活性（refresh secret 不参与，避免轮换竞态）。
+	rawRefreshToken, cookieErr := c.Cookie(service.RefreshCookieName)
+	if cookieErr != nil || rawRefreshToken == "" {
+		spaFallback()
+		return
+	}
+	sid, ok := service.RefreshTokenSID(rawRefreshToken)
+	if !ok {
+		spaFallback()
+		return
+	}
+	session, err := model.GetUserSessionCached(sid)
+	if err != nil || session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
+		spaFallback()
+		return
+	}
+	identity, err := service.ValidateSessionReference(session.UserID, sid)
+	if err != nil {
+		spaFallback()
+		return
+	}
+
+	// 授权记忆判定：scope 覆盖才直通，否则仍需用户显式同意
+	if !model.HasOIDCConsent(identity.UserID, clientID, scope) {
+		spaFallback()
+		return
+	}
+
+	// 全部条件满足：签发授权码 + 302 callback（零页面渲染直通）
+	scopes := parseOIDCScopes(scope)
+	payload, err := common.Marshal(oidcCodePayload{
+		ClientID:    clientID,
+		RedirectURI: redirectURI,
+		Scope:       strings.Join(scopes, " "),
+		Nonce:       strings.TrimSpace(c.Query("nonce")),
+		SessionID:   identity.SessionID,
+	})
+	if err != nil {
+		spaFallback()
+		return
+	}
+	code, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
+		Purpose:   model.AuthFlowPurposeOIDCCode,
+		Provider:  clientID,
+		Intent:    model.AuthFlowIntentLogin,
+		UserId:    identity.UserID,
+		SessionId: identity.SessionID,
+		Payload:   string(payload),
+		ExpiresAt: time.Now().Add(oidcAuthCodeTTL),
+	})
+	if err != nil {
+		spaFallback()
+		return
+	}
+	model.TouchOIDCConsent(identity.UserID, clientID)
+
+	callback, err := url.Parse(redirectURI)
+	if err != nil {
+		spaFallback()
+		return
+	}
+	q := callback.Query()
+	q.Set("code", code)
+	if state := c.Query("state"); state != "" {
+		q.Set("state", state)
+	}
+	callback.RawQuery = q.Encode()
+	c.Redirect(http.StatusFound, callback.String())
 }
 
 // OIDCConsentStatus GET /api/oidc/consent?client_id=&scope= — 前端授权页查询
