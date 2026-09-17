@@ -64,6 +64,15 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/telegram/bind/:flow_token", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.TelegramBind)
 		// Standard OAuth providers (GitHub, Discord, OIDC, LinuxDO) - unified route
 		apiRouter.GET("/oauth/:provider", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.TryUserAuth(), controller.HandleOAuth)
+		// AlloMax S2.1a: 星语作为 OIDC Provider（服务 xingyu-chat/OWUI 单点登录）
+		// token/userinfo 不走 UserAuth：token 用客户端凭据，userinfo 用 OIDC Bearer
+		oidcProviderRoute := apiRouter.Group("/oidc")
+		{
+			oidcProviderRoute.GET("/config", controller.OIDCProviderConfigured)
+			oidcProviderRoute.POST("/authorize", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.OIDCAuthorize)
+			oidcProviderRoute.POST("/token", middleware.CriticalRateLimit(), controller.OIDCToken)
+			oidcProviderRoute.GET("/userinfo", middleware.CriticalRateLimit(), controller.OIDCUserinfo)
+		}
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
 
 		apiRouter.POST("/stripe/webhook", anonymousRequestBodyLimit, controller.StripeWebhook)

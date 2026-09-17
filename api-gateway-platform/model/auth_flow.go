@@ -22,6 +22,8 @@ const (
 	AuthFlowPurposePasskeyStepUp     = "passkey_step_up"
 	AuthFlowPurposeTelegramBind      = "telegram_bind"
 	AuthFlowPurposeTelegramAssertion = "telegram_assertion"
+	// AlloMax S2.1a: 星语作为 OIDC Provider 签发的授权码（一次性，token 端点原子消费）
+	AuthFlowPurposeOIDCCode = "oidc_code"
 	AuthFlowIntentLogin              = "login"
 	AuthFlowIntentBind               = "bind"
 	AuthFlowTokenBytes               = 32
