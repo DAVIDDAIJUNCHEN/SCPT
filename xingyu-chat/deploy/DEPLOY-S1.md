@@ -118,8 +118,8 @@ curl -sk https://10.255.12.210/api/status -o /dev/null -w "%{http_code}\n"  # 20
 - [x] `https://10.255.12.210:8443` 登录后能选到 12 个星语模型
 - [x] glm-5.3-flash 对话正常，思考链折叠如 DeepSeek
 - [x] 开联网搜索提问时事，回答带引用
-- [ ] Portal「和星语对话」按钮直达 Chat
-- [ ] `docker compose ps` 两容器 healthy
+- [x] Portal「和星语对话」按钮直达 Chat
+- [x] `docker compose ps` 两容器 healthy
 
 ## 已知坑（POC + S1 实战实测，勿再踩）
 

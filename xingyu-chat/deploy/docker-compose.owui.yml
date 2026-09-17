@@ -67,6 +67,13 @@ services:
       - CHOWN
       - SETGID
       - SETUID
+    # SearXNG 镜像默认无 healthcheck（容器内无 curl，用自带 wget 探 /healthz）
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     deploy:
       resources:
         limits:
