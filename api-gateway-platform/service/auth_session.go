@@ -310,7 +310,13 @@ func WriteRefreshCookie(c *gin.Context, rawToken string) {
 		Expires:  expiresAt,
 		HttpOnly: true,
 		Secure:   common.SessionCookieSecure,
-		SameSite: http.SameSiteStrictMode,
+		// AlloMax B2: SameSite 从 Strict 放宽为 Lax。
+		// Chat(8443) 与平台(443) 同 host 不同端口，浏览器把跨端口请求按跨站处理，
+		// Strict 会导致 /oidc/authorize 顶层导航不带 refresh cookie，
+		// 用户从 chat 进入时被判定未登录、反复要求重新登录（SSO 登录互通失效）。
+		// Lax 允许顶层 GET 导航携带，OIDC 授权链路可用；CSRF 由
+		// SessionCookieOriginGuard（refresh/logout 的 Origin 校验）兜底。
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -323,7 +329,8 @@ func ClearRefreshCookie(c *gin.Context) {
 		Expires:  time.Unix(1, 0),
 		HttpOnly: true,
 		Secure:   common.SessionCookieSecure,
-		SameSite: http.SameSiteStrictMode,
+		// 与 WriteRefreshCookie 保持一致，否则清除动作因 SameSite 不匹配而失败
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 

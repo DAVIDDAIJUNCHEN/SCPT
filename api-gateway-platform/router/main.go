@@ -49,10 +49,18 @@ func SetRouter(router *gin.Engine, assets WebAssets) {
 			controller.OIDCAuthorizeRedirect,
 		)
 		// AlloMax B2: 退出互通（chat 退出 → 星语会话吊销；星语会话吊销 → chat 失效）。
-		// 两端点均由 nginx 在 VPS 上以子请求调用（mirror / auth_request），浏览器不直连：
-		//  - GET /oidc/session/status — auth_request 只读探测会话活性（204/401）
-		//  - GET /oidc/session/revoke — mirror 吊销会话 + 清 cookie（幂等）
+		//  - GET  /oidc/logout         — RP-initiated logout（discovery 的 end_session_endpoint）
+		//  - GET  /oidc/session/status — auth_request 只读探测会话活性（204/401）
+		//  - GET|POST /oidc/session/revoke — 吊销会话 + 清 cookie（幂等）
+		// 后两端点由 nginx 在 VPS 上以子请求调用（mirror / auth_request），浏览器不直连：
 		// 不挂 OriginGuard：子请求不带 Origin/Referer；不挂 UserAuth：cookie 即凭据。
+		// revoke 同时注册 POST：nginx mirror 保留原始请求方法（OWUI signout 为 POST）。
+		router.GET(
+			"/oidc/logout",
+			middleware.RouteTag("web"),
+			middleware.GlobalWebRateLimit(),
+			controller.OIDCLogout,
+		)
 		router.GET(
 			"/oidc/session/status",
 			middleware.RouteTag("api"),
@@ -60,6 +68,12 @@ func SetRouter(router *gin.Engine, assets WebAssets) {
 			controller.OIDCSessionStatus,
 		)
 		router.GET(
+			"/oidc/session/revoke",
+			middleware.RouteTag("api"),
+			middleware.GlobalAPIRateLimit(),
+			controller.OIDCSessionRevoke,
+		)
+		router.POST(
 			"/oidc/session/revoke",
 			middleware.RouteTag("api"),
 			middleware.GlobalAPIRateLimit(),

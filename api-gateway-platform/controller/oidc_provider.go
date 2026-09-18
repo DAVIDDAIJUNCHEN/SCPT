@@ -101,6 +101,7 @@ func OIDCDiscovery(c *gin.Context) {
 		"token_endpoint":                        issuer + "/api/oidc/token",
 		"userinfo_endpoint":                     issuer + "/api/oidc/userinfo",
 		"jwks_uri":                              issuer + "/api/oidc/jwks",
+		"end_session_endpoint":                  issuer + "/oidc/logout",
 		"registration_endpoint":                 "",
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"response_types_supported":              []string{"code"},
@@ -310,6 +311,41 @@ func OIDCAuthorizeRedirect(c *gin.Context) {
 	}
 	callback.RawQuery = q.Encode()
 	c.Redirect(http.StatusFound, callback.String())
+}
+
+// OIDCLogout GET /oidc/logout — B2 RP-initiated logout（对齐 OIDC Session Management）。
+// OWUI 的 signout 会读 discovery 的 end_session_endpoint，带 id_token_hint +
+// post_logout_redirect_uri 跳到这里。星语吊销当前浏览器会话（幂等）后跳回 RP。
+// 这样「chat 退出」会把星语会话一并登出，再进平台/chat 都需要重新登录。
+func OIDCLogout(c *gin.Context) {
+	if rawRefreshToken, err := c.Cookie(service.RefreshCookieName); err == nil && rawRefreshToken != "" {
+		_ = service.RevokeByRefreshToken(rawRefreshToken, "", "oidc_rp_initiated_logout")
+	}
+	service.ClearRefreshCookie(c)
+	c.Redirect(http.StatusFound, oidcSafePostLogoutRedirect(c.Query("post_logout_redirect_uri")))
+}
+
+// oidcSafePostLogoutRedirect 校验 post_logout_redirect_uri 只能跳回可信来源
+// （issuer 自身 + 已注册的 client redirect_uri 来源），防止开放重定向。
+func oidcSafePostLogoutRedirect(raw string) string {
+	issuer := service.OIDCProviderIssuer()
+	allowed := make(map[string]bool)
+	if iu, err := url.Parse(issuer); err == nil && iu.Scheme != "" && iu.Host != "" {
+		allowed[iu.Scheme+"://"+iu.Host] = true
+	}
+	for _, uri := range oidcRedirectURIs() {
+		if ru, err := url.Parse(uri); err == nil && ru.Scheme != "" && ru.Host != "" {
+			allowed[ru.Scheme+"://"+ru.Host] = true
+		}
+	}
+	target, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return issuer
+	}
+	if allowed[target.Scheme+"://"+target.Host] {
+		return target.String()
+	}
+	return issuer
 }
 
 // OIDCSessionStatus GET /oidc/session/status — B2 退出互通：只读会话活性探测。
