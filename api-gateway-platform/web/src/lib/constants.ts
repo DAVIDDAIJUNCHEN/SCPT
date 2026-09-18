@@ -22,7 +22,10 @@ For commercial licensing, please contact support@quantumnous.com
 
 // System Configuration Defaults
 export const DEFAULT_SYSTEM_NAME = '四川邮电职业技术学院'
+// 导航/登录页品牌区用带文字校徽（与 Portal 主页同源）
 export const DEFAULT_LOGO = '/logo.png'
+// tab 图标用无文字圆徽（与 Portal 主页 favicon 同源）
+export const DEFAULT_FAVICON = '/favicon-round.png'
 
 // LocalStorage Keys
 export const STORAGE_KEYS = {

@@ -7,6 +7,7 @@ published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
 import { Link } from '@tanstack/react-router'
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
@@ -33,8 +34,23 @@ export function AuthLayout({ children }: AuthLayoutProps) {
   const { t } = useTranslation()
   const { logo, loading } = useSystemConfig()
 
+  // 登录页背景是深空星空（深色画布），强制给本页挂 dark 主题类，
+  // 保证浅色默认设置下登录页的表单/文字仍是深空配色（离开页面时还原）。
+  useEffect(() => {
+    const root = document.documentElement
+    const hadDark = root.classList.contains('dark')
+    const hadLight = root.classList.contains('light')
+    root.classList.remove('light')
+    root.classList.add('dark')
+    return () => {
+      root.classList.remove('dark')
+      if (hadLight) root.classList.add('light')
+      if (hadDark) root.classList.add('dark')
+    }
+  }, [])
+
   return (
-    <div className='dark relative grid min-h-svh w-full overflow-hidden bg-[#070D1F] text-foreground'>
+    <div className='dark relative grid min-h-svh w-full overflow-hidden bg-[#0e1538] text-foreground'>
       <CosmicBackground />
 
       {/* 顶部导航：校徽在左，API 文档按钮在右 */}
@@ -47,6 +63,7 @@ export function AuthLayout({ children }: AuthLayoutProps) {
               src={logo}
               alt={BRAND_NAME}
               className='h-24 w-24 object-contain sm:h-36 sm:w-36'
+              style={{ filter: 'drop-shadow(0 0 14px rgba(140,160,255,0.5))' }}
             />
           )}
         </div>

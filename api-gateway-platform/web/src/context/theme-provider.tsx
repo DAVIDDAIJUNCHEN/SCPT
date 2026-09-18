@@ -30,7 +30,7 @@ import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
 type Theme = 'dark' | 'light' | 'system'
 type ResolvedTheme = Exclude<Theme, 'system'>
 
-const DEFAULT_THEME = 'dark' // 川邮星语：默认星辰暗色，用户可在概览切换
+const DEFAULT_THEME = 'light' // 川邮星语：默认浅色（2026-09-18 大王拍板），用户可在概览切换
 const THEME_COOKIE_NAME = 'vite-ui-theme'
 const THEME_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 const THEMES = new Set<Theme>(['dark', 'light', 'system'])

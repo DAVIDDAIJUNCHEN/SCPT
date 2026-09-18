@@ -6,81 +6,216 @@ it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
+import { useEffect, useRef } from 'react'
+
 import { cn } from '@/lib/utils'
 
-// 星辰大海主题背景：深空底 + 星点 + 银河光晕 + 探索者剪影
+// 深空星空背景：与 Portal 主页（xingyu-chat/portal/index.html）完全同源
+//  - 底色 #0e1538
+//  - 三团星云光晕（紫/蓝/靛）
+//  - canvas 星空：星点正弦闪烁 + 流星划过（左下方向、渐隐拖尾）
+//  - prefers-reduced-motion 时退化为静态星场
 // 纯装饰层，pointer-events 不拦截交互。
 
-const STARS: Array<{ top: string; left: string; size: number; opacity: number; twinkle?: boolean }> = [
-  { top: '6%', left: '5%', size: 2, opacity: 0.9, twinkle: true },
-  { top: '12%', left: '18%', size: 1.5, opacity: 0.7 },
-  { top: '8%', left: '32%', size: 1, opacity: 0.6 },
-  { top: '18%', left: '46%', size: 2, opacity: 0.85, twinkle: true },
-  { top: '10%', left: '63%', size: 1, opacity: 0.5 },
-  { top: '15%', left: '80%', size: 1.5, opacity: 0.75 },
-  { top: '7%', left: '91%', size: 2, opacity: 0.9 },
-  { top: '30%', left: '8%', size: 1, opacity: 0.55 },
-  { top: '42%', left: '24%', size: 1, opacity: 0.6 },
-  { top: '36%', left: '70%', size: 1.5, opacity: 0.7 },
-  { top: '50%', left: '88%', size: 1, opacity: 0.5 },
-  { top: '58%', left: '14%', size: 1, opacity: 0.55 },
-  { top: '70%', left: '34%', size: 1.5, opacity: 0.7 },
-  { top: '66%', left: '56%', size: 1, opacity: 0.45 },
-  { top: '80%', left: '78%', size: 1, opacity: 0.5 },
-  { top: '22%', left: '55%', size: 1, opacity: 0.6, twinkle: true },
-  { top: '48%', left: '40%', size: 1, opacity: 0.5 },
-  { top: '88%', left: '20%', size: 1.5, opacity: 0.6 },
-  { top: '92%', left: '60%', size: 1, opacity: 0.5 },
-  { top: '76%', left: '92%', size: 2, opacity: 0.8, twinkle: true },
-  { top: '26%', left: '92%', size: 1, opacity: 0.5 },
-  { top: '62%', left: '6%', size: 1, opacity: 0.5 },
-  { top: '16%', left: '12%', size: 1, opacity: 0.5 },
-  { top: '40%', left: '90%', size: 1, opacity: 0.55 },
-]
+const STAR_DENSITY = 1 / 4200 // 每屏星数/像素
+const MAX_METEORS = 3
+
+type Star = {
+  x: number
+  y: number
+  r: number
+  p: number
+  s: number
+  a: number
+}
+
+type Meteor = {
+  x: number
+  y: number
+  len: number
+  speed: number
+  angle: number
+  life: number
+}
 
 export function CosmicBackground({ className }: { className?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  useEffect(() => {
+    const cv = canvasRef.current
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+
+    let W = 0
+    let H = 0
+    let dpr = 1
+    let stars: Star[] = []
+    const meteors: Meteor[] = []
+    let rafId = 0
+    let running = true
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2)
+      W = window.innerWidth
+      H = window.innerHeight
+      cv!.width = W * dpr
+      cv!.height = H * dpr
+      cv!.style.width = W + 'px'
+      cv!.style.height = H + 'px'
+      ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
+      // 重建星场
+      stars = []
+      const n = Math.floor(W * H * STAR_DENSITY)
+      for (let i = 0; i < n; i++) {
+        stars.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          r: Math.random() * 1.1 + 0.3,
+          p: Math.random() * Math.PI * 2, // 相位
+          s: 0.4 + Math.random() * 1.2, // 闪烁速度
+          a: 0.25 + Math.random() * 0.65, // 基础亮度
+        })
+      }
+    }
+
+    function spawnMeteor() {
+      // 从上方随机点出发，向左下方划过（流星经典轨迹）
+      meteors.push({
+        x: W * (0.25 + Math.random() * 0.75),
+        y: -20 - Math.random() * H * 0.15,
+        len: 130 + Math.random() * 160, // 拖尾长
+        speed: 5 + Math.random() * 4,
+        angle: Math.PI * (0.72 + Math.random() * 0.1), // 约 130°~148°，左下方向
+        life: 1, // 1→0 渐隐
+      })
+    }
+
+    function drawStars(staticMode: boolean, ts: number) {
+      for (let i = 0; i < stars.length; i++) {
+        const st = stars[i]
+        const tw = staticMode
+          ? st.a
+          : st.a * (0.55 + 0.45 * Math.sin(ts * 0.001 * st.s + st.p))
+        ctx!.globalAlpha = Math.max(0.05, tw)
+        ctx!.fillStyle = '#dfe6ff'
+        ctx!.beginPath()
+        ctx!.arc(st.x, st.y, st.r, 0, Math.PI * 2)
+        ctx!.fill()
+      }
+    }
+
+    function tick(ts: number) {
+      if (!running) return
+      ctx!.clearRect(0, 0, W, H)
+      drawStars(false, ts)
+
+      // 流星：渐隐拖尾（头部亮白，尾部透明蓝）
+      for (let j = meteors.length - 1; j >= 0; j--) {
+        const m = meteors[j]
+        const dx = Math.cos(m.angle)
+        const dy = Math.sin(m.angle)
+        const tailX = m.x - dx * m.len
+        const tailY = m.y - dy * m.len
+        const grad = ctx!.createLinearGradient(m.x, m.y, tailX, tailY)
+        grad.addColorStop(0, 'rgba(255,255,255,' + 0.9 * m.life + ')')
+        grad.addColorStop(0.25, 'rgba(190,205,255,' + 0.55 * m.life + ')')
+        grad.addColorStop(1, 'rgba(120,140,255,0)')
+        ctx!.globalAlpha = 1
+        ctx!.strokeStyle = grad
+        ctx!.lineWidth = 1.6
+        ctx!.lineCap = 'round'
+        ctx!.beginPath()
+        ctx!.moveTo(m.x, m.y)
+        ctx!.lineTo(tailX, tailY)
+        ctx!.stroke()
+        // 头部亮点
+        ctx!.globalAlpha = 0.9 * m.life
+        ctx!.fillStyle = '#fff'
+        ctx!.beginPath()
+        ctx!.arc(m.x, m.y, 1.6, 0, Math.PI * 2)
+        ctx!.fill()
+
+        // 前进 + 生命衰减
+        m.x += dx * m.speed
+        m.y += dy * m.speed
+        m.life -= 0.008
+        if (m.life <= 0 || m.y > H + 60 || m.x < -m.len) {
+          meteors.splice(j, 1)
+        }
+      }
+
+      // 随机生成新流星（平均 1.2~2.5s 一颗，最多同时 3 颗）
+      if (meteors.length < MAX_METEORS && Math.random() < 0.012) {
+        spawnMeteor()
+      }
+
+      ctx!.globalAlpha = 1
+      rafId = window.requestAnimationFrame(tick)
+    }
+
+    resize()
+
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
+    if (reduced.matches) {
+      // 晕动症用户：不跑动画，只铺一层静态星
+      ctx.clearRect(0, 0, W, H)
+      drawStars(true, 0)
+      running = false
+    } else {
+      rafId = window.requestAnimationFrame(tick)
+    }
+
+    // 切后台暂停动画（省电）
+    function onVisibility() {
+      if (document.hidden) {
+        running = false
+        window.cancelAnimationFrame(rafId)
+      } else if (!reduced.matches) {
+        running = true
+        rafId = window.requestAnimationFrame(tick)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    let resizeTimer: number | undefined
+    function onResize() {
+      window.clearTimeout(resizeTimer)
+      resizeTimer = window.setTimeout(resize, 150) // 防抖：拖拽窗口时不连续重建星场
+    }
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      running = false
+      window.cancelAnimationFrame(rafId)
+      window.clearTimeout(resizeTimer)
+      window.removeEventListener('resize', onResize)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+
   return (
-    <div className={cn('pointer-events-none absolute inset-0 overflow-hidden', className)} aria-hidden>
-      {/* 深空底色 */}
-      <div
-        className='absolute inset-0'
-        style={{ background: '#070D1F' }}
-      />
-      {/* 银河光晕：左上蓝紫、右下暖金 */}
+    <div
+      className={cn(
+        'pointer-events-none absolute inset-0 overflow-hidden',
+        className
+      )}
+      aria-hidden
+    >
+      {/* 深空底色（与 Portal 一致：#0e1538） */}
+      <div className='absolute inset-0' style={{ background: '#0e1538' }} />
+      {/* 深空星云光晕：紫 + 蓝 + 靛 三团微光（复刻 Portal body::before） */}
       <div
         className='absolute inset-0'
         style={{
           background:
-            'radial-gradient(ellipse 60% 80% at 18% 6%, rgba(83,74,183,0.26) 0%, rgba(83,74,183,0.06) 42%, transparent 66%),' +
-            'radial-gradient(ellipse 70% 55% at 90% 100%, rgba(239,159,39,0.20) 0%, rgba(239,159,39,0.05) 38%, transparent 62%)',
+            'radial-gradient(38% 45% at 22% 30%, rgba(109,91,255,0.20) 0%, rgba(109,91,255,0) 100%),' +
+            'radial-gradient(42% 48% at 78% 20%, rgba(65,118,230,0.18) 0%, rgba(65,118,230,0) 100%),' +
+            'radial-gradient(30% 40% at 55% 85%, rgba(90,120,255,0.12) 0%, rgba(90,120,255,0) 100%)',
         }}
       />
-      {/* 星点 */}
-      {STARS.map((s, i) => (
-        <span
-          key={i}
-          className={cn('absolute rounded-full bg-white', s.twinkle && 'animate-pulse')}
-          style={{
-            top: s.top,
-            left: s.left,
-            width: s.size,
-            height: s.size,
-            opacity: s.opacity,
-            boxShadow: s.size >= 2 ? '0 0 4px rgba(255,255,255,0.9)' : undefined,
-          }}
-        />
-      ))}
-      {/* 探索者剪影（右下，山丘 + 仰望的人） */}
-      <svg
-        viewBox='0 0 220 90'
-        className='absolute bottom-0 right-0 h-28 w-64 opacity-50'
-        style={{ right: '-1rem' }}
-        fill='none'
-      >
-        <path d='M0,90 Q50,72 90,56 Q140,40 220,30 L220,90 Z' fill='#0A1126' />
-        <circle cx='150' cy='36' r='5' fill='#0A1126' />
-        <path d='M150,42 L150,60 Q150,64 146,68 M150,48 Q158,52 158,58' stroke='#0A1126' strokeWidth='3' strokeLinecap='round' />
-      </svg>
+      {/* 星空画布：星点闪烁 + 流星划过 */}
+      <canvas ref={canvasRef} className='absolute inset-0 block' />
     </div>
   )
 }

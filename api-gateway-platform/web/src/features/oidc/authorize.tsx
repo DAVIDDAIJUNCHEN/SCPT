@@ -109,6 +109,34 @@ export function OIDCAuthorizePage() {
   const displayName = user?.display_name || user?.username || ''
   const clientName = search.client_id || t('third-party app')
 
+  // B3：把 client_id 映射成用户看得懂的应用身份（DeepSeek 授权页同款「应用卡片」）
+  const KNOWN_CLIENTS: Record<string, { name: string; desc: string; badge: string }> = {
+    'xingyu-chat': {
+      name: '川邮·星语 Chat',
+      desc: '四川邮电职业技术学院智算中心对话服务',
+      badge: '星',
+    },
+  }
+  const client = KNOWN_CLIENTS[search.client_id] ?? {
+    name: clientName,
+    desc: t('Third-party application'),
+    badge: clientName.slice(0, 1).toUpperCase(),
+  }
+
+  // B3：按实际 scope 展示权限清单（openid / profile / email）
+  const scopeList = (search.scope || 'openid profile')
+    .split(/[\s+]+/)
+    .filter(Boolean)
+  const scopeLabels: Record<string, string> = {
+    openid: t('Verify your identity (openid)'),
+    profile: t('Read your username and display name (profile)'),
+    email: t('Read your email address (email)'),
+  }
+  const permissionItems =
+    scopeList.length > 0
+      ? scopeList.map((s) => scopeLabels[s] ?? s)
+      : [scopeLabels.openid, scopeLabels.profile]
+
   // 正在检查授权记忆时显示加载态，避免同意页闪现
   if (user && consentQuery.isPending) {
     return (
@@ -126,18 +154,22 @@ export function OIDCAuthorizePage() {
   return (
     <AuthLayout>
       <div className='flex flex-col gap-5'>
-        <div className='space-y-1.5'>
-          <h1 className='text-xl font-semibold text-foreground'>
-            {t('Authorize sign-in')}
-          </h1>
-          <p className='text-sm text-muted-foreground'>
-            {t('The app will receive the following account info')}
-          </p>
+        {/* B3：应用身份卡片（DS 授权页同款视觉锚点） */}
+        <div className='flex flex-col items-center gap-3 text-center'>
+          <div className='flex h-14 w-14 items-center justify-center rounded-2xl bg-[#4562f0]/20 text-lg font-semibold text-[#8fa4ff] shadow-[0_0_18px_rgba(69,98,240,0.25)]'>
+            {client.badge}
+          </div>
+          <div className='space-y-1'>
+            <h1 className='text-xl font-semibold text-foreground'>
+              {t('Authorize {{client}}', { client: client.name })}
+            </h1>
+            <p className='text-sm text-muted-foreground'>{client.desc}</p>
+          </div>
         </div>
 
-        <div className='rounded-2xl border border-white/10 bg-[#070D1F]/60 p-4 space-y-3'>
+        <div className='rounded-2xl border border-white/10 bg-[#16204a]/50 p-4 space-y-3'>
           <div className='flex items-center gap-3'>
-            <div className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#378ADD]/20 text-sm font-medium text-[#378ADD]'>
+            <div className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#378ADD]/20 text-sm font-medium text-[#7fb4ea]'>
               {displayName ? displayName.slice(0, 1).toUpperCase() : '?'}
             </div>
             <div className='min-w-0'>
@@ -151,15 +183,19 @@ export function OIDCAuthorizePage() {
               )}
             </div>
           </div>
-          <div className='space-y-1.5 border-t border-white/10 pt-3 text-sm'>
+          <div className='space-y-2 border-t border-white/10 pt-3 text-sm'>
             <p className='text-muted-foreground'>
               {t('After authorization, {{client}} will get these permissions', {
-                client: clientName,
+                client: client.name,
               })}
             </p>
-            <ul className='space-y-1 text-foreground/90'>
-              <li>· {t('Read your username and display name (profile)')}</li>
-              <li>· {t('Read your email address (email)')}</li>
+            <ul className='space-y-1.5 text-foreground/90'>
+              {permissionItems.map((item) => (
+                <li key={item} className='flex items-start gap-2'>
+                  <span className='mt-[0.1875rem] text-[#7fb4ea]'>✓</span>
+                  <span>{item}</span>
+                </li>
+              ))}
             </ul>
           </div>
         </div>
@@ -191,7 +227,7 @@ export function OIDCAuthorizePage() {
           </Button>
         </div>
 
-        <p className='text-center text-xs text-muted-foreground/70'>
+        <p className='text-center text-xs break-all text-muted-foreground/70'>
           {t('You will be redirected to {{redirect}}', {
             redirect: search.redirect_uri,
           })}
