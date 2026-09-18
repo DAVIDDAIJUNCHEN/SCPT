@@ -7,11 +7,17 @@ published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
 import { Link } from '@tanstack/react-router'
+import { ChevronLeft } from 'lucide-react'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSystemConfig } from '@/hooks/use-system-config'
+import {
+  isPortalCapableHost,
+  requestPortalExit,
+  resolvePortalHomeUrl,
+} from '@/lib/sign-out-exit'
 
 import { CosmicBackground } from './components/cosmic-background'
 
@@ -33,6 +39,9 @@ type AuthLayoutProps = {
 export function AuthLayout({ children }: AuthLayoutProps) {
   const { t } = useTranslation()
   const { logo, loading } = useSystemConfig()
+  // 川邮·星语：登录页是否提供「返回主页」（回 Portal）入口
+  const canReturnToPortal = isPortalCapableHost()
+  const portalHomeUrl = resolvePortalHomeUrl()
 
   // 登录页背景是深空星空（深色画布），强制给本页挂 dark 主题类，
   // 保证浅色默认设置下登录页的表单/文字仍是深空配色（离开页面时还原）。
@@ -67,13 +76,28 @@ export function AuthLayout({ children }: AuthLayoutProps) {
             />
           )}
         </div>
-        {/* DeepSeek 风格 API 文档方框按钮 → 登录页也指向自建公开文档页 */}
-        <Link
-          to='/docs'
-          className='inline-flex items-center rounded-md border border-[#378ADD]/50 bg-[#1B2A4E]/60 px-4 py-2 text-sm text-foreground shadow-sm backdrop-blur-sm transition-colors hover:border-[#378ADD] hover:bg-[#1B2A4E]/80'
-        >
-          {t('API 开发文档')}
-        </Link>
+        {/* 右侧：返回主页（回 Portal）+ API 文档 */}
+        <div className='flex items-center gap-2.5'>
+          {/* 川邮·星语：登出/未登录都会落到本页，这里给一条明确的回 Portal 主页通道。
+              仅在 Portal 与星语同源部署时展示，避免独立端口访问时点出死循环。 */}
+          {canReturnToPortal && (
+            <a
+              href={portalHomeUrl}
+              onClick={() => requestPortalExit()}
+              className='inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-[#1B2A4E]/40 px-4 py-2 text-sm text-foreground/90 shadow-sm backdrop-blur-sm transition-colors hover:border-[#378ADD]/70 hover:bg-[#1B2A4E]/70'
+            >
+              <ChevronLeft className='size-4' />
+              {t('返回主页')}
+            </a>
+          )}
+          {/* DeepSeek 风格 API 文档方框按钮 → 登录页也指向自建公开文档页 */}
+          <Link
+            to='/docs'
+            className='inline-flex items-center rounded-md border border-[#378ADD]/50 bg-[#1B2A4E]/60 px-4 py-2 text-sm text-foreground shadow-sm backdrop-blur-sm transition-colors hover:border-[#378ADD] hover:bg-[#1B2A4E]/80'
+          >
+            {t('API 开发文档')}
+          </Link>
+        </div>
       </header>
 
       {/* 主体：左 hero 右登录卡片 */}

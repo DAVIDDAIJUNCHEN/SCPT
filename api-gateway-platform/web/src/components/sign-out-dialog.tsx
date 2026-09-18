@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { logout } from '@/features/auth/api'
 import { clearAuthenticatedClientState } from '@/lib/auth-session'
+import { exitAfterSignOut } from '@/lib/sign-out-exit'
 
 interface SignOutDialogProps {
   open: boolean
@@ -48,6 +49,9 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
 
       clearAuthenticatedClientState(queryClient)
       toast.success(t('Signed out'))
+      // 川邮·星语：在生产同源部署下退回到 Portal 主页；否则（开发环境、
+      // 独立端口访问等）保持原行为跳登录页，避免与 Portal 之间来回打转。
+      if (exitAfterSignOut()) return
       void navigate({ to: '/sign-in', replace: true })
     } catch (error: unknown) {
       toast.error(

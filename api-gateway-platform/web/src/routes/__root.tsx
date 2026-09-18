@@ -42,6 +42,7 @@ import {
 } from '@/lib/auth-session'
 import { subscribeAuthSessionEvents } from '@/lib/auth-session-sync'
 import { resolveLegacyRoute } from '@/lib/legacy-route'
+import { exitAfterSignOut } from '@/lib/sign-out-exit'
 import { useAuthStore } from '@/stores/auth-store'
 
 function RootComponent() {
@@ -86,6 +87,8 @@ function RootComponent() {
 
         if (currentSID && event.sid === currentSID) {
           clearAuthenticatedClientState(queryClient, false)
+          // 川邮·星语：与 SignOutDialog 保持同一出口策略（生产回 Portal 主页）
+          if (exitAfterSignOut()) return
           void navigate({ to: '/sign-in', replace: true })
         }
       }),
