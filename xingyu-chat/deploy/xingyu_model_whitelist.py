@@ -22,6 +22,16 @@ A. 为白名单中的每个接入模型，在 `model` 表创建一条「明亮�
 B. 为每条注册记录授予 `principal_type='user'` + `principal_id='*'` 的公开读权限
    （= 所有登录用户可读；注意**不能**用 group，空组成员匹配不上）；
 C. **不动**任何非白名单模型 —— 它们保持「未注册」状态，天然仅管理员可见。
+D. 写入前自检（base_model_id 必须 NULL / 授权必须 user/* / 白名单授权齐全），
+   不通过则回滚不写入。
+
+⚠️ 两个致命坑（都踩过，见文件内注释）
+1. `base_model_id` **必须为 NULL**。填自己或同名 id 会让 OWUI 跳过 `info` 注入，
+   导致普通用户**一个模型都看不到**（管理员正常）——2026-09-18 线上事故根因。
+2. 授权 principal 必须是 `user` + `*`，不能用 group（default 组无成员）。
+
+⚠️ 改完必须**重启容器**才生效（DB 结果有进程内缓存）：
+    docker compose -f /data/docker-compose.owui.yml restart owui
 
 用法
 ----
@@ -97,7 +107,24 @@ def upsert_model(c, spec, owner_id):
     payload = {
         'id': spec['id'],
         'user_id': owner_id,
-        'base_model_id': spec['id'],  # 指向同名接入模型：模型名与接入 id 一致
+        # ⚠️⚠️ 必须为 NULL（=「直接覆写同名 base model」），**绝不能填自己或同名 id**。
+        #    见 backend/open_webui/utils/models.py:get_all_models 的 `info` 注入逻辑：
+        #
+        #      for custom_model in custom_models:
+        #          if custom_model.base_model_id is None:      # ← 走这里才会注入 info
+        #              model = base_model_lookup.get(custom_model.id)
+        #              if model and custom_model.is_active:
+        #                  model['info'] = custom_model.model_dump()
+        #          elif custom_model.is_active:
+        #              if custom_model.id in existing_ids:
+        #                  continue                            # ← 同名却被跳过，info 永不注入
+        #
+        #    base_model_id 填了值（哪怕等于自己）会进 elif 分支，而该 id 又确实存在于
+        #    上游模型列表 → 直接 continue，`info` 永远缺失。随后 get_filtered_models 里
+        #    `info = model.get('info')` 为 None → model_infos 为空 → accessible_model_ids
+        #    为空集 → **普通用户一个模型都看不到**（管理员因 elif 兜底仍能看全部，
+        #    所以表现为「只有学生看不到」）。2026-09-18 线上事故根因。
+        'base_model_id': None,
         'name': spec['name'],
         'params': json.dumps({}),
         'meta': json.dumps(meta, ensure_ascii=False),
@@ -144,6 +171,44 @@ def upsert_grant(c, model_id, principal_type, principal_id):
     return 'granted'
 
 
+def self_check(c):
+    """自检：把最容易踩的两个坑直接指出来，别等线上才发现。"""
+    problems = []
+
+    # 坑 1：base_model_id 非 NULL → info 不注入 → 普通用户看不到模型
+    bad = c.execute(
+        'SELECT id, base_model_id FROM model WHERE base_model_id IS NOT NULL'
+    ).fetchall()
+    for r in bad:
+        problems.append(
+            f'base_model_id 必须为 NULL，但 {r["id"]} = {r["base_model_id"]!r}'
+        )
+
+    # 坑 2：授权 principal 用了 group → 空组匹配不上 → 看不到模型
+    bad_grants = c.execute(
+        "SELECT resource_id, principal_type, principal_id FROM access_grant "
+        "WHERE resource_type='model' AND principal_type != 'user'"
+    ).fetchall()
+    for r in bad_grants:
+        problems.append(
+            f'授权 principal 必须用 user/*，但 {r["resource_id"]} 用了 '
+            f'{r["principal_type"]}/{r["principal_id"]}'
+        )
+
+    # 坑 3：白名单模型缺公开读授权
+    for spec in WHITELIST:
+        n = c.execute(
+            "SELECT COUNT(*) FROM access_grant WHERE resource_type='model' "
+            "AND resource_id=? AND principal_type='user' AND principal_id='*' "
+            "AND permission='read'",
+            (spec['id'],),
+        ).fetchone()[0]
+        if n == 0:
+            problems.append(f'{spec["id"]} 缺少 user/* 公开读授权')
+
+    return problems
+
+
 def main():
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
@@ -163,15 +228,29 @@ def main():
         gact = upsert_grant(c, mid, PUBLIC_PRINCIPAL_TYPE, PUBLIC_PRINCIPAL_ID)
         print(f'  {mid:34s} 注册={action:8s} 授权={gact}')
 
+    # 自检（写入前发现问题就中止）
+    problems = self_check(c)
+    if problems:
+        c.rollback()
+        print('\n❌ 自检未通过，已回滚：')
+        for p in problems:
+            print(f'   - {p}')
+        print('\n   提示：base_model_id 必须为 NULL；授权必须用 user/*。')
+        c.close()
+        return 1
+
     if DRY:
         c.rollback()
-        print('\n[dry-run] 已回滚，未写入')
+        print('\n[dry-run] 自检通过，已回滚未写入')
     else:
         c.commit()
         total = c.execute('SELECT COUNT(*) FROM model').fetchone()[0]
         grants = c.execute('SELECT COUNT(*) FROM access_grant').fetchone()[0]
-        print(f'\n✅ 已提交。model 表={total} 条，access_grant={grants} 条')
+        print(f'\n✅ 已提交，自检通过。model 表={total} 条，access_grant={grants} 条')
         print('   非白名单模型保持未注册 → 普通用户不可见，管理员不受影响。')
+        print()
+        print('   ⚠️ 改完必须重启容器才生效（DB 有进程内缓存）：')
+        print('      docker compose -f /data/docker-compose.owui.yml restart owui')
     c.close()
     return 0
 
