@@ -7,48 +7,58 @@
 
 	export let selectedModels: string[] = [''];
 	export let disabled = false;
+	/** 双向绑定父组件（MessageInput）的联网检索开关 */
+	export let webSearchEnabled = false;
 
-	// 川邮·星语 S3.2：4 模式 pill（对齐 DeepSeek）
-	// 每个模式是一组「模型偏好」，点击即把当前会话模型切到该组中第一个可用模型。
-	// 偏好顺序 = 列表内靠前者优先，缺失则自动降级到下一个候选。
+	// 川邮·星语 S3.2：模式 pill（按网关实测能力定义，见 docs/stage2-chat/README.md）
+	//
+	// 设计原则（大王要求「别搞太复杂，但要体现我们的模型能力」）：
+	//   1. 只暴露**实测可用**的模型；候选缺失自动降级，绝不谎报能力
+	//   2. 每个模式 = 一组模型偏好；偏好顺序靠前者优先
+	//   3. glm-5.3 属重量级算力，**不面向普通用户**（网关白名单已收紧）
+	//
+	// 「智能搜索」模式不是换模型，而是打开 OWUI 联网检索（SearXNG）开关。
 	type Mode = {
 		id: string;
 		label: string;
 		icon: string;
-		candidates: string[];
-		matcher: (id: string) => boolean;
+		/** 'model' = 切换模型；'search' = 切换联网检索开关 */
+		kind: 'model' | 'search';
+		candidates?: string[];
+		matcher?: (id: string) => boolean;
 	};
 
 	const MODES: Mode[] = [
 		{
-			id: 'instant',
-			label: 'Instant',
-			icon: '⚡',
-			// 极速：低延迟小模型
-			candidates: ['glm-5.3-flash', 'qwen3.8-flash-next', 'deepseek-v4-flash-0731', 'DeepSeek-V4-Flash-0731'],
-			matcher: (id) => /flash/i.test(id) && !/v4\.1/i.test(id)
+			id: 'search',
+			label: 'Smart Search',
+			icon: '⌕',
+			kind: 'search'
 		},
 		{
-			id: 'expert',
-			label: 'Expert',
-			icon: '◆',
-			// 专家：综合能力最强
-			candidates: ['glm-5.3', 'deepseek-v4-pro', 'qwen3.8-flash-next'],
-			matcher: (id) => /^(glm-5\.3|deepseek-v4-pro)$/i.test(id)
+			id: 'instant',
+			label: 'Fast',
+			icon: '⚡',
+			kind: 'model',
+			// 极速：低延迟小模型。实测均为非强制思考或快速档
+			candidates: ['glm-5.3-flash', 'deepseek-v4-flash-0731', 'DeepSeek-V4-Flash-0731'],
+			matcher: (id) => /flash/i.test(id) && !/v4\.1/i.test(id)
 		},
 		{
 			id: 'think',
 			label: 'Deep Think',
 			icon: '◎',
-			// 深度思考：always-thinking 模型，思考链会折叠展示
-			candidates: ['DeepSeek-V4.1-Flash', 'glm-5.3', 'qwen3.8-flash-next'],
+			kind: 'model',
+			// 深度思考：实测 reasoning_content 非空的 always-thinking 模型
+			candidates: ['DeepSeek-V4.1-Flash', 'qwen3.8-flash-next'],
 			matcher: (id) => /v4\.1-flash|thinking/i.test(id)
 		},
 		{
 			id: 'vision',
 			label: 'Vision',
 			icon: '◉',
-			// 视觉：多模态看图
+			kind: 'model',
+			// 视觉：实测支持图像输入的多模态模型
 			candidates: ['Qwen3-VL-30B-A3B-Instruct', 'qwen3-vl-30b'],
 			matcher: (id) => /vl-|vision/i.test(id)
 		}
@@ -58,34 +68,54 @@
 
 	// 解析某模式实际可用的模型 id（按候选顺序，找不到就用 matcher 兜底扫一遍）
 	const resolveModelId = (mode: Mode): string | undefined => {
+		if (mode.kind === 'search') return undefined;
 		const ids = availableModelIds();
-		for (const c of mode.candidates) {
+		for (const c of mode.candidates ?? []) {
 			const hit = ids.find((id: string) => id === c);
 			if (hit) return hit;
 		}
-		return ids.find((id: string) => mode.matcher(id));
+		return mode.matcher ? ids.find((id: string) => mode.matcher!(id)) : undefined;
 	};
 
+	// 搜索模式无模型依赖，只要后端开了 web search 就可点
+	$: searchAvailable = true;
+
+	const isModeAvailable = (mode: Mode) =>
+		mode.kind === 'search' ? searchAvailable : !!resolveModelId(mode);
+
 	$: currentModelId = selectedModels?.[0] ?? '';
-	$: activeModeId = MODES.find((m) => m.matcher(currentModelId))?.id ?? '';
+	$: activeModeId = webSearchEnabled
+		? 'search'
+		: (MODES.find((m) => m.kind === 'model' && m.matcher && m.matcher(currentModelId))?.id ?? '');
 
 	const selectMode = (mode: Mode) => {
 		if (disabled) return;
+		if (mode.kind === 'search') {
+			webSearchEnabled = !webSearchEnabled;
+			return;
+		}
 		const target = resolveModelId(mode);
 		if (!target) return;
+		// 切模型时关掉搜索态，避免模式语义混淆
+		webSearchEnabled = false;
 		selectedModels = [target];
+	};
+
+	const tooltipFor = (mode: Mode) => {
+		if (!isModeAvailable(mode)) {
+			return `${$i18n.t(mode.label)} · ${$i18n.t('Model not available')}`;
+		}
+		if (mode.kind === 'search') {
+			return `${$i18n.t(mode.label)} · ${$i18n.t('Search the web for answers')}`;
+		}
+		return `${$i18n.t(mode.label)} · ${resolveModelId(mode)}`;
 	};
 </script>
 
 <div class="flex items-center gap-1 shrink-0">
 	{#each MODES as mode (mode.id)}
-		{@const available = !!resolveModelId(mode)}
-		<Tooltip
-			content={available
-				? `${$i18n.t(mode.label)} · ${resolveModelId(mode)}`
-				: `${$i18n.t(mode.label)} · ${$i18n.t('Model not available')}`}
-			placement="top"
-		>
+		{@const available = isModeAvailable(mode)}
+		<Tooltip content={tooltipFor(mode)} placement="top">
 			<button
 				type="button"
 				id="mode-pill-{mode.id}"
@@ -95,7 +125,7 @@
 					: 'text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200'}
 				{!available || disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}"
 				aria-pressed={activeModeId === mode.id}
-				{disabled}
+				disabled={disabled || !available}
 				on:click={(e) => {
 					e.stopPropagation();
 					selectMode(mode);

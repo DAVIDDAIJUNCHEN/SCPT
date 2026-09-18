@@ -2521,10 +2521,11 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
-									<!-- 川邮·星语 S3.2：4 模式 pill（极速/专家/深度思考/视觉） -->
+									<!-- 川邮·星语 S3.2：模式 pill（智能搜索 / 极速 / 深度思考 / 视觉） -->
 									<div class="hidden items-center sm:flex shrink-0">
 										<ModePills
 											bind:selectedModels
+											bind:webSearchEnabled
 											disabled={generating ||
 												(!!history?.currentId &&
 													history.messages[history.currentId]?.done != true)}
