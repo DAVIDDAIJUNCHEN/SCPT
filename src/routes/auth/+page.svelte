@@ -14,7 +14,8 @@
 		getSessionUser,
 		userSignIn,
 		userSignUp,
-		updateUserTimezone
+		updateUserTimezone,
+		markXingyuChatSession
 	} from '$lib/apis/auths';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
@@ -51,6 +52,9 @@
 			if (sessionUser.token) {
 				localStorage.token = sessionUser.token;
 			}
+			// 川邮·星语：记录「本会话由 Chat 登录而来」，登出时据此把用户送回
+			// Portal 主页而不是停在 /auth（详见 $lib/apis/auths 的 getLogoutRedirectUrl）。
+			markXingyuChatSession();
 			$socket.emit('user-join', { auth: { token: sessionUser.token } });
 			await user.set(sessionUser);
 			await config.set(await getBackendConfig());

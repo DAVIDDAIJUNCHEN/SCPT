@@ -407,9 +407,92 @@ export const userSignOut = async () => {
 	return res;
 };
 
+/**
+ * 川邮·星语定制：登出后的归宿。
+ *
+ * 上游默认把 post_logout_redirect_uri 指向 '/auth'，而本部署的 '/auth' 有一条
+ * 「有 token cookie 就自动跳回聊天」的脚本；登出后 cookie 已清，页面便停在
+ * OWUI 自己的登录/跳转态，用户感觉「被踢到了登录页」。
+ *
+ * 这里改为指向站点根路径 '/'，即与 Chat 同源部署的 Portal 主页（nginx 443 的
+ * `location = /` 交给 Portal 静态页，并在带 post_logout_redirect_uri 参数时转交
+ * 星语 /oidc/logout 完成两端会话吊销）。
+ *
+ * 防打转（关键）：Portal 主页上有「进入 Chat」入口，若 OWUI 无法区分「用户主动
+ * 登出」与「其他原因落到 /auth」，就会形成 Portal → Chat → /auth → Portal 的死循环。
+ * 因此用 sessionStorage 一次性标记：
+ *   · OWUI 登录成功后写入标记，表示本会话确实是从 Chat 走出来的；
+ *   · 登出时若标记存在 → 去 Portal 根路径（正常用户路径）；
+ *   · 标记不存在（或本次已消费过）→ 退回上游默认行为（留在 /auth），
+ *     绝不再往外跳，彻底断开环形跳转的可能。
+ * 标记在 sessionStorage 而非 localStorage：关掉标签页即失效，语义上等价于
+ * 「本次导航会话」。
+ */
+const XINGYU_CHAT_SESSION_KEY = 'xingyu:chat-session-active';
+const XINGYU_PORTAL_EXIT_MARK = 'xingyu:portal-exit-done';
+
+/**
+ * Portal 的访问源（登出的最终归宿）。
+ *
+ * 为什么不能直接用当前 origin：Chat 跑在 `:8443`，Portal 跑在 `:443`（同一 host、
+ * 不同端口）。若回跳写成 `https://host:8443/`，虽然星语的白名单按 host 比对会放行，
+ * 但落地的却是 OWUI 首页而不是 Portal —— 用户会发现「登出后又被送回聊天页」。
+ * 因此这里把端口剥掉，固定回到 Portal 源。
+ * 也兼容将来切换到域名（ai-chat. / ai-platform. 子域名）的场景：届时只需改这个常量。
+ */
+const XINGYU_PORTAL_ORIGIN = 'https://10.255.12.210';
+
+function resolvePortalOrigin(): string {
+	if (typeof window === 'undefined') return XINGYU_PORTAL_ORIGIN;
+	// 部署在标准端口（80/443）时，当前源就已经是 Portal 源，直接复用更稳
+	// （避免硬编码常量在换域名后失效）。
+	if (window.location.port === '' || window.location.port === '443') {
+		return window.location.origin;
+	}
+	return XINGYU_PORTAL_ORIGIN;
+}
+
+function canExitToPortal(): boolean {
+	if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') return false;
+	// 开发环境没有 Portal（根路径就是 OWUI 自己），不接管
+	if (import.meta.env.DEV) return false;
+	try {
+		if (sessionStorage.getItem(XINGYU_PORTAL_EXIT_MARK) === '1') return false;
+		return sessionStorage.getItem(XINGYU_CHAT_SESSION_KEY) === '1';
+	} catch {
+		return false;
+	}
+}
+
+function markPortalExitDone(): void {
+	try {
+		sessionStorage.setItem(XINGYU_PORTAL_EXIT_MARK, '1');
+	} catch {
+		// sessionStorage 不可用时忽略：下次仍按 Portal 处理，最坏是多重定向一次。
+	}
+}
+
+/** OWUI 登录成功后调用，标记本会话为「Chat 会话」，允许登出时回 Portal。 */
+export const markXingyuChatSession = () => {
+	if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') return;
+	try {
+		sessionStorage.setItem(XINGYU_CHAT_SESSION_KEY, '1');
+		sessionStorage.removeItem(XINGYU_PORTAL_EXIT_MARK);
+	} catch {
+		// 忽略
+	}
+};
+
 export const getLogoutRedirectUrl = (redirectUrl?: string | null) => {
 	const logoutUrl = new URL('/auth?state=logout', window.location.origin);
-	const postLogoutUrl = new URL('/auth', window.location.origin);
+	// 川邮·星语：默认登出去向改为 Portal 主页（详见上方注释）；不可达时退回 /auth。
+	const portalExit = canExitToPortal();
+	const postLogoutUrl = portalExit
+		? new URL('/', resolvePortalOrigin())
+		: new URL('/auth', window.location.origin);
+	if (portalExit) {
+		markPortalExitDone();
+	}
 	if (!redirectUrl) {
 		return logoutUrl.href;
 	}
@@ -422,11 +505,15 @@ export const getLogoutRedirectUrl = (redirectUrl?: string | null) => {
 
 	const postLogoutRedirectUri = url.searchParams.get('post_logout_redirect_uri');
 	if (postLogoutRedirectUri) {
+		// 川邮·星语：end_session_endpoint 已带 post_logout_redirect_uri（后端
+		// WEBUI_AUTH_SIGNOUT_REDIRECT_URL 或 discovery）。若它是本站源（含 Portal 源），
+		// 就按「回 Portal」处理，不要因为路径不是 /auth 就悄悄改回聊天页。
 		const configuredPostLogoutUrl = new URL(postLogoutRedirectUri, window.location.origin);
-		if (
-			configuredPostLogoutUrl.origin === window.location.origin &&
-			configuredPostLogoutUrl.pathname === '/auth'
-		) {
+		const isOwnOrigin = configuredPostLogoutUrl.origin === window.location.origin;
+		if (portalExit && isOwnOrigin && configuredPostLogoutUrl.pathname === '/auth') {
+			url.searchParams.set('post_logout_redirect_uri', postLogoutUrl.href);
+		}
+		if (isOwnOrigin) {
 			url.searchParams.set('state', 'logout');
 		}
 		return url.href;
