@@ -32,6 +32,7 @@ import {
   normalizeInterfaceLanguage,
 } from '@/i18n/languages'
 import { api } from '@/lib/api'
+import { syncLanguageToPortal } from '@/lib/portal-language-bridge'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -42,6 +43,8 @@ export function LanguageSwitcher() {
   const handleChangeLanguage = useCallback(
     async (code: string) => {
       await i18n.changeLanguage(code)
+      // 川邮·星语：同步给 Portal，保证「返回主页」时语言一致
+      syncLanguageToPortal(code)
       if (user) {
         try {
           await api.put('/api/user/self', { language: code })

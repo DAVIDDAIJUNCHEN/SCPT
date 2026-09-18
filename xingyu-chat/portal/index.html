@@ -264,11 +264,11 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,textarea:focu
   <span class="chat-go" data-i18n="chat_go">回车或点击发送，进入星语对话</span>
 
   <div class="actions">
-    <a class="btn btn--chat" href="/chat" id="btn-chat-link">
+    <a class="btn btn--chat" href="/chat" id="btn-chat-link" data-lang-propagate>
       <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H4l2.5-2.5A8 8 0 1 1 21 12z"/></svg>
       <span data-i18n="btn_chat">和星语对话</span>
     </a>
-    <a class="btn btn--api" href="/console">
+    <a class="btn btn--api" href="/console" data-lang-propagate>
       <svg viewBox="0 0 24 24"><path d="M8 9l-4 3 4 3M16 9l4 3-4 3M13 5l-2 14"/></svg>
       <span data-i18n="btn_api">使用星语 API 平台</span>
     </a>
@@ -344,9 +344,28 @@ var I18N = {
     document.querySelectorAll('.locale-toggle-item').forEach(function(b){
       b.classList.toggle('is-active', b.getAttribute('data-lang') === lang);
     });
+    // 川邮·星语（2026-09-19）：把语言带进跳转链接，使星语侧登录页/控制台
+    // 按 Portal 当前语言渲染（中→中文登录页，英→英文登录页）。
+    document.querySelectorAll('[data-lang-propagate]').forEach(function(a){
+      try {
+        var u = new URL(a.getAttribute('href') || '/', location.origin);
+        u.searchParams.set('lang', lang);
+        a.setAttribute('href', u.pathname + u.search);
+      } catch(e){}
+    });
   }
   var saved = null;
   try { saved = localStorage.getItem('xy_lang'); } catch(e){}
+  // 川邮·星语（2026-09-19）：URL 的 ?lang= 优先级最高。
+  // 场景：用户在星语控制台/登录页切成英文后点「返回主页」，跳回 Portal 会带
+  // ?lang=en，Portal 需据此切英文（localStorage 可能因跨设备/清缓存而缺失）。
+  // 读到有效值后顺手落盘，使后续直接访问 Portal 也保持该语言。
+  var fromUrl = null;
+  try { fromUrl = new URLSearchParams(location.search).get('lang'); } catch(e){}
+  if (fromUrl === 'en' || fromUrl === 'zh') {
+    saved = fromUrl;
+    try { localStorage.setItem('xy_lang', saved); } catch(e){}
+  }
   if (saved === 'en' || saved === 'zh') apply(saved);
   document.querySelectorAll('.locale-toggle-item').forEach(function(b){
     b.addEventListener('click', function(){

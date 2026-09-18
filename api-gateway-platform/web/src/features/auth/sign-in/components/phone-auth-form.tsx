@@ -6,14 +6,13 @@ it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
-import { Loader2 } from 'lucide-react'
+import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { PasswordInput } from '@/components/password-input'
 import {
   phoneLogin,
   phonePasswordLogin,
@@ -41,6 +40,51 @@ const PHONE_INPUT_CLS = `${INPUT_CLS} pl-14`
 // ---------- 输入框小组件（必须定义在模块顶层） ----------
 // 注意：绝不能定义在 PhoneAuthForm 组件内部，否则每次父组件重渲染都会以新函数身份
 // 重建子组件 → input 反复卸载重挂 → 快速连续输入丢字（已实测根因）
+
+// 密码输入框：视觉与 PhoneField / CodeField 完全对齐。
+//
+// 为什么不用通用 <PasswordInput>：它的 className 落在**外层 wrapper div** 上
+// （`<div className={cn('relative rounded-md', className)}>`），而真正的 <input>
+// 只吃到 Input 组件的默认 h-8。于是「密码登录」页两行输入框看起来比「验证码登录」
+// 页的框矮一截（h-8 vs h-11）、底色也丢了 —— 这正是大王反馈的「不和谐」根因。
+// 这里自建同构组件：样式直接给到 <input>，只把「眼睛」按钮绝对定位叠在右侧。
+function PasswordField({
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+  onKeyDown,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+  autoComplete?: string
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+}) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <div className='relative'>
+      <Input
+        type={visible ? 'text' : 'password'}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        onKeyDown={onKeyDown}
+        className={`${INPUT_CLS} pr-11`}
+      />
+      <button
+        type='button'
+        onClick={() => setVisible((v) => !v)}
+        aria-label={visible ? '隐藏密码' : '显示密码'}
+        className='absolute inset-y-0 right-0 z-10 flex w-11 items-center justify-center text-muted-foreground transition-colors hover:text-foreground'
+      >
+        {visible ? <Eye size={18} /> : <EyeOff size={18} />}
+      </button>
+    </div>
+  )
+}
+
 function PhoneField({
   value,
   onChange,
@@ -144,9 +188,8 @@ export function PhoneAuthForm({
   const [captchaOpen, setCaptchaOpen] = useState(false)
   const captchaTargetRef = useRef<'login' | 'register' | 'forgot'>('login')
 
-  // 登录页统一输入框：44px 高 + 深色半透明底 + focus 蓝紫发光描边（手机号/验证码框已用模块级 INPUT_CLS）
-  const inputCls =
-    'h-11 bg-[#0A1126]/55 focus-visible:border-[#378ADD]/70 focus-visible:ring-[#378ADD]/25'
+  // 登录页统一输入框样式已提升为模块级 INPUT_CLS（见文件顶部），
+  // 避免此处再定义一份导致「密码框」与「验证码框」样式各写一套而漂移。
 
   useEffect(() => {
     if (countdown <= 0) return
@@ -421,14 +464,13 @@ export function PhoneAuthForm({
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 autoComplete='username'
-                className={inputCls}
+                className={INPUT_CLS}
               />
-              <PasswordInput
+              <PasswordField
                 placeholder={t('密码')}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={setPassword}
                 autoComplete='current-password'
-                className={inputCls}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') handlePasswordLogin()
                 }}
@@ -477,19 +519,17 @@ export function PhoneAuthForm({
             onChange={setRegPhone}
             placeholder={t('手机号 / 用户名')}
           />
-          <PasswordInput
+          <PasswordField
             placeholder={t('设置密码（至少 8 位）')}
             value={regPwd}
-            onChange={(e) => setRegPwd(e.target.value)}
+            onChange={setRegPwd}
             autoComplete='new-password'
-            className={inputCls}
           />
-          <PasswordInput
+          <PasswordField
             placeholder={t('再次输入密码')}
             value={regPwdConfirm}
-            onChange={(e) => setRegPwdConfirm(e.target.value)}
+            onChange={setRegPwdConfirm}
             autoComplete='new-password'
-            className={inputCls}
           />
           <CodeField
             value={regCode}
@@ -548,19 +588,17 @@ export function PhoneAuthForm({
 
           {forgotStep === 2 && (
             <>
-              <PasswordInput
+              <PasswordField
                 placeholder={t('新密码（至少 8 位）')}
                 value={forgotNewPwd}
-                onChange={(e) => setForgotNewPwd(e.target.value)}
+                onChange={setForgotNewPwd}
                 autoComplete='new-password'
-                className={inputCls}
               />
-              <PasswordInput
+              <PasswordField
                 placeholder={t('再次输入新密码')}
                 value={forgotPwdConfirm}
-                onChange={(e) => setForgotPwdConfirm(e.target.value)}
+                onChange={setForgotPwdConfirm}
                 autoComplete='new-password'
-                className={inputCls}
               />
               <Button
                 type='button'

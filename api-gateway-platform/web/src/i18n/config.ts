@@ -21,6 +21,11 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
 import { convertDetectedLanguage } from './languages'
+import {
+  readLanguageFromSearch,
+  resolveInitialLanguageFromPortal,
+  syncLanguageToPortal,
+} from '@/lib/portal-language-bridge'
 import en from './locales/en.json'
 import fr from './locales/fr.json'
 import ja from './locales/ja.json'
@@ -39,6 +44,29 @@ export const resources = {
   zhTW,
 } as const
 
+/**
+ * 川邮·星语：确定初始语言。
+ *
+ * 优先级（高 → 低）：
+ *  1. URL 的 ?lang= —— Portal 跳转时携带，最明确（跨设备/清缓存后仍有效）
+ *  2. Portal 的 xy_lang —— 与 Portal 主页语言保持一致
+ *  3. 星语自己的 localStorage（i18nextLng）
+ *  4. 浏览器语言
+ *
+ * 第 1、2 步只在「星语侧还没存过语言」时才考虑，(2) 由 bridge 内部判断；
+ * (1) 则总是优先，因为它是本次跳转携带的显式意图。
+ */
+function resolveInitialLanguage(): string | undefined {
+  if (typeof window === 'undefined') return undefined
+
+  const fromUrl = readLanguageFromSearch(window.location.search)
+  if (fromUrl) return fromUrl
+
+  return resolveInitialLanguageFromPortal() ?? undefined
+}
+
+const initialLanguage = resolveInitialLanguage()
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
@@ -47,6 +75,8 @@ i18n
     fallbackLng: 'en',
     supportedLngs: ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
     load: 'currentOnly',
+    // 若能从 URL / Portal 得到明确语言则以其为准，否则交给检测器
+    ...(initialLanguage ? { lng: initialLanguage } : {}),
     nsSeparator: false, // Allow literal colons in keys (e.g., URLs, labels)
     debug: import.meta.env.DEV,
     interpolation: {
@@ -60,5 +90,11 @@ i18n
       convertDetectedLanguage,
     },
   })
+
+// 川邮·星语：语言确定后回写 Portal 的键，使 Portal 与星语始终一致。
+// 放在 init 之后，避免污染检测器对 i18nextLng 的判断。
+if (initialLanguage) {
+  syncLanguageToPortal(initialLanguage)
+}
 
 export default i18n

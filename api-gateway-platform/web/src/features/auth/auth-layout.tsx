@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSystemConfig } from '@/hooks/use-system-config'
+import { buildLanguageAwareUrl } from '@/lib/portal-language-bridge'
 import {
   isPortalCapableHost,
   requestPortalExit,
@@ -20,6 +21,7 @@ import {
 } from '@/lib/sign-out-exit'
 
 import { CosmicBackground } from './components/cosmic-background'
+import { LoginLanguageToggle } from './components/login-language-toggle'
 
 const BRAND_NAME = '川邮·星语'
 const TAGLINE = '使用川邮·星语 API 构建你的应用'
@@ -37,11 +39,15 @@ type AuthLayoutProps = {
 }
 
 export function AuthLayout({ children }: AuthLayoutProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { logo, loading } = useSystemConfig()
   // 川邮·星语：登录页是否提供「返回主页」（回 Portal）入口
   const canReturnToPortal = isPortalCapableHost()
-  const portalHomeUrl = resolvePortalHomeUrl()
+  // 川邮·星语：回 Portal 时带上当前语言，使 Portal 与登录页语言一致
+  const portalHomeUrl = buildLanguageAwareUrl(
+    resolvePortalHomeUrl(),
+    i18n.resolvedLanguage ?? i18n.language
+  )
 
   // 登录页背景是深空星空（深色画布），强制给本页挂 dark 主题类，
   // 保证浅色默认设置下登录页的表单/文字仍是深空配色（离开页面时还原）。
@@ -77,7 +83,10 @@ export function AuthLayout({ children }: AuthLayoutProps) {
           )}
         </div>
         {/* 右侧：返回主页（回 Portal）+ API 文档 */}
+        {/* 右侧：语言切换 + 返回主页（回 Portal）+ API 文档 */}
         <div className='flex items-center gap-2.5'>
+          {/* 川邮·星语：登录页语言切换（中/英），与 Portal 语言联动 */}
+          <LoginLanguageToggle />
           {/* 川邮·星语：登出/未登录都会落到本页，这里给一条明确的回 Portal 主页通道。
               仅在 Portal 与星语同源部署时展示，避免独立端口访问时点出死循环。 */}
           {canReturnToPortal && (
