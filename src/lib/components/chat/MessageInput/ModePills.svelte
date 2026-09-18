@@ -18,6 +18,10 @@
 	//   3. glm-5.3 属重量级算力，**不面向普通用户**（网关白名单已收紧）
 	//
 	// 「智能搜索」模式不是换模型，而是打开 OWUI 联网检索（SearXNG）开关。
+	//
+	// ⚠️ matcher 必须能**唯一区分**同一模型在不同模式下的归属。
+	//    S3.3 教训：曾用 `/flash/i` 同时匹配多个模型，导致 activeModeId 判定错乱
+	//    （选中极速却高亮深度思考）。现改为按「模型 id 精确列表」判定。
 	type Mode = {
 		id: string;
 		label: string;
@@ -25,6 +29,8 @@
 		/** 'model' = 切换模型；'search' = 切换联网检索开关 */
 		kind: 'model' | 'search';
 		candidates?: string[];
+		/** 该模式对应的模型 id（精确匹配，用于高亮判定） */
+		modelIds?: string[];
 		matcher?: (id: string) => boolean;
 	};
 
@@ -40,18 +46,24 @@
 			label: 'Fast',
 			icon: '⚡',
 			kind: 'model',
-			// 极速：低延迟小模型。实测均为非强制思考或快速档
-			candidates: ['glm-5.3-flash', 'deepseek-v4-flash-0731', 'DeepSeek-V4-Flash-0731'],
-			matcher: (id) => /flash/i.test(id) && !/v4\.1/i.test(id)
+			// 极速 = 唯一的**纯文本、非思考**模型，首响最快。
+			// 2026-09-18 实测：deepseek-v4-flash-0731 不产生 reasoning → 真·极速；
+			//                 且上游明确拒绝图片（not a multimodal model），
+			//                 故它是四个模式里**唯一不支持多模态**的。
+			candidates: ['deepseek-v4-flash-0731', 'DeepSeek-V4-Flash-0731'],
+			modelIds: ['deepseek-v4-flash-0731', 'DeepSeek-V4-Flash-0731'],
+			matcher: (id) => /^deepseek-v4-flash/i.test(id)
 		},
 		{
 			id: 'think',
 			label: 'Deep Think',
 			icon: '◎',
 			kind: 'model',
-			// 深度思考：实测 reasoning_content 非空的 always-thinking 模型
-			candidates: ['DeepSeek-V4.1-Flash', 'qwen3.8-flash-next'],
-			matcher: (id) => /v4\.1-flash|thinking/i.test(id)
+			// 深度思考 = 实测 reasoning_content 非空的强制思考模型。
+			// 2026-09-18 实测：DeepSeek-V4.1-Flash 支持图片输入（识色正确）。
+			candidates: ['DeepSeek-V4.1-Flash'],
+			modelIds: ['DeepSeek-V4.1-Flash'],
+			matcher: (id) => /^deepseek-v4\.1-flash$/i.test(id)
 		},
 		{
 			id: 'vision',
@@ -60,7 +72,18 @@
 			kind: 'model',
 			// 视觉：实测支持图像输入的多模态模型
 			candidates: ['Qwen3-VL-30B-A3B-Instruct', 'qwen3-vl-30b'],
+			modelIds: ['Qwen3-VL-30B-A3B-Instruct', 'qwen3-vl-30b'],
 			matcher: (id) => /vl-|vision/i.test(id)
+		},
+		{
+			id: 'general',
+			label: 'General',
+			icon: '◈',
+			kind: 'model',
+			// 通用 = glm-5.3-flash：强制思考 + 支持多模态，覆盖日常问答主力场景。
+			candidates: ['glm-5.3-flash'],
+			modelIds: ['glm-5.3-flash'],
+			matcher: (id) => /^glm-5\.3-flash$/i.test(id)
 		}
 	];
 
@@ -84,9 +107,14 @@
 		mode.kind === 'search' ? searchAvailable : !!resolveModelId(mode);
 
 	$: currentModelId = selectedModels?.[0] ?? '';
+	// 高亮判定：优先按 modelIds 精确匹配，避免正则误伤（S3.3 修正）
 	$: activeModeId = webSearchEnabled
 		? 'search'
-		: (MODES.find((m) => m.kind === 'model' && m.matcher && m.matcher(currentModelId))?.id ?? '');
+		: (MODES.find((m) => {
+				if (m.kind !== 'model' || !currentModelId) return false;
+				if (m.modelIds?.length) return m.modelIds.includes(currentModelId);
+				return m.matcher ? m.matcher(currentModelId) : false;
+			})?.id ?? '');
 
 	const selectMode = (mode: Mode) => {
 		if (disabled) return;

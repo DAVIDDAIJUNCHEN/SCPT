@@ -175,7 +175,9 @@
 								</span>
 							</Tooltip>
 						{:else}
-							{$i18n.t('Hello, {{name}}', { name: $user?.name })}
+							<!-- 川邮·星语 S3.3：移除「Hello, {{name}}」问候语（大王反馈「很奇怪」）。
+							     无模型名可显示时留空，由下方模型名/描述区承担信息展示。 -->
+							<span class="sr-only">{$i18n.t('New Chat')}</span>
 						{/if}
 					</div>
 				</div>

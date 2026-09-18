@@ -178,7 +178,16 @@
 		const file = blobToFile(audioBlob, `Recording-${dayjs().format('L LT')}.${ext}`);
 
 		if (transcribe) {
-			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
+			// 川邮·星语 S3d：服务端配置优先。
+			// 若服务端已显式配置 STT 引擎（本平台为 openai → 星语网关 Qwen3-ASR），
+			// 则忽略用户本地残留的 'web' 设置。
+			// 原因：浏览器 Web Speech API 在自签证书/代理环境下常静默失败，
+			// 曾导致「语音输入不成功」且无任何报错。
+			const serverEngine = $config?.audio?.stt?.engine ?? '';
+			const localEngine = $settings?.audio?.stt?.engine ?? '';
+			const useWebStt = serverEngine === 'web' || (serverEngine === '' && localEngine === 'web');
+
+			if (useWebStt) {
 				// with web stt, we don't need to send the file to the server
 				return;
 			}
@@ -298,7 +307,12 @@
 		}
 
 		if (transcribe) {
-			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
+			// 川邮·星语 S3d：与服务端配置保持一致（见 onStopHandler 注释）
+			const serverEngine2 = $config?.audio?.stt?.engine ?? '';
+			const localEngine2 = $settings?.audio?.stt?.engine ?? '';
+			const useWebStt2 = serverEngine2 === 'web' || (serverEngine2 === '' && localEngine2 === 'web');
+
+			if (useWebStt2) {
 				if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
 					// reset accumulated transcription from previous sessions
 					transcription = '';
