@@ -3,6 +3,8 @@
 	import { marked } from 'marked';
 
 	import { getAdminDetails, getLogoutRedirectUrl, userSignOut } from '$lib/apis/auths';
+	// 川邮·星语：标记「主动登出」，防止登出后的 401 被误判为「会话过期」弹窗
+	import { markDeliberateSignOut } from '$lib/utils/deliberate-signout';
 	import { onMount, tick, getContext } from 'svelte';
 	import { config } from '$lib/stores';
 
@@ -70,6 +72,8 @@
 					<button
 						class="text-xs text-center w-full mt-2 text-gray-400 underline"
 						on:click={async () => {
+							// 川邮·星语：先标记主动登出，避免 signout 后的 401 被误判为会话过期
+							markDeliberateSignOut();
 							const res = await userSignOut().catch((err) => {
 								console.error(err);
 								return null;

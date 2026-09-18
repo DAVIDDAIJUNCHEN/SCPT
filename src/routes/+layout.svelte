@@ -71,6 +71,8 @@
 		removeAllDetails
 	} from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
+	// 川邮·星语：区分主动登出与会话被动失效，避免主动登出后误弹「会话已过期」
+	import { isDeliberateSignOut } from '$lib/utils/deliberate-signout';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
@@ -915,6 +917,12 @@
 			return;
 		}
 
+		// 川邮·星语：主动登出时不要把后续 401 当成「会话过期」处理，
+		// 否则会在用户自己点退出后弹出误导性的过期提示。详见 deliberate-signout.ts。
+		if (isDeliberateSignOut()) {
+			return;
+		}
+
 		isAuthRedirectInProgress = true;
 		if (tokenTimer) {
 			clearInterval(tokenTimer);
@@ -1305,6 +1313,10 @@
 
 		await tick();
 
+		// 川邮·星语（2026-09-19）：移除「Her」主题进入时播放的 greeting.mp3 语音。
+		// 上游在 html.her 主题下会挂一个 click 监听去播放 /audio/greeting.mp3
+		// （英文人声问候），用户反馈「进入后突然说话，很傻」。
+		// 这里保留 her 主题下的进度条收尾逻辑，仅去掉音频播放，避免影响主题行为。
 		if (
 			document.documentElement.classList.contains('her') &&
 			document.getElementById('progress-bar')
@@ -1320,15 +1332,6 @@
 			await loadingProgress.set(100);
 
 			document.getElementById('splash-screen')?.remove();
-
-			const audio = new Audio(`/audio/greeting.mp3`);
-			const playAudio = () => {
-				audio.play();
-				document.removeEventListener('click', playAudio);
-			};
-
-			document.addEventListener('click', playAudio);
-
 			loaded = true;
 		} else {
 			document.getElementById('splash-screen')?.remove();

@@ -2,6 +2,8 @@
 	import { getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { getLogoutRedirectUrl, updateUserPassword, userSignOut } from '$lib/apis/auths';
+	// 川邮·星语：标记「主动登出」，防止改密后的 401 被误判为「会话过期」弹窗
+	import { markDeliberateSignOut } from '$lib/utils/deliberate-signout';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 
 	const i18n = getContext('i18n');
@@ -26,6 +28,8 @@
 				// This session is no longer trusted once the password it was issued under changes
 				toast.success($i18n.t('Password updated. Please sign in again.'));
 
+				// 川邮·星语：同 UserMenu —— 改密后会强制登出，先标记避免误弹过期提示
+				markDeliberateSignOut();
 				const signOutRes = await userSignOut().catch((error) => {
 					console.error(error);
 					return null;

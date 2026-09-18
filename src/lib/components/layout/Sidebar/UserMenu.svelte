@@ -6,6 +6,8 @@
 
 	import { getUsage } from '$lib/apis';
 	import { getLogoutRedirectUrl, getSessionUser, userSignOut } from '$lib/apis/auths';
+	// 川邮·星语：标记「主动登出」，防止登出后的 401 被误判为「会话过期」弹窗
+	import { markDeliberateSignOut } from '$lib/utils/deliberate-signout';
 
 	import { showSettings, mobile, showSidebar, user, config, settings } from '$lib/stores';
 
@@ -570,6 +572,9 @@
 				class="flex h-[1.6875rem] items-center gap-2 rounded-xl px-2 text-[0.8125rem] w-full hover:bg-gray-100 dark:hover:bg-gray-900 transition cursor-pointer select-none"
 				type="button"
 				on:click={async () => {
+					// 川邮·星语：先标记「主动登出」，避免 signout 吊销会话后，
+					// 在途请求的 401 被全局 fetch 包装器误判为「会话过期」而弹提示。
+					markDeliberateSignOut();
 					const res = await userSignOut();
 					localStorage.removeItem('token');
 
