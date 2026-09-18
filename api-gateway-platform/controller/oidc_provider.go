@@ -312,6 +312,49 @@ func OIDCAuthorizeRedirect(c *gin.Context) {
 	c.Redirect(http.StatusFound, callback.String())
 }
 
+// OIDCSessionStatus GET /oidc/session/status — B2 退出互通：只读会话活性探测。
+// 供 nginx auth_request 子请求使用（OWUI chat 的 /api/v1/auths/ 拦截）：
+// 星语 refresh cookie 对应会话仍存活 → 204；已吊销/过期/无 cookie → 401。
+// 不轮换 refresh secret、不发放 access token（避免每次页面加载都触发轮换竞态）。
+// 注意：不能挂 SessionCookieOriginGuard——auth_request 子请求不带 Origin/Referer。
+func OIDCSessionStatus(c *gin.Context) {
+	rawRefreshToken, cookieErr := c.Cookie(service.RefreshCookieName)
+	if cookieErr != nil || rawRefreshToken == "" {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	sid, ok := service.RefreshTokenSID(rawRefreshToken)
+	if !ok {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	session, err := model.GetUserSessionCached(sid)
+	if err != nil || session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	if _, err := service.ValidateSessionReference(session.UserID, sid); err != nil {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// OIDCSessionRevoke GET /oidc/session/revoke — B2 退出互通：吊销星语会话。
+// 供 nginx mirror 子请求使用（OWUI chat 的 signout 拦截，mirror 保留 GET 方法）。
+// 从 refresh cookie 吊销会话并清 cookie。幂等：无 cookie / 已吊销均返回 204。
+func OIDCSessionRevoke(c *gin.Context) {
+	rawRefreshToken, cookieErr := c.Cookie(service.RefreshCookieName)
+	if cookieErr != nil || rawRefreshToken == "" {
+		service.ClearRefreshCookie(c)
+		c.Status(http.StatusNoContent)
+		return
+	}
+	_ = service.RevokeByRefreshToken(rawRefreshToken, "", "sso_cross_logout")
+	service.ClearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}
+
 // OIDCConsentStatus GET /api/oidc/consent?client_id=&scope= — 前端授权页查询
 // 当前用户对该 client 是否已有覆盖请求 scope 的授权记忆（有则自动跳过同意页）。
 func OIDCConsentStatus(c *gin.Context) {

@@ -48,6 +48,23 @@ func SetRouter(router *gin.Engine, assets WebAssets) {
 			middleware.GlobalWebRateLimit(),
 			controller.OIDCAuthorizeRedirect,
 		)
+		// AlloMax B2: 退出互通（chat 退出 → 星语会话吊销；星语会话吊销 → chat 失效）。
+		// 两端点均由 nginx 在 VPS 上以子请求调用（mirror / auth_request），浏览器不直连：
+		//  - GET /oidc/session/status — auth_request 只读探测会话活性（204/401）
+		//  - GET /oidc/session/revoke — mirror 吊销会话 + 清 cookie（幂等）
+		// 不挂 OriginGuard：子请求不带 Origin/Referer；不挂 UserAuth：cookie 即凭据。
+		router.GET(
+			"/oidc/session/status",
+			middleware.RouteTag("api"),
+			middleware.GlobalAPIRateLimit(),
+			controller.OIDCSessionStatus,
+		)
+		router.GET(
+			"/oidc/session/revoke",
+			middleware.RouteTag("api"),
+			middleware.GlobalAPIRateLimit(),
+			controller.OIDCSessionRevoke,
+		)
 		SetWebRouter(router, assets, pluginDispatcher)
 	} else {
 		frontendBaseUrl = strings.TrimSuffix(frontendBaseUrl, "/")
