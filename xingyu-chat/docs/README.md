@@ -1,7 +1,7 @@
 # 川邮·星语 · 全局开发计划（Master Plan）
 
 > **项目定位**：把学校智算中心做成**类 DeepSeek 的一体化 AI 服务**——Chat 对话 + API 开放平台双入口、一个账号两边通用、校内免费配额 + 校外付费
-> **文档版本**：v1.1（2026-09-18，S2 收工、S3 启动时点）
+> **文档版本**：v1.2（2026-09-19，S3 主体收尾、进入 S4 计费改造前时点）
 > **维护约定**：每阶段收工/启动时更新本文档的进度看板与阶段索引
 
 ---
@@ -51,7 +51,7 @@
 |---|---|---|---|---|
 | **Stage 0** | 星语网关生产化（短信/备份/2FA/探针/脱敏） | 已完成 | ✅ | — |
 | **Stage 1** | Portal 主页（StarWhisper 门户，24+ 轮迭代） | 09-16~09-17 | ✅ **收工 8.9 分** | [stage1-portal/README.md](stage1-portal/README.md) |
-| **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起 | 🔵 **S1/S2 收工，S3 进行中** | [stage2-chat/README.md](stage2-chat/README.md) |
+| **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起 | 🔵 **S1/S2 收工，S3 主体收尾，S4 待启动** | [stage2-chat/README.md](stage2-chat/README.md) |
 | Stage 3 | 能力补全（RAG 知识库、代码沙箱、Anthropic 协议、文件解析增强） | 待排 | ⚪ 未启动 | — |
 | Stage 4 | 商业化（错峰定价、分层配额、计费对账、并发分级、user_id 三重隔离） | 与 S2/S4 交错 | ⚪ 部分体检已做 | — |
 | Stage 5 | 规模化与合规（生成式 AI 备案、算法备案、等保、收费报批、开放注册、B 端） | 6-12 月 | ⚪ 未启动 | — |
@@ -72,12 +72,70 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 
 ## 5. 关键技术债与遗留项汇总
 
-| 来源 | 项 | 优先级 |
+> 更新于 2026-09-19（全局盘点：三源核对 + 线上实测，清掉 10 项失真状态）
+
+### 5.1 分批执行计划（剩余全部工作）
+
+**第二批 · 计费三项（阶段 4 的地基，可立即开工）**
+
+| # | 任务 | 要点 |
 |---|---|---|
-| Portal | rAF 后台暂停、og 标签、公告链接、base64 外置、skip-link/noscript | P2/P3 |
+| 4.1 | 赠金/充值双账户 | `users.GrantedQuota` 拆两个账本，扣减有先后（先赠金后充值），赠金设有效期 |
+| 4.2 | 错峰时间倍率 | `setting/ratio_setting/time_ratio.go`（新文件），计费最后一步乘时段系数 → 引导免费 Chat 流量到低谷 |
+| 4.3 | Chat 月度赠金自动刷新 | 按自然月重置 svc-chat 额度，替代人工批配额。**依赖 4.1 先落地** |
+
+**第三批 · 账号续期与用量对账**
+
+| 任务 | 要点 |
+|---|---|
+| OIDC refresh_token grant（星语侧） | 现只签 authorization_code，OWUI 拿不到 refresh_token → access_token 到期即需重走 OIDC。补齐后单点会话可无感续期 |
+| 用量回流 Webhook | Chat 消耗实时推给星语报表。现状只按渠道维度粗看，无法逐会话对账（「两本账对不齐」） |
+
+**第四批 · 运维缺口补齐**
+
+| 任务 | 要点 |
+|---|---|
+| 接口限流（用户级/模型级） | 现仅登录接口有 CriticalRateLimit（已调 200）；正式 API 调用缺细粒度限流，单用户可打满算力 |
+| **外部拨测** | 🔴 **当前监控最大盲区**：healthcheck.sh 在 VPS 本机跑，发现不了「容器活着但服务假死」及网络层不可达 |
+
+**域名到位后 · 六步切换清单（预估 0.5 天）**
+
+① 证书重签含三子域 SAN → ② nginx server_name 切换 → ③ options 表 ServerAddress 改域名 → ④ OWUI 的 `OPENID_END_SESSION_ENDPOINT` / OAuth 端点改域名 → ⑤ OIDC redirect_uri 与 post_logout 白名单改域名 → ⑥ 退出 cloudflared quick tunnel
+> ⚠️ 阻塞于线下：`ai` / `ai-chat` / `ai-platform.scpt.edu.cn` 三条子域 DNS 申请 + 正式证书
+
+**P2 收尾 · 打磨与加固**
+
+| 项 | 要点 |
+|---|---|
+| OIDC 错误码规范化 | 拒绝授权的文案与错误码归一 |
+| `SESSION_COOKIE_SECURE=true` | 现为 false（自签 IP + http 兼容）。**切域名 + 正式证书后必须开** |
+| 模型精细授权 | per-user / per-group 替代当前「4 模型粗粒度白名单」 |
+| Portal 遗留 5 项 | rAF visibilitychange、og 标签、公告死链、skip-link/noscript、base64 外置（省 60KB+） |
+
+**P3 合规（对外服务前硬门槛，校内不阻塞）**
+
+| 项 | 要点 |
+|---|---|
+| 生成式 AI 服务备案 + 算法备案 | 开放校外注册前必须完成 |
+| 事业单位经营性收费报批 | 收费主体（学校 vs 校办公司）需先定 |
+| AGPL-3.0 处置 | 星语是 new-api fork，对外商用前须换 MIT 底座或下沉自研护栏 |
+
+**技术债**
+
+| 项 | 优先级 |
+|---|---|
+| `users.phone` 空串默认值需代码级根治（现为 DB 层绕过） | P2 |
+| DeepSeek-V4.1-Flash `thinking=0` → AlloMax 侧加 `--reasoning-parser` | P1 |
+| SSRF `fetch_setting.ip_list` 白名单范围待收敛（现含 `10.32.0.0/12`，疑应收到 `10.32.1.3/32`） | P1 |
+
+### 5.2 已失效/被取代（勿再排期）
+
+| 来源 | 项 | 处置 |
+|---|---|---|
 | ~~星语~~ | ~~ServerAddress 未配~~ | ✅ 已配（S2 期间核实更正） |
 | ~~星语~~ | ~~OIDC Provider 端点缺失~~ | ✅ 已完成（S2.1，含 /oidc/* 全家桶） |
-| OWUI | DeepSeek-V4.1-Flash thinking=0（需 AlloMax 加 --reasoning-parser） | P1 |
+| ~~形态 B~~ | ~~拦截改 4xx → 星语 0 计费~~ | ✅ 被取代：原生 ContentGuard 下沉后已内置，不再依赖 LiteLLM 4xx 特判。**工作本身已被取代，不是未做** |
+| ~~Portal~~ | ~~悬挂死链 `#announcement-link`~~ | 仍在，归入 P2 「Portal 5 项」 |
 
 ## 6. 文档归档约定（本目录的用法）
 
@@ -95,5 +153,14 @@ xingyu-chat/docs/
 
 ## 7. 下一步行动
 
-- **S3 定制打磨进行中**（开工顺序：S3.1 单栏布局 → S3.2 模式 pill → S3.4 思考块 → B3 授权页，外加 UI 对齐三件套：默认浅色 / 校徽+登录页背景对齐 Portal / 登录页流星动画）
-- 并行可选：星语计费三项（错峰定价最简可插队）、S4 Webhook 用量回流
+- **第二批（计费三项）待启动**：4.1 赠金双账户 → 4.2 错峰时间倍率（最简，可插队）→ 4.3 月度赠金刷新。全走 SCPT 库。
+- 并行可选：第三批 OIDC refresh_token grant、用量回流 Webhook
+- **需大王线下推进**：三条子域 DNS 申请、校内收费合规报批
+- **待确认**：SSRF 白名单是否收窄到 `10.32.1.3/32`（见 §5.1 技术债）
+
+### 盘点方法论（2026-09-19 沉淀）
+
+**台账会失真**——任务状态是「人写的」，代码与线上是「机器写的」。核对「是否完成」必须落到三源之一：
+① 源码里 grep 得到 ② DB 查得到 ③ 线上 curl 得到。**不能只凭记忆或 commit message。**
+本次盘点即清掉 10 项挂在 pending 但实际早已完成的条目（如 4 模式 pill 绑定、语音输入、gzip/HTTP2、SearXNG），
+以及 2 项**已被取代**的工作（LiteLLM 4xx 特判 → 原生下沉）。后者尤需警惕：勾掉时应注明取代关系，否则误导后续排期。
