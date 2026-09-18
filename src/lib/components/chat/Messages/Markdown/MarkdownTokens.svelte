@@ -131,6 +131,16 @@
 		compactPreview ? 'text-xs' : 'text-[0.9375rem]'
 	} text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition`;
 
+	// 川邮·星语 S3.4：思考块（reasoning）头部对齐 DeepSeek —— 比正文小两档的
+	// 弱化灰字（13px），带一点内边距与圆角 hover，让「已深度思考 N 秒」成为
+	// 一条安静的分隔线，而不是抢正文视线的大字。
+	$: reasoningButtonClassName = `py-0.5 px-1.5 -mx-1.5 rounded-lg ${
+		compactPreview ? 'text-xs' : 'text-[0.8125rem]'
+	} text-gray-500 hover:bg-gray-100/70 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800/50 dark:hover:text-gray-200 transition`;
+
+	const detailButtonClassFor = (token) =>
+		token?.attributes?.type === 'reasoning' ? reasoningButtonClassName : detailButtonClassName;
+
 	$: displayTokens = getDisplayTokens(tokens);
 	$: singlePlainBlock =
 		displayTokens.length === 1 &&
@@ -449,7 +459,7 @@
 							onResolve={(approved) => resolveToolCall(detailToken.attributes?.id ?? '', approved)}
 							open={$settings?.expandDetails ?? false}
 							className="w-full"
-							buttonClassName={detailButtonClassName}
+							buttonClassName={detailButtonClassFor(detailToken ?? token)}
 						/>
 					{:else if textContent.length > 0}
 						<Collapsible
@@ -458,7 +468,7 @@
 							attributes={detailToken?.attributes}
 							messageDone={done}
 							className="w-full"
-							buttonClassName={detailButtonClassName}
+							buttonClassName={detailButtonClassFor(detailToken ?? token)}
 							dir="auto"
 						>
 							<div class="mb-1.5" slot="content">
@@ -487,7 +497,7 @@
 							attributes={detailToken?.attributes}
 							messageDone={done}
 							className="w-full"
-							buttonClassName={detailButtonClassName}
+							buttonClassName={detailButtonClassFor(detailToken ?? token)}
 							dir="auto"
 						/>
 					{/if}
@@ -508,7 +518,7 @@
 				onResolve={(approved) => resolveToolCall(token.attributes?.id ?? '', approved)}
 				open={$settings?.expandDetails ?? false}
 				className="w-full space-y-2"
-				buttonClassName={detailButtonClassName}
+				buttonClassName={detailButtonClassFor(detailToken ?? token)}
 			/>
 		{:else if textContent.length > 0}
 			<Collapsible
@@ -517,7 +527,7 @@
 				attributes={token?.attributes}
 				messageDone={done}
 				className="w-full space-y-2"
-				buttonClassName={detailButtonClassName}
+				buttonClassName={detailButtonClassFor(detailToken ?? token)}
 				dir="auto"
 			>
 				<div class=" mb-1.5" slot="content">
@@ -546,7 +556,7 @@
 				attributes={token?.attributes}
 				messageDone={done}
 				className="w-full space-y-2"
-				buttonClassName={detailButtonClassName}
+				buttonClassName={detailButtonClassFor(detailToken ?? token)}
 				dir="auto"
 			/>
 		{/if}

@@ -154,7 +154,18 @@
 
 	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
 
+	// 川邮·星语 S3.1「极简单栏布局」：学生（非管理员）左栏只保留
+	// 搜索 / 会话列表 / 用户菜单，裁掉 Workspace、Notes、Calendar、
+	// Playground、Automations 这些多级导航入口 —— 对齐 DeepSeek 的
+	// 「打开即对话」体验。管理员保留全部工具入口以便管理。
+	// 如需给学生放开某个入口，把 SIMPLE_SIDEBAR_FOR_USERS 置 false 或按需放行。
+	const SIMPLE_SIDEBAR_FOR_USERS = true;
+
 	const isMenuItemVisible = (id) => {
+		if (SIMPLE_SIDEBAR_FOR_USERS && $user?.role !== 'admin') {
+			return false;
+		}
+
 		switch (id) {
 			case 'notes':
 				return (

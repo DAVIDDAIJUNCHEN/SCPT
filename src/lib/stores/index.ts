@@ -33,7 +33,8 @@ export const socketConnected: Writable<boolean> = writable(true);
 export const activeUserIds: Writable<null | string[]> = writable(null);
 export const USAGE_POOL: Writable<null | string[]> = writable(null);
 
-export const theme = writable('system');
+// 川邮·星语：默认浅色（与 src/app.html 首屏脚本保持一致）
+export const theme = writable('light');
 
 export const shortCodesToEmojis = writable(
 	Object.entries(emojiShortCodes).reduce((acc, [key, value]) => {

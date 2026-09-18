@@ -51,7 +51,8 @@
 				const prefersDarkTheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
 				if (!localStorage?.theme) {
-					localStorage.theme = 'system';
+					// 川邮·星语：默认浅色（2026-09-18 大王拍板），用户仍可在设置里切深色
+					localStorage.theme = 'light';
 				}
 
 				if (localStorage.theme === 'system') {

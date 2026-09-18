@@ -97,6 +97,7 @@
 	import Voice from '../icons/Voice.svelte';
 	import Terminal from '../icons/Terminal.svelte';
 	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
+	import ModePills from './MessageInput/ModePills.svelte';
 	import TerminalMenu from './MessageInput/TerminalMenu.svelte';
 	import Component from '../icons/Component.svelte';
 	import PlusAlt from '../icons/PlusAlt.svelte';
@@ -2520,6 +2521,19 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
+									<!-- 川邮·星语 S3.2：4 模式 pill（极速/专家/深度思考/视觉） -->
+									<div class="hidden items-center sm:flex shrink-0">
+										<ModePills
+											bind:selectedModels
+											disabled={generating ||
+												(!!history?.currentId &&
+													history.messages[history.currentId]?.done != true)}
+										/>
+										<div
+											class="flex self-center w-[0.0625rem] h-4 mx-1.5 bg-gray-200/60 dark:bg-gray-800/60 shrink-0"
+										/>
+									</div>
+
 									<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
 										<ModelSelector
 											bind:this={modelSelector}
