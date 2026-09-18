@@ -51,6 +51,12 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 
 	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
 
+	// Some upstreams answer with a relative content URL (e.g. SGLang/FLUX
+	// returns "/v1/images/{id}/content"). Rewrite to an absolute gateway URL
+	// before the body is written, otherwise clients resolve it against their own
+	// origin and the image 404s.
+	responseBody = rewriteRelativeImageURLs(c, info, responseBody)
+
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
@@ -274,6 +280,11 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 	}
+
+	// Relative content URLs must be rewritten here too: this path converts a
+	// plain JSON image response into SSE events, so the per-image "url" fields
+	// below are copied verbatim from responseBody.
+	responseBody = rewriteRelativeImageURLs(c, info, responseBody)
 
 	for i := int64(0); i < imageCount; i++ {
 		image := gjson.GetBytes(responseBody, "data."+strconv.FormatInt(i, 10))

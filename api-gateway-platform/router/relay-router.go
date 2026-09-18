@@ -16,6 +16,24 @@ func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())
 	// https://platform.openai.com/docs/api-reference/introduction
+	// Generated-image content proxy.
+	//
+	// Some image backends return a relative URL ("/v1/images/{id}/content") for
+	// generated images; the relay rewrites it to this route (see
+	// relay/channel/openai/image_asset_rewrite.go). Authorization is carried by
+	// a signed capability in the URL rather than a token, because the URL is
+	// what clients keep and re-fetch — the same model the upstream uses, and no
+	// weaker here since the signature binds asset id to channel id and only the
+	// gateway holds CryptoSecret. Deliberately NOT behind TokenAuth(): an image
+	// fetch must not consume the caller's rate-limit budget or be broken by a
+	// token rotation.
+	imageAssetRouter := router.Group("/v1/images")
+	imageAssetRouter.Use(middleware.RouteTag("relay"))
+	{
+		imageAssetRouter.GET("/:asset_id/content", controller.GetImageContent)
+		imageAssetRouter.HEAD("/:asset_id/content", controller.GetImageContent)
+	}
+
 	modelsRouter := router.Group("/v1/models")
 	modelsRouter.Use(middleware.RouteTag("relay"))
 	modelsRouter.Use(middleware.TokenAuth())

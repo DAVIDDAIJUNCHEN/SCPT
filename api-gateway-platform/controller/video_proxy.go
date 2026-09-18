@@ -130,6 +130,27 @@ func VideoProxy(c *gin.Context) {
 }
 
 func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.TaskContentRequest) error {
+	if task == nil {
+		return &taskMediaProxyError{
+			status: http.StatusInternalServerError, code: "artifact_internal_error",
+			message: "Artifact task is required",
+		}
+	}
+	return proxyMedia(c, task.ChannelId, task.TaskID, descriptor)
+}
+
+// proxyMediaForChannel proxies media owned by a channel without a task record.
+// Used by generated-image content (see controller/image_content.go), which has
+// no task row: the channel id is carried inside the signed asset URL instead.
+func proxyMediaForChannel(c *gin.Context, channelID int, descriptor *relaychannel.TaskContentRequest) error {
+	return proxyMedia(c, channelID, "", descriptor)
+}
+
+// proxyMedia is the shared media fetch chain: URL validation, request/redirect
+// hardening, SSRF protection and streaming. selfTaskID is the public task id
+// whose content route must not be re-entered (loop guard); pass "" when the
+// caller has no task record.
+func proxyMedia(c *gin.Context, channelID int, selfTaskID string, descriptor *relaychannel.TaskContentRequest) error {
 	if descriptor == nil {
 		return &taskMediaProxyError{
 			status: http.StatusInternalServerError, code: "artifact_plugin_error",
@@ -173,7 +194,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 			message: "Artifact request was rejected", err: errTaskMediaRequestRejected,
 		}
 	}
-	if isTaskMediaFallbackLoop(rawURL, task.TaskID) || isSelfTaskMediaURL(c, parsedURL) {
+	if isTaskMediaFallbackLoop(rawURL, selfTaskID) || isSelfTaskMediaURL(c, parsedURL) {
 		return &taskMediaProxyError{
 			status: http.StatusBadGateway, code: "artifact_request_rejected",
 			message: "Artifact proxy loop was rejected", err: errTaskMediaRequestRejected,
@@ -207,7 +228,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		}
 	}
 
-	channel, err := model.CacheGetChannel(task.ChannelId)
+	channel, err := model.CacheGetChannel(channelID)
 	if err != nil {
 		return &taskMediaProxyError{
 			status: http.StatusServiceUnavailable, code: "artifact_plugin_unavailable",
