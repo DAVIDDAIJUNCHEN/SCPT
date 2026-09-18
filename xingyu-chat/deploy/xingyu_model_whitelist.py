@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+川邮·星语 · Chat 模型白名单收敛脚本（幂等，可反复执行）
+
+作用
+----
+把「学生/教师可见的对话模型」限定为白名单，重量级算力（glm-5.3 等）仅管理员可用。
+
+原理（OWUI 原生机制，不硬编码、不改源码）
+-----------------------------------------
+1. `model` 表 = 「已注册模型」。只有注册过的模型才能被普通用户使用；
+   未注册的接入模型（base model）默认 **仅管理员可用**
+   （见 backend/open_webui/utils/access_control/__init__.py: check_model_access / get_filtered_models）。
+2. 因此：关掉 BYPASS_MODEL_ACCESS_CONTROL 后，
+   - 管理员：BYPASS_ADMIN_ACCESS_CONTROL 默认 True → 仍看到全部模型，不受影响；
+   - 普通用户：只看到 `model` 表里已注册且被授权的条目。
+
+本脚本做的事
+-----------
+A. 为白名单中的每个接入模型，在 `model` 表创建一条「明亮化」注册记录
+   （带中文显示名 / 简介 / 能力标签），使普通用户可见可用；
+B. 为每条注册记录授予 `principal_type='user'` + `principal_id='*'` 的公开读权限
+   （= 所有登录用户可读；注意**不能**用 group，空组成员匹配不上）；
+C. **不动**任何非白名单模型 —— 它们保持「未注册」状态，天然仅管理员可见。
+
+用法
+----
+    docker cp xingyu_model_whitelist.py owui:/tmp/
+    docker exec owui python3 /tmp/xingyu_model_whitelist.py            # 应用
+    docker exec owui python3 /tmp/xingyu_model_whitelist.py --dry-run  # 预演
+"""
+
+import json
+import sqlite3
+import sys
+import time
+import uuid
+
+DB = '/app/backend/data/webui.db'
+DRY = '--dry-run' in sys.argv
+
+# ────────────────────────────────────────────────────────────────
+# 白名单：连接模型 id → 学生侧展示信息
+#
+# 只列**网关实测可用**且适合普通用户的模型。加/减条目后重跑脚本即可。
+# glm-5.3（重量级算力）刻意不列入 → 普通用户不可见，管理员仍可在后台直接选。
+# ────────────────────────────────────────────────────────────────
+WHITELIST = [
+    {
+        'id': 'DeepSeek-V4.1-Flash',
+        'name': '星语·深度思考',
+        'description': '复杂推理与长文分析。适合算法推导、代码调试、论文思路梳理。',
+        'tags': ['深度思考', '长文'],
+    },
+    {
+        'id': 'glm-5.3-flash',
+        'name': '星语·极速',
+        'description': '响应最快，日常问答、翻译、摘要、润色首选。',
+        'tags': ['极速', '日常'],
+    },
+    {
+        'id': 'Qwen3-VL-30B-A3B-Instruct',
+        'name': '星语·视觉',
+        'description': '看图问答：公式识别、图表解读、截图排错、板书转文字。',
+        'tags': ['视觉', '多模态'],
+    },
+    {
+        'id': 'deepseek-v4-flash-0731',
+        'name': '星语·通用',
+        'description': '均衡型通用对话模型，稳定可靠。',
+        'tags': ['通用'],
+    },
+]
+
+# ────────────────────────────────────────────────────────────────
+# 公开读权限的 principal
+#
+# ⚠️ 关键：必须是 `user` + `*`（所有用户），**不能**用 group。
+#    见 backend/open_webui/models/access_grants.py:get_accessible_resource_ids
+#    —— group 授权只对「组成员」生效；default 组默认没有成员，
+#       授权后会导致普通用户一个模型都看不到（2026-09-18 实测踩坑）。
+# ────────────────────────────────────────────────────────────────
+PUBLIC_PRINCIPAL_TYPE = 'user'
+PUBLIC_PRINCIPAL_ID = '*'
+
+
+def upsert_model(c, spec, owner_id):
+    """在 model 表插入或更新一条注册记录，返回 model id。"""
+    now = int(time.time())
+    cols = [r[1] for r in c.execute('PRAGMA table_info(model)')]
+    meta = {
+        'description': spec['description'],
+        'tags': [{'name': t} for t in spec['tags']],
+        'profile_image_url': '',
+        'capabilities': {'vision': spec['id'].lower().find('vl') >= 0},
+    }
+    payload = {
+        'id': spec['id'],
+        'user_id': owner_id,
+        'base_model_id': spec['id'],  # 指向同名接入模型：模型名与接入 id 一致
+        'name': spec['name'],
+        'params': json.dumps({}),
+        'meta': json.dumps(meta, ensure_ascii=False),
+        'access_control': None,
+        'is_active': 1,
+        'created_at': now,
+        'updated_at': now,
+    }
+    row = c.execute('SELECT id FROM model WHERE id=?', (spec['id'],)).fetchone()
+    fields = [k for k in payload if k in cols]
+    if row:
+        sets = ','.join(f'{k}=?' for k in fields if k != 'id')
+        vals = [payload[k] for k in fields if k != 'id'] + [spec['id']]
+        c.execute(f'UPDATE model SET {sets} WHERE id=?', vals)
+        return spec['id'], 'updated'
+    sql = f'INSERT INTO model ({",".join(fields)}) VALUES ({",".join("?" * len(fields))})'
+    c.execute(sql, [payload[k] for k in fields])
+    return spec['id'], 'created'
+
+
+def upsert_grant(c, model_id, principal_type, principal_id):
+    """给注册模型授予公开读权限（幂等）。"""
+    now = int(time.time())
+    cols = [r[1] for r in c.execute('PRAGMA table_info(access_grant)')]
+    hit = c.execute(
+        'SELECT id FROM access_grant WHERE resource_type=? AND resource_id=? '
+        'AND principal_type=? AND principal_id=? AND permission=?',
+        ('model', model_id, principal_type, principal_id, 'read'),
+    ).fetchone()
+    payload = {
+        'id': str(uuid.uuid4()),
+        'resource_type': 'model',
+        'resource_id': model_id,
+        'principal_type': principal_type,
+        'principal_id': principal_id,
+        'permission': 'read',
+        'created_at': now,
+    }
+    fields = [k for k in payload if k in cols]
+    if hit:
+        return 'exists'
+    sql = f'INSERT INTO access_grant ({",".join(fields)}) VALUES ({",".join("?" * len(fields))})'
+    c.execute(sql, [payload[k] for k in fields])
+    return 'granted'
+
+
+def main():
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+
+    # 模型归属：取任意 admin 作为 owner（has_base_model_access 会校验 owner）
+    admin = c.execute("SELECT id, email FROM user WHERE role='admin' ORDER BY created_at LIMIT 1").fetchone()
+    if not admin:
+        print('❌ 未找到 admin 用户，中止')
+        return 1
+    owner_id = admin['id']
+    print(f'模型归属 admin: {admin["email"]}')
+
+    print(f'公开授权对象: {PUBLIC_PRINCIPAL_TYPE} / {PUBLIC_PRINCIPAL_ID}（所有登录用户）')
+    print(f'\n白名单 {len(WHITELIST)} 个模型：')
+    for spec in WHITELIST:
+        mid, action = upsert_model(c, spec, owner_id)
+        gact = upsert_grant(c, mid, PUBLIC_PRINCIPAL_TYPE, PUBLIC_PRINCIPAL_ID)
+        print(f'  {mid:34s} 注册={action:8s} 授权={gact}')
+
+    if DRY:
+        c.rollback()
+        print('\n[dry-run] 已回滚，未写入')
+    else:
+        c.commit()
+        total = c.execute('SELECT COUNT(*) FROM model').fetchone()[0]
+        grants = c.execute('SELECT COUNT(*) FROM access_grant').fetchone()[0]
+        print(f'\n✅ 已提交。model 表={total} 条，access_grant={grants} 条')
+        print('   非白名单模型保持未注册 → 普通用户不可见，管理员不受影响。')
+    c.close()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

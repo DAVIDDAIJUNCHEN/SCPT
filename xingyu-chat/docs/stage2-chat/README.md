@@ -255,3 +255,111 @@ S4 星语侧改造 ────┘（并行，不阻塞）
 ```
 
 **立即可做**：S1 全程纯部署+配置，零生产代码改动，零风险，大王确认即开。
+
+---
+
+## S3b 模型治理 + 小模型接入（2026-09-18 晚，大王五点要求）
+
+### S3b.0 全模型实测台账（网关直测，非文档抄写）
+
+> 目的：模式 pill 的每个定义**必须**有实测支撑，不谎报能力。
+
+| 模型 | chat | reasoning | 实测摘要 | 学生开放 |
+|---|---|---|---|---|
+| `glm-5.3` | ✅ | ✅ 159ch | 强制思考，重量级算力 | ❌ **仅管理员** |
+| `glm-5.3-flash` | ✅ | ✅ 187ch | 强制思考，延迟低 | ✅ 极速 |
+| `qwen3.8-flash-next` | ✅ | ✅ 126ch | 强制思考 | ❌ 暂不开放 |
+| `DeepSeek-V4.1-Flash` | ✅ | 空（ct=2） | 非思考，直接作答 | ✅ 深度思考 |
+| `deepseek-v4-flash-0731` | ✅ | 空（ct=2） | 非思考 | ✅ 通用 |
+| `DeepSeek-V4-Flash-0731` | ✅ | 空 | 非思考 | ➖ 同源渠道 |
+| `Qwen3-VL-30B-A3B-Instruct` | ✅ | — | 真视觉，文字链路通 | ✅ 视觉 |
+| `Qwen3-ASR-1.7B` | ➖ 音频 | — | **实测识别准**：`今天天气不错，我们一起去操场打球吧。`（4s 音频，HTTP 200） | ✅ 语音输入 |
+| `cosyvoice-v3` | ➖ TTS | — | **实测出声** 115KB / 24kHz WAV；**无预置音色**，仅自定义 `9c3ca98d75b2`（daijun 样本） | ✅ 朗读 |
+| `FLUX.2-klein-4B` | ➖ 图像 | — | **实测出图**（3.4s，`/v1/images/<id>/content`） | ✅ 文生图 |
+| `Qwen2-Audio-7B-Instruct` | ✅ | — | 可 chat，音频理解 | ➖ 备选 |
+| `MinerU2.5-2509-1.2B` | ⚠️ | — | chat 能通（6ch）但需 `deepseek_v4` parser | ➖ 内部 |
+| `bge-m3` | ❌ | — | 无 chat_template，仅 embedding | ➖ 内部 |
+
+### S3b.1 收紧模型可见范围（禁 glm-5.3）
+
+**做法：白名单，不硬编码。** 用 OWUI 原生访问控制，零源码改动：
+
+- 原状态：`BYPASS_MODEL_ACCESS_CONTROL=true` → 所有人都看到全部 13 个模型（**这是根因**）
+- 现状态：`false` + `model` 表只注册 4 个白名单模型
+- 机制：未注册的接入模型**默认仅管理员可用**（`check_model_access` / `get_filtered_models`）；管理员因 `BYPASS_ADMIN_ACCESS_CONTROL` 默认 True 不受影响
+
+维护脚本：`deploy/xingyu_model_whitelist.py`（幂等，改 `WHITELIST` 后重跑即可）
+
+```bash
+scp deploy/xingyu_model_whitelist.py root@10.255.12.210:/tmp/
+ssh root@10.255.12.210 "docker cp /tmp/xingyu_model_whitelist.py owui:/tmp/ \
+  && docker exec owui python3 /tmp/xingyu_model_whitelist.py --dry-run"   # 预演
+```
+
+**实测验证结果（真实调用 `get_filtered_models`）**：
+
+```
+普通用户 可见 4 个：DeepSeek-V4.1-Flash / Qwen3-VL-30B-A3B-Instruct
+                    / deepseek-v4-flash-0731 / glm-5.3-flash
+          glm-5.3 可见？ 否 ✅
+管理员   可见 13 个（全量，不受影响） ✅
+```
+
+> ⚠️ **头号坑：授权 principal 必须用 `user` + `*`，不能用 group。**
+> `get_accessible_resource_ids` 只在「用户是组成员」时匹配 group 授权；
+> `default` 组默认**没有成员** → 授了等于没授，普通用户一个模型都看不到。
+> 正确写法：`principal_type='user', principal_id='*'`（见 `models/access_grants.py:641`）。
+
+### S3b.2 模式 pill 重定义（4 个，按实测）
+
+| 位置 | 模式 | 行为 | 绑定 |
+|---|---|---|---|
+| 1 | **智能搜索** | 切换 `webSearchEnabled`（SearXNG 联网检索） | 不换模型，开检索 |
+| 2 | **极速** | 低延迟档 | `glm-5.3-flash` → `deepseek-v4-flash-0731` 降级 |
+| 3 | **深度思考** | 思考链折叠展示 | `DeepSeek-V4.1-Flash` → `qwen3.8-flash-next` |
+| 4 | **视觉** | 看图问答 | `Qwen3-VL-30B-A3B-Instruct` |
+
+- **删掉「专家」模式**：原绑定 `glm-5.3`，该模型已不对学生开放，保留会误导
+- 组件：`src/lib/components/chat/MessageInput/ModePills.svelte`（`webSearchEnabled` 双向绑定）
+- 候选缺失 → 自动降级 / 按钮置灰，绝不谎报能力
+
+### S3b.3 语音输入修复（根因）
+
+**现象**：点麦克风无反应。
+**根因**：容器内 `AUDIO_STT_ENGINE` 为空 → OWUI 回退本地 whisper，但模型从未下载，静默失败。
+**修复**（compose 环境变量）：
+
+```yaml
+- AUDIO_STT_ENGINE=openai
+- AUDIO_STT_MODEL=Qwen3-ASR-1.7B
+- AUDIO_STT_OPENAI_API_BASE_URL=https://10.255.12.210/v1
+- AUDIO_STT_OPENAI_API_KEY=sk-svcchat...
+```
+
+### S3b.4 小模型接入（ASR / TTS / 文生图）
+
+```yaml
+# 朗读
+- AUDIO_TTS_ENGINE=openai
+- AUDIO_TTS_MODEL=cosyvoice-v3
+- AUDIO_TTS_VOICE=9c3ca98d75b2        # ⚠️ 目前只有这一个自定义音色
+# 文生图
+- ENABLE_IMAGE_GENERATION=true
+- IMAGE_GENERATION_ENGINE=openai
+- IMAGE_GENERATION_MODEL=FLUX.2-klein-4B
+- IMAGE_SIZE=512x512                  # ⚠️ 见下
+```
+
+> ⚠️ **FLUX.2-klein-4B 硬约束**：必须显式传 `size`（缺省 → 500），且只支持 ≤768
+> （`256x256`/`512x512`/`768x768` 通过，`1024x1024` → 500）。故锁定 `IMAGE_SIZE=512x512`。
+>
+> ⚠️ **cosyvoice-v3 无预置音色**：`/v1/voices` 返回 `preset_voices: []`，
+> 只有一条 self-defined 的 `daijun`。要么先用它，要么后续在 AlloMax 侧补标准音色。
+
+### S3b.5 回滚点
+
+| 对象 | 回滚方式 |
+|---|---|
+| OWUI compose | `/data/docker-compose.owui.yml.bak-20260918-s3b` |
+| 模型白名单 | 重跑脚本改回 `WHITELIST`；或 `BYPASS_MODEL_ACCESS_CONTROL=true` 恢复旧行为 |
+| 星语平台 | 镜像 `rollback-20260918-s3ui` |
