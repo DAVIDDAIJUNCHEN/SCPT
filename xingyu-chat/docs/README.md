@@ -151,6 +151,68 @@ xingyu-chat/docs/
 2. 每次阶段切换更新本文档 §3 进度看板 + §5 遗留项
 3. 阶段文档必须含：目标、决策及理由、任务清单与验收、踩坑记录、教学复盘——目的是**后期可追溯开发进展，并可直接作为产教融合教学素材**
 
+---
+
+## 6.1 全项目文档索引（2026-09-19 建立）
+
+**为什么要这张表**：项目跨三个库、多轮开发，文中出现 11 个 `README.md`，看文件名完全分不清主题。此表是**唯一的路标**——找不到文档时先看这里。
+
+### A. 自研文档（写给我们自己的，需要维护）
+
+| 主题 | 文件 | 内容一句话 |
+|---|---|---|
+| **全局计划** | [`xingyu-chat/docs/README.md`](../../xingyu-chat/docs/README.md) | **本文档**。战略定位、阶段看板、分批执行计划、技术债 |
+| 双入口实施计划 | [`docs/DUAL-ENTRY-PLAN.md`](DUAL-ENTRY-PLAN.md) | Chat + API 双入口总设计 v3.2（IP 先行方案、18~21 人日排期） |
+| 阶段总结 · Portal | `xingyu-chat/docs/stage1-portal/README.md` | Stage 1 收工总结（8.9 分，24+ 轮迭代史、踩坑、教学复盘） |
+| 阶段计划 · Chat | `xingyu-chat/docs/stage2-chat/README.md` | Stage 2 Chat 开发计划（对齐 DeepSeek 体验的定制项与验收） |
+| 部署手册 · S1 | `xingyu-chat/deploy/DEPLOY-S1.md` | OWUI + SearXNG + nginx 双入口上线执行手册（逐步带验证命令） |
+| 部署手册 · VPS | [`deploy/README.md`](../deploy/README.md) | 星语网关 VPS 生产部署（M3，16C/64G 环境，PG+Redis 全容器化） |
+| 二开说明 | [`docs/stage1/二开说明-川邮星语.md`](stage1/二开说明-川邮星语.md) | 相对上游 new-api 的全部改动清单 |
+| 交接文档 | [`docs/stage1/完整开发文档-交接版.md`](stage1/完整开发文档-交接版.md) | 可交接的完整开发文档（架构/模块/接口） |
+| 商用与许可 | [`docs/stage1/商用与License说明.md`](stage1/商用与License说明.md) | AGPL 二开的商用边界与合规说明 |
+| 向领导汇报 | [`docs/stage1/向领导汇报-精简版.md`](stage1/向领导汇报-精简版.md) | 阶段成果汇报精简版 |
+| 项目定位说明 | [`docs/COMMERCIAL.md`](COMMERCIAL.md) | 本体是什么、基于哪个上游 commit、分支策略 |
+
+### B. 上游文档（open-webui / new-api 自带，**不改名、不翻译**）
+
+| 文件 | 说明 |
+|---|---|
+| `README.md` + `README.{zh_CN,zh_TW,en,fr,ja}.md` | 上游六语言 README。**改中文版会阻断上游合流**，且与 AGPL 署名冲突 |
+| `AGENTS.md` / `CLAUDE.md` / `web/AGENTS.md` | AI 协作工具链的编码约定（new-api 上游自带） |
+| `THIRD-PARTY-LICENSES.md` | 第三方依赖许可证台账。**是合规工程产物，非普通文档，勿动** |
+| `docs/authentication.md`、`docs/channel/*`、`docs/plugin-api/*`、`docs/installation/BT.md` 等 | 上游技术参考手册（认证、渠道配置、插件 API、安装） |
+| `docs/translation-glossary*.md` | 上游翻译术语表 |
+| `pkg/billingexpr/expr.md` | 计费表达式语法说明 |
+| `constant/README.md`、`relaykit/README.md`、`electron/README.md`、`web/src/components/data-table/README.md` | 各子模块的实现说明 |
+| `static/README.md`、`static/BRANDING.md`（OWUI，多处副本） | **品牌资产边界声明**。声明 Open WebUI 标识符不可移除，改动前必读 |
+
+### C. 工作区文档（`01_项目文档/`，按主题分目录，命名已合格）
+
+```
+01_项目文档/
+├── 分析与评估/    星语能力评估、四维对比与试运营裁决
+├── 测试与验证/    内容管控实现与验证报告、三项新增能力验证、试运营测试清单
+├── 手册与设计/    ContentGuard 管理员说明、登录注册与 API 系统设计、交接版 PDF
+├── 汇报与交付/    阶段总结与领导汇报、商用化路线图、清理记录
+├── 凭据归档/      加密归档（不入库）
+└── 参考(AlloMax)/ AlloMax 网关探查计划、平台知识速览
+```
+
+### D. 命名规则（此后新增文档照此执行）
+
+| 文档类型 | 命名规则 | 示例 |
+|---|---|---|
+| 阶段计划/总结 | `stageN-<主题>/README.md` | `stage2-chat/README.md` |
+| 执行手册 | `DEPLOY-<范围>.md` | `DEPLOY-S1.md`、`DEPLOY-VPS.md` |
+| 一次性分析/报告 | `<主题>_<日期>.md` | `星语vs原方案_2026-09-19.md` |
+| 教程/参考 | `<主题>-guide.md` | `billing-guide.md` |
+| **禁止** | 裸 `README.md`（除目录索引与阶段目录）、`新建文档.md`、`文档1.md` | — |
+
+> **⚠️ 不做的三件事（避免破坏上游）**：
+> ① 不重命名上游 `README.zh_CN.md` 等六语言文件——会阻断 `git fetch upstream` 后的合流，且带 AGPL 署名性质
+> ② 不重命名 `AGENTS.md` / `CLAUDE.md`——工具链按固定文件名识别，改名即失效
+> ③ 不把 `THIRD-PARTY-LICENSES.md` 当普通文档归档——它是合规产物，须与 Docker 镜像、前端产物、Electron 安装包同行
+
 ## 7. 下一步行动
 
 - **第二批（计费三项）待启动**：4.1 赠金双账户 → 4.2 错峰时间倍率（最简，可插队）→ 4.3 月度赠金刷新。全走 SCPT 库。
