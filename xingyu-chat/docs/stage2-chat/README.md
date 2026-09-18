@@ -124,6 +124,39 @@
 
 **S3 验收**：并排截图对比 DeepSeek 官网，布局/模式切换/思考折叠三大标志性体验对齐。
 
+### S3 进度（2026-09-18 首批切片已上线）
+
+| 切片 | 状态 | 实现要点 |
+|---|---|---|
+| **UI 对齐三件套**（大王 09-18 追加） | ✅ 已上线 | ① 星语平台默认配色 dark→light（`theme-provider.tsx` DEFAULT_THEME）② 登录页背景对齐 Portal：底色 `#0e1538` + 三团星云光晕 + **canvas 星空/流星**（复刻 Portal 同一套参数）、校徽加辉光 ③ tab 图标统一 Portal 无文字圆徽 `favicon-round.png`（带文字校徽 16px 会糊） |
+| **S3.1 极简单栏布局** | ✅ 已上线 | 学生（非管理员）左栏只留搜索/会话列表/用户菜单，裁掉 Workspace/Notes/Calendar/Playground/Automations（`Sidebar.svelte` 的 `SIMPLE_SIDEBAR_FOR_USERS` 开关，管理员不受影响） |
+| **S3.2 4 模式 pill** | ✅ 已上线 | 新增 `MessageInput/ModePills.svelte`：极速(glm-5.3-flash) / 专家(glm-5.3) / 深度思考(DeepSeek-V4.1-Flash) / 视觉(Qwen3-VL-30B)，点击即切模型，候选缺失自动降级 |
+| **S3.4 思考块样式** | ✅ 已上线 | 中文文案改 DS 措辞（「已深度思考 N 秒」「深度思考中…」）+ 头部字号降到 13px 弱化灰 + 圆角 hover，不再抢正文视线 |
+| **B3 DS 风格授权页** | ✅ 已上线 | 授权页加「应用身份卡片」（client_id → 川邮·星语 Chat + 描述 + 徽标）、按实际 scope 展示权限清单（openid/profile/email）、配色切到新底色 |
+
+**⚠️ 本轮头号坑（务必记住）：nginx `sub_filter` 与前端默认主题打架**
+S1 阶段为品牌化在 nginx 加了 `sub_filter`，往 HTML 里注入 `localStorage.setItem("theme","dark")` 强制深色。本轮前端已改默认浅色，但 nginx 注入优先级更高 → 线上仍深色。**排查特征**：HTML 里出现两段主题脚本、`localStorage.theme` 与前端默认值不符。已把注入值改为 `"light"`（备份 `xingyu-ip.conf.bak-20260918-light`）。教训：**同一配置项被两层（nginx + 前端）同时持有，改动前先 grep 全链路**。
+
+### S3 部署方法（改前端不必重打 7GB 镜像）
+
+OWUI 前端产物在镜像里的 `/app/build`，后端默认从 `FRONTEND_BUILD_DIR`（= `BASE_DIR/build`）读。因此：
+
+```bash
+# 1) 本地构建（跳过 pyodide 下载，VPS 出站不通用不上）
+cd ~/github/open-webui && npx vite build        # 产物 build/
+# 2) 打包上传
+tar czf /tmp/owui-frontend.tar.gz -C build .
+scp /tmp/owui-frontend.tar.gz root@10.255.12.210:/data/owui/
+ssh root@10.255.12.210 "cd /data/owui && mkdir -p build && tar xzf owui-frontend.tar.gz -C build"
+# 3) compose 加两行（已加，备份 docker-compose.owui.yml.bak-20260918-s3）
+#      volumes: - /data/owui/build:/data/owui/build:ro
+#      environment: - FRONTEND_BUILD_DIR=/data/owui/build
+ssh root@10.255.12.210 "cd /data && docker compose -f docker-compose.owui.yml up -d owui"
+```
+
+**回滚**：删掉这两行 → `up -d owui` → 立即回到镜像内置前端（零构建）。
+**OWUI 源码**：`~/github/open-webui`（v0.11.3 浅克隆），S3 改动在分支 `xingyu-s3`（commit efc531d）。
+
 ---
 
 ## S1 / S2 收工总结（2026-09-18，一天双收）
