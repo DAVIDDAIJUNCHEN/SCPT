@@ -126,6 +126,70 @@
 
 ---
 
+## S1 / S2 收工总结（2026-09-18，一天双收）
+
+### S1 基础部署 ✅（09-18 上午）
+
+| 项 | 结果 |
+|---|---|
+| OWUI + SearXNG 容器 | ✅ VPS 部署，`/data/docker-compose.owui.yml`（注意：**不在** /data/allomax 下） |
+| nginx 8443 反代 | ✅ `/etc/nginx/conf.d/xingyu-ip.conf` |
+| 星语接入 | ✅ 12 模型全通 |
+| thinking 输出 | ✅ glm-5.3-flash / deepseek-v4-flash reasoning 透传验证（注意 max_tokens 要给够，reasoning 占满时 content 为空） |
+| 遗留 | DeepSeek-V4.1-Flash thinking=0 → AlloMax 侧加 `--reasoning-parser`（P1，不阻塞） |
+
+### S2 账号打通 ✅（09-18，当日收工，原计划 3-5 天）
+
+| 项 | 结果 |
+|---|---|
+| S2.1 OIDC Provider | ✅ `/oidc/authorize` / `/oidc/token` / `/oidc/userinfo` / `/oidc/jwks` / discovery，客户端 `xingyu-chat` 硬编码；修复 JWKS `e` 字段缺失 bug |
+| S2.2 OWUI 对接 OIDC | ✅ `ENABLE_OAUTH_SIGNUP=true`，signup 即开通（有星语账号就有 Chat） |
+| S2.3 计费隔离 | ✅ Chat 走服务账号 + 渠道维度天然可查 |
+| S2.4 自动开通 | ✅ 由 OIDC signup 天然实现，只剩用户组/模型可见性配置 |
+
+### 超额完成（B 系列，原计划外）
+
+| 项 | 内容 |
+|---|---|
+| **B1** | 429 登录限流治本（`GlobalAPIRateLimit` 独立计数，CRITICAL_RATE_LIMIT=200，Redis 共享桶） |
+| **B1+** | OIDC 授权服务端 302 直通，消除登录后过渡静态页 |
+| **B2** | **跨端口 SSO 双向互通**（本阶段最大战果，详见下节） |
+| S3.3/S3.5 顺手清 | 主题配色、品牌替换（「川邮·星语 Chat」+ 圆徽 favicon）已在 S2 期间提前完成 |
+| splash | 启动画面品牌化 |
+| 429 治本 | 登录接口限流参数独立化 |
+
+### B2 跨端口 SSO 互通 · 技术复盘（commit c9ea9b1）
+
+**拓扑**：`https://10.255.12.210`(443, Portal+星语平台) ↔ `https://10.255.12.210:8443`(OWUI Chat)。星语 = OIDC Provider，OWUI = RP。
+
+**根因（头号坑）**：refresh cookie `new_api_refresh` 原为 `SameSite=Strict`。浏览器对 SameSite 的判定把「同 host 不同端口」当**跨站**处理 → 8443→443 的 OIDC 顶层导航不带 cookie → 星语看不到会话 → 反复要求登录。铁证：`[oidc-trace] reason=no_refresh_cookie cookies_present=[owui-session]`（OWUI 的 Lax cookie 在场、星语的 Strict cookie 缺席）。
+
+**修复**：`service/auth_session.go` 两处 `SameSite: Strict → Lax`（Lax 允许顶层导航携带；CSRF 风险由 SessionCookieOriginGuard 兜底）。
+
+**退出互通（标准 RP-initiated logout）**：
+- discovery 暴露 `end_session_endpoint = /oidc/logout`
+- `/oidc/logout`：吊销 sid 会话 + 清 cookie + `post_logout_redirect_uri` origin 白名单校验（防开放重定向）
+- 新增只读探活 `/oidc/session/status`（204/401）与幂等 `/oidc/session/revoke`（GET+POST——nginx mirror 保留原方法，OWUI signout 是 GET）
+- 均不挂 OriginGuard（nginx 子请求不带 Origin）
+
+**nginx 三处接线**（`xingyu-ip.conf`，回滚备份 `.bak-20260918-b2logout`）：
+1. 443 根路径：`if ($arg_post_logout_redirect_uri != "")` → 302 `/oidc/logout`（OWUI 的 `OPENID_END_SESSION_ENDPOINT` 指向根路径，由这里接住）
+2. 8443 signout：`mirror /_sso/revoke` → 异步吊销星语会话（兜底）
+3. 8443 `/api/v1/auths/`：`auth_request /_sso/status` → 星语会话已吊销则 401，OWUI 清 token 回登录页
+
+**四场景 E2E（agent-browser 全过）**：平台登录→chat 免密 / chat 登录→平台免密 / chat 退出→平台要求重登（会话 revoked）/ 平台退出→chat 要求重登（auth_request 401 拦截）。
+
+**回滚点**：镜像 `rollback-20260918-b2logout`；当前生产 `allomax-gateway:commercial` = b2-final。
+
+**踩坑教训（教学要点）**：
+1. 首版 auth_request 拦截方案未定位根因就上线，导致双向都要重登 → 回滚重来。**先诊断后开方**。
+2. 诊断方法论：关键路径加 trace 日志（reason + cookies_present + referer）→ agent-browser 真实复现 → 对比在场/缺席 cookie 锁定根因。
+3. bash 里 bcrypt hash `$2a$10$...` 会被当变量展开吃掉 → base64 中转。
+4. nginx mirror 子请求保留原方法 → revoke 端点必须 GET+POST 双支持。
+5. `docker save | gzip | ssh` 管道易断 → 分步传输（save -o → gzip → scp → 远端 load）。
+
+---
+
 ## S4 星语侧并行改造（与 S2/S3 交错，不阻塞 Chat 主线）
 
 | 任务 | 依赖 | 说明 |

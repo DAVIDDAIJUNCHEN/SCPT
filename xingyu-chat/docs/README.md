@@ -1,7 +1,7 @@
 # 川邮·星语 · 全局开发计划（Master Plan）
 
 > **项目定位**：把学校智算中心做成**类 DeepSeek 的一体化 AI 服务**——Chat 对话 + API 开放平台双入口、一个账号两边通用、校内免费配额 + 校外付费
-> **文档版本**：v1.0（2026-09-17，Stage 1 收工、Stage 2 启动时点）
+> **文档版本**：v1.1（2026-09-18，S2 收工、S3 启动时点）
 > **维护约定**：每阶段收工/启动时更新本文档的进度看板与阶段索引
 
 ---
@@ -51,18 +51,18 @@
 |---|---|---|---|---|
 | **Stage 0** | 星语网关生产化（短信/备份/2FA/探针/脱敏） | 已完成 | ✅ | — |
 | **Stage 1** | Portal 主页（StarWhisper 门户，24+ 轮迭代） | 09-16~09-17 | ✅ **收工 8.9 分** | [stage1-portal/README.md](stage1-portal/README.md) |
-| **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起，3-4 周 | 🔵 **进行中** | [stage2-chat/README.md](stage2-chat/README.md) |
+| **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起 | 🔵 **S1/S2 收工，S3 进行中** | [stage2-chat/README.md](stage2-chat/README.md) |
 | Stage 3 | 能力补全（RAG 知识库、代码沙箱、Anthropic 协议、文件解析增强） | 待排 | ⚪ 未启动 | — |
 | Stage 4 | 商业化（错峰定价、分层配额、计费对账、并发分级、user_id 三重隔离） | 与 S2/S4 交错 | ⚪ 部分体检已做 | — |
 | Stage 5 | 规模化与合规（生成式 AI 备案、算法备案、等保、收费报批、开放注册、B 端） | 6-12 月 | ⚪ 未启动 | — |
 
 ### Stage 2 内部里程碑
 ```
-S1 基础部署（1-2 天，零生产代码）──→ S2 账号打通（3-5 天，OIDC Provider 二开）
-        │                                    │
-        └────────→ S3 定制打磨（1-2 周切片）←──┘
-                    S4 星语侧并行（Webhook/模型池/计费三项，不阻塞）
+S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定制打磨 🔵 进行中
+                                                    S4 星语侧并行（不阻塞）
 ```
+
+**S2 收工快照（2026-09-18）**：S2.1~S2.4 全过 + 超额 B1/B1+/B2（跨端口 SSO 双向互通，根因 SameSite=Strict 跨端口被浏览器判跨站 → 改 Lax；退出互通走标准 RP-initiated logout + nginx mirror/auth_request 三处接线）。详见 [stage2-chat/README.md](stage2-chat/README.md) §收工总结。
 
 ## 4. 三条合规红线（对外服务前必须处理）
 
@@ -75,9 +75,9 @@ S1 基础部署（1-2 天，零生产代码）──→ S2 账号打通（3-5 �
 | 来源 | 项 | 优先级 |
 |---|---|---|
 | Portal | rAF 后台暂停、og 标签、公告链接、base64 外置、skip-link/noscript | P2/P3 |
-| OWUI POC | DeepSeek-V4.1-Flash thinking=0（需 AlloMax 加 --reasoning-parser） | P1（S1.4 处理） |
-| 星语 | ServerAddress 未配（status 返回默认 localhost） | P2 |
-| 星语 | OIDC Provider 端点缺失 | P1（S2.1 处理） |
+| ~~星语~~ | ~~ServerAddress 未配~~ | ✅ 已配（S2 期间核实更正） |
+| ~~星语~~ | ~~OIDC Provider 端点缺失~~ | ✅ 已完成（S2.1，含 /oidc/* 全家桶） |
+| OWUI | DeepSeek-V4.1-Flash thinking=0（需 AlloMax 加 --reasoning-parser） | P1 |
 
 ## 6. 文档归档约定（本目录的用法）
 
@@ -95,5 +95,5 @@ xingyu-chat/docs/
 
 ## 7. 下一步行动
 
-- **等大王确认后启动 S1**：VPS 部署 OWUI + SearXNG 容器 → 重签证书 → nginx 上线 → DeepSeek 风格初始化（全程零生产代码，零风险）
-- 并行可选：星语计费三项中最简单的错峰定价（可插队）
+- **S3 定制打磨进行中**（开工顺序：S3.1 单栏布局 → S3.2 模式 pill → S3.4 思考块 → B3 授权页，外加 UI 对齐三件套：默认浅色 / 校徽+登录页背景对齐 Portal / 登录页流星动画）
+- 并行可选：星语计费三项（错峰定价最简可插队）、S4 Webhook 用量回流
