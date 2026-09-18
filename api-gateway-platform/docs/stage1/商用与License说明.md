@@ -42,10 +42,10 @@
 
 - [x] 源码仓库（GitHub，AGPL v3 开源）
 - [x] 一键部署脚本 `deploy/deploy.sh`
-- [x] 部署文档 `deploy/README.md`（含新功能说明）
+- [x] 部署文档 `deploy/DEPLOY-VPS.md`（含新功能说明）
 - [x] 二开说明 `docs/二开说明-川邮星语.md`
 - [ ] 固定域名与 HTTPS 证书（对外必需）
 - [ ] 在线支付（校方微信/支付宝商户号）
 - [ ] 商业授权或 AGPL 合规签约（对外售卖前）
 
-> 详细功能与使用：见 [`deploy/README.md`](../deploy/README.md) 与根 `README.md` 顶部说明。
+> 详细功能与使用：见 [`deploy/DEPLOY-VPS.md`](../deploy/DEPLOY-VPS.md) 与根 `README.md` 顶部说明。

@@ -6,7 +6,9 @@
 >
 > 本项目基于 **New API**（下方为上游官方 README）二次开发，定位为**面向教学/科研的大模型 API 网关**，新增能力包括：**手机号验证码注册/登录、阿里云真实短信、管理员 TOTP 两步验证、审计日志台账、未知 IP 登录飞书告警、用量多维分析、per-token 能力管控**。
 >
-> **部署请直接看中文文档 → [`deploy/README.md`](./deploy/README.md)（含 `deploy/deploy.sh` 一键部署）**
+> **部署请直接看中文文档 → [`deploy/DEPLOY-VPS.md`](./deploy/DEPLOY-VPS.md)（含 `deploy/deploy.sh` 一键部署）**
+>
+> **找不到文档时，先看 → [`docs/README.md`](./docs/README.md)（全项目文档索引）**
 >
 > 依赖 PostgreSQL 16 + Redis 7，通过 Docker Compose 全容器化部署。
 
