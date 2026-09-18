@@ -166,7 +166,7 @@ xingyu-chat/docs/
 | 阶段总结 · Portal | `xingyu-chat/docs/stage1-portal/README.md` | Stage 1 收工总结（8.9 分，24+ 轮迭代史、踩坑、教学复盘） |
 | 阶段计划 · Chat | `xingyu-chat/docs/stage2-chat/README.md` | Stage 2 Chat 开发计划（对齐 DeepSeek 体验的定制项与验收） |
 | 部署手册 · S1 | `xingyu-chat/deploy/DEPLOY-S1.md` | OWUI + SearXNG + nginx 双入口上线执行手册（逐步带验证命令） |
-| 部署手册 · VPS | [`deploy/README.md`](../deploy/README.md) | 星语网关 VPS 生产部署（M3，16C/64G 环境，PG+Redis 全容器化） |
+| 部署手册 · VPS | [`deploy/DEPLOY-VPS.md`](../deploy/DEPLOY-VPS.md) | 星语网关 VPS 生产部署（M3，16C/64G 环境，PG+Redis 全容器化） |
 | 二开说明 | [`docs/stage1/二开说明-川邮星语.md`](stage1/二开说明-川邮星语.md) | 相对上游 new-api 的全部改动清单 |
 | 交接文档 | [`docs/stage1/完整开发文档-交接版.md`](stage1/完整开发文档-交接版.md) | 可交接的完整开发文档（架构/模块/接口） |
 | 商用与许可 | [`docs/stage1/商用与License说明.md`](stage1/商用与License说明.md) | AGPL 二开的商用边界与合规说明 |
@@ -212,6 +212,15 @@ xingyu-chat/docs/
 > ① 不重命名上游 `README.zh_CN.md` 等六语言文件——会阻断 `git fetch upstream` 后的合流，且带 AGPL 署名性质
 > ② 不重命名 `AGENTS.md` / `CLAUDE.md`——工具链按固定文件名识别，改名即失效
 > ③ 不把 `THIRD-PARTY-LICENSES.md` 当普通文档归档——它是合规产物，须与 Docker 镜像、前端产物、Electron 安装包同行
+
+### E. 已执行的整理动作（2026-09-19）
+
+| 动作 | 说明 | 提交 |
+|---|---|---|
+| `deploy/README.md` → `deploy/DEPLOY-VPS.md` | 与 `docs/README.md` 概念相撞（一个是我方部署手册、一个是上游宣传页），改名消歧；同步 6 处引用 | SCPT `6404683` |
+| 根 `README.md` 加路标 | 在二开说明横幅补一行指向本文档，从仓库首页即可找到索引。**只改英文版**，五个上游翻译版未动 | SCPT `6404683` |
+
+> 其余 9 个 README 经评估**不改**：上游工具链文件（`AGENTS.md`/`CLAUDE.md`）、上游子模块说明（`constant/`、`relaykit/`、`electron/`、`web/src/components/data-table/`、`docs/plugin-api/`）、阶段目录索引（`stageN-*/README.md` 符合命名规则）——改名成本高于收益。
 
 ## 7. 下一步行动
 
