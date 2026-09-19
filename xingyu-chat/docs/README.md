@@ -1,7 +1,7 @@
 # 川邮·星语 · 全局开发计划（Master Plan）
 
 > **项目定位**：把学校智算中心做成**类 DeepSeek 的一体化 AI 服务**——Chat 对话 + API 开放平台双入口、一个账号两边通用、校内免费配额 + 校外付费
-> **文档版本**：v1.2（2026-09-19，S3 主体收尾、进入 S4 计费改造前时点）
+> **文档版本**：v1.3（2026-09-19，**S3 收尾完成**、进入 S4 计费改造前时点）
 > **维护约定**：每阶段收工/启动时更新本文档的进度看板与阶段索引
 
 ---
@@ -51,15 +51,17 @@
 |---|---|---|---|---|
 | **Stage 0** | 星语网关生产化（短信/备份/2FA/探针/脱敏） | 已完成 | ✅ | — |
 | **Stage 1** | Portal 主页（StarWhisper 门户，24+ 轮迭代） | 09-16~09-17 | ✅ **收工 8.9 分** | [stage1-portal/README.md](stage1-portal/README.md) |
-| **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起 | 🔵 **S1/S2 收工，S3 主体收尾，S4 待启动** | [stage2-chat/README.md](stage2-chat/README.md) |
+| **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起 | 🟢 **S1/S2 收工，S3 收尾完成（含 S3.6），S4 待启动** | [stage2-chat/README.md](stage2-chat/README.md) |
 | Stage 3 | 能力补全（RAG 知识库、代码沙箱、Anthropic 协议、文件解析增强） | 待排 | ⚪ 未启动 | — |
 | Stage 4 | 商业化（错峰定价、分层配额、计费对账、并发分级、user_id 三重隔离） | 与 S2/S4 交错 | ⚪ 部分体检已做 | — |
 | Stage 5 | 规模化与合规（生成式 AI 备案、算法备案、等保、收费报批、开放注册、B 端） | 6-12 月 | ⚪ 未启动 | — |
 
 ### Stage 2 内部里程碑
 ```
-S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定制打磨 🔵 进行中
-                                                    S4 星语侧并行（不阻塞）
+S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定制打磨 ✅ 09-19（含 S3.6 收尾）
+                                                    ↓
+                                          S4 计费三项 ← 下一步
+                                          S4 星语侧并行（不阻塞）
 ```
 
 **S2 收工快照（2026-09-18）**：S2.1~S2.4 全过 + 超额 B1/B1+/B2（跨端口 SSO 双向互通，根因 SameSite=Strict 跨端口被浏览器判跨站 → 改 Lax；退出互通走标准 RP-initiated logout + nginx mirror/auth_request 三处接线）。详见 [stage2-chat/README.md](stage2-chat/README.md) §收工总结。
@@ -110,7 +112,7 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 | OIDC 错误码规范化 | 拒绝授权的文案与错误码归一 |
 | `SESSION_COOKIE_SECURE=true` | 现为 false（自签 IP + http 兼容）。**切域名 + 正式证书后必须开** |
 | 模型精细授权 | per-user / per-group 替代当前「4 模型粗粒度白名单」 |
-| Portal 遗留 5 项 | rAF visibilitychange、og 标签、公告死链、skip-link/noscript、base64 外置（省 60KB+） |
+| ~~Portal 遗留 5 项~~ | ✅ **2026-09-19 全部完成**（S3.6）。rAF visibilitychange / og 标签 / 公告死链 / skip-link+noscript / base64 外置 —— 详见 §5.3 |
 
 **P3 合规（对外服务前硬门槛，校内不阻塞）**
 
@@ -135,7 +137,67 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 | ~~星语~~ | ~~ServerAddress 未配~~ | ✅ 已配（S2 期间核实更正） |
 | ~~星语~~ | ~~OIDC Provider 端点缺失~~ | ✅ 已完成（S2.1，含 /oidc/* 全家桶） |
 | ~~形态 B~~ | ~~拦截改 4xx → 星语 0 计费~~ | ✅ 被取代：原生 ContentGuard 下沉后已内置，不再依赖 LiteLLM 4xx 特判。**工作本身已被取代，不是未做** |
-| ~~Portal~~ | ~~悬挂死链 `#announcement-link`~~ | 仍在，归入 P2 「Portal 5 项」 |
+| ~~Portal~~ | ~~悬挂死链 `#announcement-link`~~ | ✅ S3.6 已修：href 改为按 Notice API 数据注入 |
+
+### 5.3 S3 收尾验收快照（2026-09-19）
+
+> 本轮把「S3 主体收尾」欠的三件事一次清完：**性能优化 + Portal 5 项 + 线上产物核验**。
+
+#### A. 性能优化（puppeteer 实测驱动，非猜测）
+
+**首屏真实传输量（gzip 后）**
+
+| 页面 | 优化前 | 优化后 | 手段 |
+|---|---|---|---|
+| Portal 主页 | 106 KB | **106 KB**（HTML 24KB） | base64 外置 |
+| 平台登录页 | 4.4 MB | **0.89 MB** | i18n 懒加载 + 路由分割 |
+| Chat 首屏 | 12.2 MB | 见 stage2-chat | — |
+
+**主包瘦身**：`index.js` 3585 KB → **1499 KB（-58%）**。
+根因是 **7 种语言包全部静态引入**，其中 `fr/ru/ja/vi/zhTW` 共 5 种本项目用不上，约 **2.2 MB 死重**。
+修法：`en`/`zhCN` 保静态（首屏必需），其余改 `import()`；登录/忘记密码/OTP 三路由加 `lazy-auth-route.tsx` 懒加载。
+
+**Portal HTML**：95203 B → **31129 B（-67%）**。两个内联 base64（favicon 36KB + logo 14KB）经 sha256 比对与 `assets/` 目录已有文件**完全一致**，直接换 URL 引用，零新增文件。
+
+> ⚠️ **量测陷阱（已踩）**：`curl` 不带 `Accept-Encoding` 时拿到的是未压缩原文，
+> 会误判「压缩没生效」。nginx `gzip on` 且 `gzip_types` 覆盖 js/css 时，
+> `1499KB → 399KB`。**量首屏体积必须带 `-H 'Accept-Encoding: gzip'`**。
+
+#### B. Portal 遗留 5 项（全部完成并实测）
+
+| # | 项 | 实测证据 |
+|---|---|---|
+| ① | rAF visibilitychange | 切后台 `pausedStable: true`，回前台 `resumedChanged: true` |
+| ② | og / twitter 分享卡片 | 5 og + 4 twitter，供校内工作群转发 |
+| ③ | 公告「查看详情」死链 | href 改为按 Notice API 的 `link`/`url` 注入（限站内/ https，防 `javascript:` 注入） |
+| ④ | skip-link + noscript | Tab 聚焦 `left: -9999px → 0`，文案随 zh/en 切换 |
+| ⑤ | base64 外置 | 残留 base64 = **0**，HTML -67% |
+
+**⚠️ 关键坑：`display` 覆盖 `[hidden]`**
+`.announcement{display:flex}` 会**覆盖浏览器对 `[hidden]` 的默认 `display:none`** →
+`hidden` 属性完全失效 → 公告数据到达前渲染出一个**空胶囊**（只有「公告」二字）。
+补 `.announcement[hidden]{display:none}` 后修复。**凡显式设过 `display` 的元素，用 `hidden` 属性隐藏时必须补 `[hidden]{display:none}`。**
+
+**⚠️ 关键坑：rAF 自续帧必须受门控**
+`tick()` 末尾自调 `requestAnimationFrame(tick)`，只 `cancelAnimationFrame` 外部句柄是**取消不掉的**——
+下一帧立刻自续，后台暂停形同虚设（实测 `pausedStable=false`）。
+必须写成 `if (running) rafId = requestAnimationFrame(tick)`。
+
+#### C. 线上核验（三端 + 产物）
+
+| 目标 | 结果 |
+|---|---|
+| Portal 443 | HTTP 200 / 0.11s |
+| 星语登录页 | HTTP 200 / 0.15s |
+| Chat 8443 | HTTP 200 / 0.07s |
+| OIDC discovery | `end_session_endpoint` 正常 |
+| 线上 Portal 浏览器实测 | 4 请求、0 JS 错误、公告条正常 |
+
+> 上一轮 `perf-lang` 部署后的 502 已自愈：`perf-lang` 与 `commercial-mig` 现指向**同一镜像 ID
+> `8989495ea642`**，容器 `Up (healthy)`。
+> **教训**：镜像切换后 nginx 侧会有短暂 502，需等容器健康检查通过再验证。
+
+**回滚点**：Portal `index.html.bak-20260919-s36`｜星语镜像 `rollback-20260919-lang`
 
 ## 6. 文档归档约定（本目录的用法）
 
