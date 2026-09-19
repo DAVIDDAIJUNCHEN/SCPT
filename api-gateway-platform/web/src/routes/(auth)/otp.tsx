@@ -18,7 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute } from '@tanstack/react-router'
 
-import { Otp } from '@/features/auth/otp'
+import { lazyAuthRoute } from '@/features/auth/lib/lazy-auth-route'
+
+// 川邮·星语（2026-09-19）：认证页懒加载，避免拖入首屏主包
+const Otp = lazyAuthRoute(() => import('@/features/auth/otp'), 'Otp')
 
 export const Route = createFileRoute('/(auth)/otp')({
   component: Otp,

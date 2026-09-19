@@ -27,22 +27,51 @@ import {
   syncLanguageToPortal,
 } from '@/lib/portal-language-bridge'
 import en from './locales/en.json'
-import fr from './locales/fr.json'
-import ja from './locales/ja.json'
-import ru from './locales/ru.json'
-import vi from './locales/vi.json'
-import zhTW from './locales/zh-TW.json'
 import zhCN from './locales/zh.json'
 
-export const resources = {
+/**
+ * 川邮·星语（2026-09-19）：语言包按需加载。
+ *
+ * 背景：7 个语言包静态 import 共 3.0MB，其中 fr/ru/ja/vi/zh-TW 五个（约 2.2MB）
+ * 星语根本不用（本项目锁定 zh + en），却全部打进首屏主包 —— 主包 3.6MB 里
+ * 六成是这些用不到的死文案。这是「从 Portal 进登录页慢、不丝滑」的首要根因。
+ *
+ * 策略：zh + en 静态引入（首屏必需，命中率 100%）；
+ *      其余语言走动态 import，仅当用户主动切到该语言时才拉对应 chunk。
+ *      这样不删除上游任何语言（保留 AGPL 合流能力），只是把它们的加载时机推后。
+ */
+const resources = {
   en,
   zhCN,
-  fr,
-  ru,
-  ja,
-  vi,
-  zhTW,
 } as const
+
+const LAZY_LOCALES = {
+  fr: () => import('./locales/fr.json'),
+  ru: () => import('./locales/ru.json'),
+  ja: () => import('./locales/ja.json'),
+  vi: () => import('./locales/vi.json'),
+  zhTW: () => import('./locales/zh-TW.json'),
+} as const
+
+type LazyLanguage = keyof typeof LAZY_LOCALES
+
+const lazyLanguageCodes = Object.keys(LAZY_LOCALES) as LazyLanguage[]
+
+function isLazyLanguage(value: string): value is LazyLanguage {
+  return (lazyLanguageCodes as string[]).includes(value)
+}
+
+/**
+ * 按需把某个语言包注册进 i18next。
+ * 已注册过的直接返回，避免重复网络请求。
+ */
+export async function ensureLanguageLoaded(lng: string): Promise<void> {
+  if (!isLazyLanguage(lng)) return
+  if (i18n.hasResourceBundle(lng, 'translation')) return
+
+  const mod = await LAZY_LOCALES[lng]()
+  i18n.addResourceBundle(lng, 'translation', mod.default, true, true)
+}
 
 /**
  * 川邮·星语：确定初始语言。
@@ -95,6 +124,30 @@ i18n
 // 放在 init 之后，避免污染检测器对 i18nextLng 的判断。
 if (initialLanguage) {
   syncLanguageToPortal(initialLanguage)
+}
+
+/**
+ * 语言切换时按需拉取对应语言包。
+ *
+ * 监听 languageChanged：若目标语言是惰性语言且尚未注册，就动态 import 并注入。
+ * 注入后 i18next 会自动重渲染已挂载的组件（react-i18next 的既有行为），
+ * 因此用户能立刻看到新语言文案，无需刷新。
+ *
+ * 注意：这里**不 await**，让切换动作先返回（i18next 会以旧文案短暂兜底），
+ * 语言包到达后自动刷新。若 await 会让切换按钮出现肉眼可见的卡顿。
+ */
+i18n.on('languageChanged', (lng: string) => {
+  if (!isLazyLanguage(lng)) return
+  void ensureLanguageLoaded(lng).catch(() => {
+    // 语言包加载失败时静默降级到英文兜底，不打断用户操作
+  })
+})
+
+// 初始语言本身就是惰性语言（如 ?lang=zhTW / 上次存了 ja）时，立即补拉。
+if (initialLanguage && isLazyLanguage(initialLanguage)) {
+  void ensureLanguageLoaded(initialLanguage).catch(() => {
+    /* 静默降级到 en 兜底 */
+  })
 }
 
 export default i18n

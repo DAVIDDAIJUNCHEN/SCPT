@@ -19,16 +19,24 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { z } from 'zod'
 
+import { lazyAuthRoute } from '@/features/auth/lib/lazy-auth-route'
 import { sanitizeAuthRedirect } from '@/features/auth/lib/auth-redirect'
-import { SignIn } from '@/features/auth/sign-in'
 import { useAuthStore } from '@/stores/auth-store'
+
+// 川邮·星语（2026-09-19）：登录页懒加载，从 3.5MB 首屏主包里切出去。
+// 首屏只加载框架与路由骨架，登录组件成独立 async chunk 按需拉取。
+// 详见 @/features/auth/lib/lazy-auth-route.tsx 的背景说明。
+const SignInRoute = lazyAuthRoute(
+  () => import('@/features/auth/sign-in'),
+  'SignIn'
+)
 
 const searchSchema = z.object({
   redirect: z.string().optional(),
 })
 
 export const Route = createFileRoute('/(auth)/sign-in')({
-  component: SignIn,
+  component: SignInRoute,
   validateSearch: searchSchema,
   beforeLoad: async ({ search }) => {
     const { auth } = useAuthStore.getState()
