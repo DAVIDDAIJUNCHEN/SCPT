@@ -170,6 +170,15 @@
 		((taskIds && taskIds.length > 0) ||
 			(history.currentId && history.messages[history.currentId]?.done != true) ||
 			generating);
+
+	// 2026-09-19 星语定制：输入框下方的 AI 生成免责声明（参考 DeepSeek chat 页）
+	// 文案走 i18n（键 ai_generated_disclaimer）；若某语言包未提供则回退到中文文案。
+	// 传空字符串即可隐藏（保留 license_metadata.input_footer 的优先级不变）。
+	const DISCLAIMER_FALLBACK = '内容由 AI 生成，请仔细甄别';
+	$: disclaimerText =
+		($i18n.t('ai_generated_disclaimer') || '') === 'ai_generated_disclaimer'
+			? DISCLAIMER_FALLBACK
+			: $i18n.t('ai_generated_disclaimer');
 	$: canCompact = !!history?.currentId;
 	$: canToggleTemporary =
 		!embedded &&
@@ -1678,7 +1687,10 @@
 					? 'max-w-full'
 					: 'max-w-[58rem]'} px-2 mx-auto inset-x-0"
 			>
-				<div class="">
+				<!-- 2026-09-19 星语定制：参考 DeepSeek —— 一旦开始正式对话（存在 currentId 的历史），
+				     整个输入区整体上移约一行（-1.75rem = 28px），给下方内容/声明留出呼吸空间；
+				     首页空态（无 currentId）保持原位置不动。 -->
+				<div class="{history?.currentId ? '-mt-7' : ''}">
 					<input
 						bind:this={filesInputElement}
 						bind:files={inputFiles}
@@ -2002,7 +2014,7 @@
 								{/if}
 
 								<div
-									class="scrollbar-hidden rtl:text-right ltr:text-left bg-transparent dark:text-gray-100 outline-hidden w-full pb-0.5 px-1 resize-none h-fit max-h-96 overflow-auto {files.length ===
+									class="chat-input-prose scrollbar-hidden rtl:text-right ltr:text-left bg-transparent dark:text-gray-100 outline-hidden w-full pb-0.5 px-1 resize-none h-fit max-h-96 overflow-auto {files.length ===
 									0
 										? atSelectedModel !== undefined
 											? 'pt-1'
@@ -2738,7 +2750,17 @@
 								{@html DOMPurify.sanitize(marked($config?.license_metadata?.input_footer))}
 							</div>
 						{:else}
-							<div class="mb-0.5" />
+							<!-- 2026-09-19 星语定制：参考 DeepSeek chat 页，输入框下方固定一行 AI 生成免责声明。
+							     走 i18n（键 ai_generated_disclaimer），留空即可隐藏。 -->
+							{#if disclaimerText}
+								<div
+									class="text-xs text-gray-400 dark:text-gray-500 text-center select-none pointer-events-none"
+								>
+									{disclaimerText}
+								</div>
+							{:else}
+								<div class="mb-0.5" />
+							{/if}
 						{/if}
 					</form>
 				</div>

@@ -2340,6 +2340,7 @@
 	"Send PDFs as base64 data URLs instead of uploading first.": "将 PDF 以 base64 数据 URL 发送，而不是先上传。",
 	"Send Test": "发送测试",
 	"Send a Message": "输入消息",
+	"ai_generated_disclaimer": "内容由 AI 生成，请仔细甄别",
 	"Send events for": "发送事件的范围",
 	"Send extra JSON parameters with each AUTOMATIC1111 request.": "在每个 AUTOMATIC1111 请求中发送附加 JSON 参数。",
 	"Send extra JSON parameters with each image generation request.": "在每个图片生成请求中发送附加 JSON 参数。",

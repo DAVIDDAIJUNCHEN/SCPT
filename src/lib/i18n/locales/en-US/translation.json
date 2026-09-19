@@ -2338,6 +2338,7 @@
 	"Send PDFs as base64 data URLs instead of uploading first.": "",
 	"Send Test": "",
 	"Send a Message": "",
+	"ai_generated_disclaimer": "AI-generated content. Please verify independently.",
 	"Send events for": "",
 	"Send extra JSON parameters with each AUTOMATIC1111 request.": "",
 	"Send extra JSON parameters with each image generation request.": "",

@@ -20,7 +20,9 @@
 			href="/static/favicon.svg"
 			crossorigin="use-credentials"
 		/>
-		<link rel="shortcut icon" href="/static/favicon.ico" crossorigin="use-credentials" />
+		<!-- 川邮·星语（2026-09-19）：移除 rel="shortcut icon"。
+		     现代浏览器中它与 rel="icon" 等价，与上方 favicon.png 声明重复，
+		     导致每次加载都多发一次图标请求。 -->
 		<link
 			rel="apple-touch-icon"
 			sizes="180x180"
