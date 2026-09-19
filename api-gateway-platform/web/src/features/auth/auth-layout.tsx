@@ -70,14 +70,16 @@ export function AuthLayout({ children }: AuthLayoutProps) {
 
       {/* 顶部导航：校徽在左，API 文档按钮在右 */}
       <header className='relative z-10 flex items-center justify-between px-6 py-5 sm:px-10'>
-        <div className='relative h-24 w-24 sm:h-36 sm:w-36'>
+        {/* 川邮·星语：logo 尺寸对齐 Portal（.brand .logo 规则）——
+            桌面 height:114px / 移动 72px，width:auto 保持 233x159 原始宽高比 */}
+        <div className='relative flex h-[72px] w-auto flex-none sm:h-[114px] sm:w-auto'>
           {loading ? (
             <Skeleton className='absolute inset-0 rounded-2xl' />
           ) : (
             <img
               src={logo}
               alt={BRAND_NAME}
-              className='h-24 w-24 object-contain sm:h-36 sm:w-36'
+              className='h-[72px] w-auto max-w-none object-contain sm:h-[114px] sm:w-auto'
               style={{ filter: 'drop-shadow(0 0 14px rgba(140,160,255,0.5))' }}
             />
           )}
