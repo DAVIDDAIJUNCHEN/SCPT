@@ -340,11 +340,22 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible{
 <script>
 // file:// 本地预览回退地址（唯一 IP 出口，换服务器只改这一行）
 var FALLBACK_ORIGIN = 'https://10.255.12.210';
-var CHAT_URL = (location.protocol === 'http:' || location.protocol === 'https:')
-  ? location.origin.replace(/:(443|80)$/, '') + ':8443' : FALLBACK_ORIGIN + ':8443';
+var CHAT_PORT = 8443;   // Chat(OWUI) 独立端口，见下方说明
+
+// Chat 基址推导：**只取 hostname，再硬拼 Chat 端口**。
+// ⚠️ 不要用 location.origin.replace(/:(443|80)$/,'') —— 该写法只在 Portal 恰好跑在
+// 443/80 时正确；若 Portal 跑在非标准端口（如本地预览 127.0.0.1:8921），
+// 替换不命中 → 拼出 "host:8921:8443" 这种非法地址。
+function deriveChatOrigin(){
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') {
+    return FALLBACK_ORIGIN;   // file:// 本地预览
+  }
+  return location.protocol + '//' + location.hostname + ':' + CHAT_PORT;
+}
+var CHAT_URL = deriveChatOrigin();
 // OWUI 0.11.3 无 BASE_PATH：子路径 /chat/ 与星语绝对路径冲突（实测 /api/config 404），
 // Chat 固定走 8443 独立端口；域名到位后改为 https://ai-chat.scpt.edu.cn
-// 「和星语对话」按钮同步指向 8443（href="/chat" 仅为无 JS 时的语义回退）
+// href 仅为「无 JS / 未执行到 apply」时的语义回退，真实跳转由 goChat() 与 apply() 接管
 document.getElementById('btn-chat-link').href = CHAT_URL + '/';
 
 // ===== i18n：DS 同款语言切换（中文 | EN），localStorage 记忆 =====
@@ -404,11 +415,23 @@ var I18N = {
     });
     // 川邮·星语（2026-09-19）：把语言带进跳转链接，使星语侧登录页/控制台
     // 按 Portal 当前语言渲染（中→中文登录页，英→英文登录页）。
+    // ⚠️ Chat 按钮特殊处理：它指向**跨端口绝对地址**（CHAT_PORT），不能走
+    // 「读写 href 再拼会」的通用路径 —— 早期 `href = u.pathname + u.search`
+    // 会把 `https://host:8443/` 降级成 `/`，点击变成刷新 Portal = 完全无反应。
+    // 这里直接以 CHAT_URL 为基址重建，保证协议/主机/端口三者都不丢。
     document.querySelectorAll('[data-lang-propagate]').forEach(function(a){
       try {
-        var u = new URL(a.getAttribute('href') || '/', location.origin);
+        var raw = a.getAttribute('href') || '/';
+        var isChat = a.id === 'btn-chat-link';
+        var u = new URL(isChat ? (CHAT_URL + '/') : raw, location.origin);
         u.searchParams.set('lang', lang);
-        a.setAttribute('href', u.pathname + u.search);
+        if (isChat) {
+          a.setAttribute('href', u.href);                    // 绝对地址，含 :8443
+        } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+          a.setAttribute('href', u.href);                    // 其他绝对地址保持绝对
+        } else {
+          a.setAttribute('href', u.pathname + u.search);     // 同源相对地址保持相对
+        }
       } catch(e){}
     });
   }
@@ -424,7 +447,11 @@ var I18N = {
     saved = fromUrl;
     try { localStorage.setItem('xy_lang', saved); } catch(e){}
   }
-  if (saved === 'en' || saved === 'zh') apply(saved);
+  // ⚠️ 无论有无记忆语言，都必须跑一次 apply()：
+  // 早期写成「仅当 saved 有效才 apply」，导致首次访问（无 xy_lang）时
+  // apply 完全不执行 → ① 按钮去不到 ?lang 传播 ② href 不会被归一化。
+  // 默认按中文渲染，行为与无 JS 时一致，无副作用。
+  apply(saved === 'en' ? 'en' : 'zh');
   document.querySelectorAll('.locale-toggle-item').forEach(function(b){
     b.addEventListener('click', function(){
       var lang = b.getAttribute('data-lang');
@@ -624,6 +651,11 @@ function goChat(){
   var url = CHAT_URL + '/?xy_msg=' + encodeURIComponent(text);
   if(think) url += '&xy_think=1';
   if(web) url += '&xy_web=1';
+  // 带上当前语言，使 Chat 首屏按 Portal 语言渲染（与按钮跳转行为一致）
+  try {
+    var lg = localStorage.getItem('xy_lang');
+    if (lg === 'en' || lg === 'zh') url += '&lang=' + lg;
+  } catch(e){}
   window.location.href = url;
 }
 msg.addEventListener('keydown', function(e){
