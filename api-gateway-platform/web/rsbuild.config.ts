@@ -51,6 +51,26 @@ export default defineConfig(({ envMode }) => {
           priority: 0,
           enforce: true,
         },
+        // ── 结论备忘（2026-09-19 实测，非配置）───────────────────────────
+        // 不要再尝试用 cacheGroup 拆离 TanStack 路由引用表，已验证无效。
+        //
+        // 现象：产物中有一个 ~800KB raw / ~240KB gzip 的 initial chunk
+        // （示例构建中名为 4146.js），被 index.js 同步依赖。它内部的模块
+        // **全部**是 @tanstack/router-plugin 经 unplugin loader 生成的虚拟
+        // 模块：
+        //   unplugin/dist/rspack/loaders/transform.mjs
+        //     ??tanstack-router:code-splitter:compile-reference-file!<真实文件>
+        //
+        // 为何 cacheGroup 拆不动：cacheGroup.test 匹配的是模块的**资源路径**
+        // （即 `!` 之后的真实文件），而这类虚拟模块的资源路径各异、模块本体
+        // 由 loader 合成。先后用 chunks:'all'/priority:40 与
+        // chunks:'async'/priority:30 两组配置实验，产物哈希三次完全一致
+        // （4146.2e23e4b9dc 未变），确认该 chunk 不参与 splitChunks 分组。
+        //
+        // 该体积是 autoCodeSplitting 的固有成本：autoCodeSplitting 只把路由的
+        // **组件实现**拆成异步 chunk，而路由**定义与引用表**必须留在 entry 才能
+        // 在启动时构建出完整路由树。要消除它需改造路由架构（routeTree 整体
+        // 懒加载 + 延迟 createRouter），属高风险重构，本轮不做。
       },
     },
     source: {
