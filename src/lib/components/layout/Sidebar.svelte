@@ -607,8 +607,8 @@
 		}
 	};
 
-	const MIN_WIDTH = 220;
-	const MAX_WIDTH = 480;
+	const MIN_WIDTH = 264;
+	const MAX_WIDTH = 420;
 
 	let isResizing = false;
 	let activePointerId: number | null = null;
@@ -627,7 +627,7 @@
 		activeResizer.setPointerCapture?.(e.pointerId);
 
 		startClientX = e.clientX;
-		startWidth = $sidebarWidth ?? 245;
+		startWidth = $sidebarWidth ?? 280;
 
 		document.body.style.userSelect = 'none';
 	};
@@ -979,7 +979,7 @@
 							https://docs.openwebui.com/license. -->
 								<img
 									src="{WEBUI_BASE_URL}/static/favicon.png"
-									class="sidebar-new-chat-icon size-5 rounded-full group-hover:hidden"
+									class="sidebar-new-chat-icon size-6 rounded-full group-hover:hidden"
 									alt=""
 								/>
 
@@ -1141,7 +1141,7 @@
 				? `ml-[4.5rem] md:ml-0 `
 				: $mobile
 					? ''
-					: ''} shrink-0 text-gray-700 dark:text-gray-300 text-[0.8125rem] leading-5 fixed top-0 left-0 overflow-x-hidden
+					: ''} shrink-0 text-gray-700 dark:text-gray-300 text-[0.875rem] leading-5 fixed top-0 left-0 overflow-x-hidden
         "
 			style={$mobile
 				? panelStyle
@@ -1163,12 +1163,12 @@
 						<!-- LICENSE covers this Open WebUI sidebar logo.
 					Do not alter, remove, obscure, or replace it except as LICENSE permits:
 					https://docs.openwebui.com/license. -->
-						<img
-							crossorigin="anonymous"
-							src="{WEBUI_BASE_URL}/static/favicon.png"
-							class="sidebar-new-chat-icon size-5 rounded-full"
-							alt=""
-						/>
+					<img
+						crossorigin="anonymous"
+						src="{WEBUI_BASE_URL}/static/favicon.png"
+						class="sidebar-new-chat-icon size-6 rounded-full"
+						alt=""
+					/>
 					</a>
 
 					<a href="/" class="flex flex-1 px-0.5" on:click={newChatHandler}>
