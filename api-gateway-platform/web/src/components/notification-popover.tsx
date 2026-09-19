@@ -18,9 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 import { Bell, Megaphone } from 'lucide-react'
+import { Suspense, lazy } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { RichContent } from '@/components/rich-content'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -43,6 +43,28 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
+
+/**
+ * 川邮·星语（2026-09-19）：RichContent 懒加载。
+ *
+ * 依赖链：public-header / app-header → notification-popover → rich-content
+ *        → components/ui/markdown → katex（数学排版引擎，约 200KB）
+ *
+ * public-header 在登录页（未登录态）就会渲染，于是 KaTeX 被静态拉进首屏 ——
+ * 而登录页根本不需要渲染数学公式。改为懒加载后，KaTeX 只在用户真正点开
+ * 通知/公告面板时才下载，首屏省掉这一整块。
+ *
+ * 注意：rich-content 是具名导出，lazy 需要 default，故此处做一次包装。
+ */
+const RichContent = lazy(async () => {
+  const mod = await import('@/components/rich-content')
+  return { default: mod.RichContent }
+})
+
+/** 公告内容加载兜底：保持行高稳定，避免面板高度跳动 */
+function RichContentFallback() {
+  return <div className='h-16 w-full animate-pulse rounded bg-muted/40' aria-busy='true' />
+}
 
 interface AnnouncementItem {
   id?: number | string
@@ -205,7 +227,9 @@ function NoticeContent({
 
   return (
     <ScrollArea className='h-[min(52vh,28rem)] pr-3'>
-      <RichContent breaks content={notice} />
+      <Suspense fallback={<RichContentFallback />}>
+        <RichContent breaks content={notice} />
+      </Suspense>
     </ScrollArea>
   )
 }
@@ -260,12 +284,16 @@ function AnnouncementsContent({
                   <AnnouncementDot type={item.type} />
                   <div className='flex min-w-0 flex-1 flex-col gap-2'>
                     <div className='text-sm'>
-                      <RichContent breaks content={item.content || ''} />
+                      <Suspense fallback={<RichContentFallback />}>
+                        <RichContent breaks content={item.content || ''} />
+                      </Suspense>
                     </div>
 
                     {item.extra ? (
                       <div className='text-muted-foreground text-xs'>
-                        <RichContent breaks content={item.extra} />
+                        <Suspense fallback={null}>
+                          <RichContent breaks content={item.extra} />
+                        </Suspense>
                       </div>
                     ) : null}
 

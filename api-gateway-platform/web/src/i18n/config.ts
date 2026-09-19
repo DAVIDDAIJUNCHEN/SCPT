@@ -26,7 +26,7 @@ import {
   resolveInitialLanguageFromPortal,
   syncLanguageToPortal,
 } from '@/lib/portal-language-bridge'
-import en from './locales/en.json'
+// zh 静态引入（本项目默认语言，首屏必命中）；en 改为按需，见下方 LAZY_LOCALES
 import zhCN from './locales/zh.json'
 
 /**
@@ -40,12 +40,22 @@ import zhCN from './locales/zh.json'
  *      其余语言走动态 import，仅当用户主动切到该语言时才拉对应 chunk。
  *      这样不删除上游任何语言（保留 AGPL 合流能力），只是把它们的加载时机推后。
  */
+/**
+ * 川邮·星语（2026-09-19 二轮）：en 也改为按需加载。
+ *
+ * 上一轮只把 fr/ru/ja/vi/zhTW 惰性化，保留 zh + en 静态引入，主包仍有 1499KB。
+ * 实测 gzip 后：index.js 393KB 中 en(80KB) + zh(127KB) 占 53%。
+ * 而星语已锁定中文场景，中文用户根本用不到 en 语言包 —— 80KB 纯浪费。
+ *
+ * 改为：zh 静态（本项目默认语言，首屏必命中），其余（含 en）全部按需。
+ * en 的 fallback 语义通过下面的 warmUpFallback() 在空闲时补拉，不阻塞首屏。
+ */
 const resources = {
-  en,
   zhCN,
 } as const
 
 const LAZY_LOCALES = {
+  en: () => import('./locales/en.json'),
   fr: () => import('./locales/fr.json'),
   ru: () => import('./locales/ru.json'),
   ja: () => import('./locales/ja.json'),
@@ -148,6 +158,44 @@ if (initialLanguage && isLazyLanguage(initialLanguage)) {
   void ensureLanguageLoaded(initialLanguage).catch(() => {
     /* 静默降级到 en 兜底 */
   })
+}
+
+/**
+ * 兜底语言预热。
+ *
+ * fallbackLng 是 'en'，而 en 现在是惰性包 —— 若不预拉，任何缺失词条都会
+ * 显示成 key 原文（如 `Add User`）而不是英文译文，体验反而变差。
+ *
+ * 因此在中文化环境下也要在**首屏渲染完成后**空闲时补拉 en：
+ *   · 用 requestIdleCallback（不支持则回退 setTimeout）确保不抢首屏带宽
+ *   · 失败静默忽略，最多是缺失词条回落到 key，不影响功能
+ */
+function warmUpFallback(): void {
+  const run = () => {
+    void ensureLanguageLoaded('en').catch(() => {
+      /* 静默忽略：缺失词条回落为 key 原文 */
+    })
+  }
+
+  if (typeof window === 'undefined') return
+
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
+    .requestIdleCallback
+
+  if (typeof ric === 'function') {
+    ric(run, { timeout: 3000 })
+  } else {
+    window.setTimeout(run, 1200)
+  }
+}
+
+// 首屏渲染不依赖 en，等浏览器空闲再拉，避免与关键资源抢带宽
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'complete') {
+    warmUpFallback()
+  } else {
+    window.addEventListener('load', warmUpFallback, { once: true })
+  }
 }
 
 export default i18n
