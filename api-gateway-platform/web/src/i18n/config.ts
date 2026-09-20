@@ -81,6 +81,17 @@ export async function ensureLanguageLoaded(lng: string): Promise<void> {
 
   const mod = await LAZY_LOCALES[lng]()
   i18n.addResourceBundle(lng, 'translation', mod.default, true, true)
+
+  // 川邮·星语（#191）：addResourceBundle 本身不触发 react-i18next 重渲染
+  // （useTranslation 只监听 languageChanged）。典型受害场景：
+  //   ?lang=en / xy_lang=en 进入登录页 → init 时 lng=en 但 en 包未注册 →
+  //   首渲染全是 key 原文 → 异步补入 en 包后界面**纹丝不动**。
+  // 修法：注入后若当前语言正是目标语言，重放一次 changeLanguage
+  // （i18next 无条件 emit languageChanged → react 组件刷新拿到新词条）。
+  // 若目标语言不是当前语言，说明后续 changeLanguage 会正常走加载链路，无需处理。
+  if (i18n.language === lng) {
+    await i18n.changeLanguage(lng)
+  }
 }
 
 /**
