@@ -106,6 +106,20 @@ function resolveInitialLanguage(): string | undefined {
 
 const initialLanguage = resolveInitialLanguage()
 
+/**
+ * 川邮·星语（#191）：把 i18next 语言码同步到 <html lang>。
+ *
+ * 背景：index.html 硬编码 lang="en"，且 languageChanged 监听从不更新它，
+ * 导致中文界面下 documentElement.lang 始终是 "en"（无障碍/字体选择都会被误导）。
+ *
+ * 映射：zhCN → zh-CN、zhTW → zh-TW、其余原样（en/fr/ru/ja/vi 本身就是合法 BCP-47）。
+ */
+function syncDocumentLang(lng: string): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.lang =
+    lng === 'zhCN' ? 'zh-CN' : lng === 'zhTW' ? 'zh-TW' : lng
+}
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
@@ -136,6 +150,11 @@ if (initialLanguage) {
   syncLanguageToPortal(initialLanguage)
 }
 
+// #191：init 后立即同步一次 <html lang>（此时 languageChanged 可能尚未触发）
+if (i18n.language) {
+  syncDocumentLang(i18n.language)
+}
+
 /**
  * 语言切换时按需拉取对应语言包。
  *
@@ -147,6 +166,7 @@ if (initialLanguage) {
  * 语言包到达后自动刷新。若 await 会让切换按钮出现肉眼可见的卡顿。
  */
 i18n.on('languageChanged', (lng: string) => {
+  syncDocumentLang(lng)
   if (!isLazyLanguage(lng)) return
   void ensureLanguageLoaded(lng).catch(() => {
     // 语言包加载失败时静默降级到英文兜底，不打断用户操作
