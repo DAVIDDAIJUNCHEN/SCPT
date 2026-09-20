@@ -3,6 +3,7 @@ package helper
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -65,6 +66,18 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 	} else {
 		// normal group ratio
 		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+	}
+
+	// 星语第二批 4.2：时段倍率（对标商业平台峰谷定价）。
+	// 乘在分组倍率之后，使全部计费路径（预扣 / 按次 / tiered_expr / MJ / Task）统一生效，
+	// 无需逐个改动调用点。免计费模型（GroupRatio == 0）不受影响：0 × 任何系数仍为 0。
+	if groupRatioInfo.GroupRatio != 0 {
+		if timeRatio, timeName := ratio_setting.GetTimeRatioAt(time.Now()); timeRatio != 1.0 {
+			groupRatioInfo.GroupRatio *= timeRatio
+			groupRatioInfo.TimeRatio = timeRatio
+			groupRatioInfo.TimeRatioName = timeName
+			logger.LogDebug(ctx, "星语时段倍率生效: %s ×%.2f，最终分组倍率 %.4f", timeName, timeRatio, groupRatioInfo.GroupRatio)
+		}
 	}
 
 	return groupRatioInfo

@@ -11,6 +11,11 @@ type GroupRatioInfo struct {
 	GroupRatio        float64
 	GroupSpecialRatio float64
 	HasSpecialRatio   bool
+	// TimeRatio / TimeRatioName：星语第二批 4.2 时段倍率。
+	// TimeRatio 已乘入 GroupRatio（即 GroupRatio 为「分组倍率 × 时段倍率」的最终值），
+	// 这两个字段仅用于留痕、日志与前端展示，不参与二次计算。
+	TimeRatio     float64
+	TimeRatioName string
 }
 
 type PriceData struct {

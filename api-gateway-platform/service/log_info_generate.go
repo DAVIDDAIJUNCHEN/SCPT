@@ -79,6 +79,16 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["cache_ratio"] = cacheRatio
 	other["model_price"] = modelPrice
 	other["user_group_ratio"] = userGroupRatio
+	// 星语第二批 4.2：时段倍率留痕。
+	// GroupRatio 里已经乘过时段倍率，这里把系数与命中的时段名单独记下来，
+	// 便于对账时区分「用户/分组优惠」与「峰谷浮动」两部分，排查计费争议。
+	// 从 relayInfo.PriceData 读取，避免为 5 个调用点逐个改函数签名。
+	if relayInfo != nil && relayInfo.PriceData.GroupRatioInfo.TimeRatio != 0 {
+		other["time_ratio"] = relayInfo.PriceData.GroupRatioInfo.TimeRatio
+		if name := relayInfo.PriceData.GroupRatioInfo.TimeRatioName; name != "" {
+			other["time_ratio_name"] = name
+		}
+	}
 	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
@@ -303,6 +313,13 @@ func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.P
 	other := make(map[string]interface{})
 	other["model_price"] = priceData.ModelPrice
 	other["group_ratio"] = priceData.GroupRatioInfo.GroupRatio
+	// 星语第二批 4.2：时段倍率留痕（MJ / Task 等按次计费路径走这里）。
+	if priceData.GroupRatioInfo.TimeRatio != 0 {
+		other["time_ratio"] = priceData.GroupRatioInfo.TimeRatio
+		if name := priceData.GroupRatioInfo.TimeRatioName; name != "" {
+			other["time_ratio_name"] = name
+		}
+	}
 	if priceData.GroupRatioInfo.HasSpecialRatio {
 		other["user_group_ratio"] = priceData.GroupRatioInfo.GroupSpecialRatio
 	}
