@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
+import { useTranslation } from 'react-i18next'
 
 import { RichContent } from '@/components/rich-content'
 
@@ -90,6 +91,9 @@ const PRIVACY_MD = `
 `
 
 export function PrivacyPolicy() {
+  // #12：标题/返回链接/日期行走 i18n；正文为法律文本，以中文版为准（en 态加英文提示）
+  const { t, i18n } = useTranslation()
+  const isEn = i18n.language?.startsWith('en')
   return (
     <div className='bg-background text-foreground min-h-svh px-4 py-10 sm:px-6'>
       <div className='mx-auto max-w-3xl'>
@@ -98,15 +102,22 @@ export function PrivacyPolicy() {
             to='/'
             className='text-[#7F77DD] hover:underline'
           >
-            ← 返回平台
+            ← {t('返回平台')}
           </Link>
         </div>
         <h1 className='text-2xl font-semibold tracking-tight'>
-          隐私政策
+          {t('隐私政策')}
         </h1>
         <p className='text-muted-foreground mt-1 text-xs'>
-          最近更新：2026 年 9 月 7 日 · 四川邮电职业技术学院智算中心
+          {t('最近更新：{{date}} · 四川邮电职业技术学院智算中心', { date: '2026-09-07' })}
         </p>
+        {isEn && (
+          <p className='bg-muted text-muted-foreground mb-4 rounded-md px-3 py-2 text-xs'>
+            Note: This privacy policy is a legally binding document written in
+            Chinese. The English translation of the title is provided for reference
+            only; the Chinese version shall prevail.
+          </p>
+        )}
         <RichContent
           mode='markdown'
           content={PRIVACY_MD}
