@@ -17,9 +17,45 @@
       content="川邮·星语 API — 四川邮电职业技术学院智算中心统一大模型 API 网关与管理平台。"
     />
 
-    <meta name="theme-color" content="#fff" />
+    <meta name="theme-color" content="#0e1538" />
     <!--umami-->
     <!--Google Analytics-->
+    <style>
+      /* #187 骨架屏：SPA 下载执行期间（冷缓存约 450ms）#root 为空、body 无背景，
+         用户从深色 Portal 跳过来会先看到「白屏闪」再突变深色登录页（深→白→深）。
+         这里给 body 铺与登录页一致的深空底色 + 居中脉冲圆点（星语品牌感），
+         React 挂载后整块 innerHTML 被 SPA 接管，自动消失，无需任何清理代码。 */
+      body {
+        margin: 0;
+        background: #0e1538;
+      }
+      #root:empty {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #root:empty::after {
+        content: '';
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        border: 3px solid rgba(122, 162, 247, 0.22);
+        border-top-color: #7aa2f7;
+        animation: xy-skel-spin 0.9s linear infinite;
+      }
+      @keyframes xy-skel-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #root:empty::after {
+          animation: none;
+        }
+      }
+    </style>
   </head>
 
   <body>
