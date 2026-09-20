@@ -80,7 +80,13 @@ export async function ensureLanguageLoaded(lng: string): Promise<void> {
   if (i18n.hasResourceBundle(lng, 'translation')) return
 
   const mod = await LAZY_LOCALES[lng]()
-  i18n.addResourceBundle(lng, 'translation', mod.default, true, true)
+  // 川邮·星语（#191）：语言包文件结构是 { translation: {...} }，而
+  // addResourceBundle(lng, ns, content) 的第三参是 **ns 的词条内容**。
+  // 之前直接传 mod.default（整个文件对象）会嵌套成
+  // resources[lng].translation.translation.xxx，t() 永远查不到 ——
+  // 导致懒加载语言（en/fr/ru/ja/vi/zhTW）注入后全部不生效。
+  const bundle = (mod.default as { translation?: object }).translation ?? mod.default
+  i18n.addResourceBundle(lng, 'translation', bundle, true, true)
 
   // 川邮·星语（#191）：addResourceBundle 本身不触发 react-i18next 重渲染
   // （useTranslation 只监听 languageChanged）。典型受害场景：
