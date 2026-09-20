@@ -298,6 +298,17 @@
 
 	const analyseAudio = (stream) => {
 		const audioContext = new AudioContext();
+		// 川邮·星语：Chrome/Safari 自动播放策略下 AudioContext 常处于 suspended，
+		// 此时 getByteFrequencyData 全 0，VAD 永不触发（用户表现为"一直在倾听但无转录"）。
+		// getUserMedia 已是用户手势链路，此处显式 resume 并监听 statechange 兜底。
+		if (audioContext.state === 'suspended') {
+			audioContext.resume().catch((e) => console.warn('AudioContext resume failed:', e));
+		}
+		audioContext.onstatechange = () => {
+			if (audioContext.state === 'suspended') {
+				audioContext.resume().catch((e) => console.warn('AudioContext resume failed:', e));
+			}
+		};
 		const audioStreamSource = audioContext.createMediaStreamSource(stream);
 
 		const analyser = audioContext.createAnalyser();
