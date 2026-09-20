@@ -94,7 +94,10 @@
 		$selectedFolder.permission !== 'write';
 </script>
 
-<div class="m-auto w-full max-w-[52rem] px-1 @2xl:px-20 translate-y-6 py-24 text-center">
+<!-- 川邮·星语 #201：新 chat 空态输入框与「有聊天记录」时的输入框对齐。
+     原版 @2xl:px-20 在 ≥42rem 容器下两侧各压 80px，导致新 chat 输入框明显窄于
+     有记录时（MessageInput 用 px-2 全宽），部分功能按钮被挤出可视区。改为 px-1 对齐。 -->
+<div class="m-auto w-full max-w-[52rem] px-1 translate-y-6 py-24 text-center">
 	{#if $temporaryChatEnabled}
 		<Tooltip
 			content={$i18n.t("This chat won't appear in history and your messages will not be saved.")}

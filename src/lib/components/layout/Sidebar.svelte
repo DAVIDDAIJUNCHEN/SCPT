@@ -1151,55 +1151,57 @@
 			<div
 				class=" my-auto flex flex-col justify-between h-screen max-h-[100dvh] w-[var(--sidebar-width)] overflow-x-hidden scrollbar-hidden z-50 border-e border-gray-50 dark:border-gray-850/30"
 			>
-				<div
-					class="sidebar px-1 pt-1.5 pb-1 flex justify-between space-x-1 text-gray-600 dark:text-gray-400 sticky top-0 z-10 -mb-2"
-				>
-					<a
-						class="flex items-center rounded-xl size-8.5 h-full justify-center hover:bg-gray-100 dark:hover:bg-gray-900 transition no-drag-region"
-						href="/"
-						draggable="false"
-						on:click={newChatHandler}
-					>
-						<!-- LICENSE covers this Open WebUI sidebar logo.
-					Do not alter, remove, obscure, or replace it except as LICENSE permits:
-					https://docs.openwebui.com/license. -->
-					<img
-						crossorigin="anonymous"
-						src="{WEBUI_BASE_URL}/static/favicon.png"
-						class="sidebar-new-chat-icon size-7 rounded-full"
-						alt=""
-					/>
-					</a>
+			<div
+				class="sidebar px-1 pt-1.5 pb-1 flex items-center gap-1 text-gray-600 dark:text-gray-400 sticky top-0 z-10 -mb-2"
+			>
+				<!-- 川邮·星语 #202：头部改 DeepSeek 布局 —— logo 下移到独立一行（New Chat 大按钮上方），
+				     本行左侧留空占位，中间为站名，右侧依次为 search 图标、折叠按钮。 -->
+				<div class="size-8.5 shrink-0"></div>
 
-					<a href="/" class="flex flex-1 px-0.5" on:click={newChatHandler}>
-						<!-- LICENSE covers this Open WebUI sidebar name.
-					Do not alter, remove, obscure, or replace it except as LICENSE permits:
-					https://docs.openwebui.com/license. -->
-						<div
-							id="sidebar-webui-name"
-							class=" self-center font-normal text-gray-700 dark:text-gray-200"
-						>
-							{$WEBUI_NAME}
-						</div>
-					</a>
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						placement="bottom"
+				<a href="/" class="flex flex-1 justify-center px-0.5" on:click={newChatHandler}>
+					<!-- LICENSE covers this Open WebUI sidebar name.
+				Do not alter, remove, obscure, or replace it except as LICENSE permits:
+				https://docs.openwebui.com/license. -->
+					<div
+						id="sidebar-webui-name"
+						class=" self-center font-semibold text-[0.9375rem] text-gray-700 dark:text-gray-200"
 					>
-						<button
-							class="flex size-[1.875rem] justify-center items-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 transition {isWindows
-								? 'cursor-pointer'
-								: 'cursor-[w-resize]'}"
-							on:click={() => {
-								showSidebar.set(!$showSidebar);
-							}}
-							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						>
-							<div class=" self-center">
-								<Sidebar className="size-4" />
-							</div>
-						</button>
-					</Tooltip>
+						{$WEBUI_NAME}
+					</div>
+				</a>
+
+				<Tooltip content={$i18n.t('Search')} placement="bottom">
+					<button
+						class="flex size-[1.875rem] justify-center items-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+						on:click={() => {
+							showSearch.set(true);
+						}}
+						aria-label={$i18n.t('Search')}
+					>
+						<div class=" self-center">
+							<SearchIcon className="size-4" strokeWidth="1.5" />
+						</div>
+					</button>
+				</Tooltip>
+
+				<Tooltip
+					content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+					placement="bottom"
+				>
+					<button
+						class="flex size-[1.875rem] justify-center items-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 transition {isWindows
+							? 'cursor-pointer'
+							: 'cursor-[w-resize]'}"
+						on:click={() => {
+							showSidebar.set(!$showSidebar);
+						}}
+						aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+					>
+						<div class=" self-center">
+							<Sidebar className="size-4" />
+						</div>
+					</button>
+				</Tooltip>
 
 					<div
 						class="{scrollTop > 0
@@ -1218,50 +1220,65 @@
 						}
 					}}
 				>
-					<div class="pb-1">
-						<div class="px-1 flex justify-center text-gray-700 dark:text-gray-300">
-							<a
-								id="sidebar-new-chat-button"
-								class="group grow flex items-center space-x-2 rounded-xl px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
-								href="/"
-								draggable="false"
-								on:click={newChatHandler}
-								aria-label={$i18n.t('New Chat')}
-							>
-								<div class="self-center flex size-4 shrink-0 items-center justify-center">
-									<EditPencilIcon className=" size-4" strokeWidth="1.5" />
-								</div>
+				<div class="pb-1">
+					<!-- 川邮·星语 #202：logo 独立一行（从头部下移），点击回首页新建会话 -->
+					<div class="px-1 py-1 flex justify-center">
+						<a
+							class="flex items-center rounded-xl justify-center hover:bg-gray-100 dark:hover:bg-gray-900 transition no-drag-region"
+							href="/"
+							draggable="false"
+							on:click={newChatHandler}
+							aria-label={$WEBUI_NAME}
+						>
+							<!-- LICENSE covers this Open WebUI sidebar logo.
+						Do not alter, remove, obscure, or replace it except as LICENSE permits:
+						https://docs.openwebui.com/license. -->
+							<img
+								crossorigin="anonymous"
+								src="{WEBUI_BASE_URL}/static/favicon.png"
+								class="sidebar-new-chat-icon size-8 rounded-full"
+								alt=""
+							/>
+						</a>
+					</div>
 
-								<div class="flex flex-1 self-center translate-y-[0.5px]">
-									<div class=" self-center text-[0.875rem] leading-5">{$i18n.t('New Chat')}</div>
-								</div>
+					<!-- 川邮·星语 #202：new chat 改 DeepSeek 风格 —— 全宽大按钮（圆角方框内大加号），
+					     引导学生点击；取代原「铅笔图标 + 小字」的低调样式。 -->
+					<div class="px-1 pb-1 text-gray-700 dark:text-gray-300">
+						<a
+							id="sidebar-new-chat-button"
+							class="group flex items-center justify-center gap-2 rounded-2xl border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-900 hover:border-gray-300 dark:hover:border-gray-700 transition px-2 py-2.5 outline-none"
+							href="/"
+							draggable="false"
+							on:click={newChatHandler}
+							aria-label={$i18n.t('New Chat')}
+						>
+							<div class="self-center flex size-5 shrink-0 items-center justify-center">
+								<svg
+									xmlns="http://www.w3.org/2000/svg"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									class="size-5"
+								>
+									<path d="M5 12h14" />
+									<path d="M12 5v14" />
+								</svg>
+							</div>
 
-								<HotkeyHint name="newChat" className=" hover-reveal " />
-							</a>
-						</div>
+							<div class="self-center text-[0.9375rem] font-medium leading-5">
+								{$i18n.t('New Chat')}
+							</div>
 
-						<div class="px-1 flex justify-center text-gray-700 dark:text-gray-300">
-							<button
-								id="sidebar-search-button"
-								class="group grow flex items-center space-x-2 rounded-xl px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
-								on:click={() => {
-									showSearch.set(true);
-								}}
-								draggable="false"
-								aria-label={$i18n.t('Search')}
-							>
-								<div class="self-center flex size-4 shrink-0 items-center justify-center">
-									<SearchIcon strokeWidth="1.5" className="size-4" />
-								</div>
+							<HotkeyHint name="newChat" className=" hover-reveal " />
+						</a>
+					</div>
+				</div>
 
-								<div class="flex flex-1 self-center translate-y-[0.5px]">
-									<div class=" self-center text-[0.875rem] leading-5">{$i18n.t('Search')}</div>
-								</div>
-								<HotkeyHint name="search" className=" hover-reveal " />
-							</button>
-						</div>
-
-						<div id="pinned-menu-items-list">
+				<div id="pinned-menu-items-list">
 							{#each pinnedItems as itemId (itemId)}
 								{@const meta = getMenuItemMeta(itemId)}
 								{#if meta && isMenuItemVisible(itemId)}
@@ -1305,10 +1322,9 @@
 									</div>
 								{/if}
 							{/each}
-						</div>
 					</div>
 
-					{#if $visiblePinnedModels.length > 0}
+				{#if $visiblePinnedModels.length > 0}
 						<SidebarSection
 							id="sidebar-models"
 							bind:open={showPinnedModels}
@@ -1711,48 +1727,53 @@
 					</SidebarSection>
 				</div>
 
-				<div class="px-1 pt-1 pb-1.5 sticky bottom-0 z-10 -mt-2 sidebar">
-					<div
-						class=" sidebar-bg-gradient-to-t bg-linear-to-t from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mt-6"
-					></div>
-					<div class="flex flex-col">
-						{#if $user !== undefined && $user !== null}
-							<UserMenu
-								role={$user?.role}
-								profile={$config?.features?.enable_user_status ?? true}
-								className="w-[calc(var(--sidebar-width)-1rem)]"
+			<!-- 川邮·星语 #203：用户信息上移放大 —— 底部加 pb-8（2rem）抬高约一行多，
+			     使「用户名字框下沿」与有对话后输入框的下沿（-mt-7 基准）视觉对齐；
+			     头像 size-6→size-8、名字字号加大，强化点击目标。 -->
+			<div class="px-1 pt-1 pb-8 sticky bottom-0 z-10 -mt-2 sidebar">
+				<div
+					class=" sidebar-bg-gradient-to-t bg-linear-to-t from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mt-6"
+				></div>
+				<div class="flex flex-col">
+					{#if $user !== undefined && $user !== null}
+						<UserMenu
+							role={$user?.role}
+							profile={$config?.features?.enable_user_status ?? true}
+							className="w-[calc(var(--sidebar-width)-1rem)]"
+						>
+							<button
+								type="button"
+								class=" flex items-center rounded-xl py-2 px-2 w-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+								aria-label={$i18n.t('User menu')}
 							>
-								<button
-									type="button"
-									class=" flex items-center rounded-xl py-1.5 px-1.5 w-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
-									aria-label={$i18n.t('User menu')}
-								>
-									<div class=" self-center mr-3 relative flex-shrink-0">
-										<img
-											src={`${WEBUI_API_BASE_URL}/users/${$user?.id}/profile/image`}
-											class="size-6 object-cover rounded-full"
-											alt={$i18n.t('Open User Profile Menu')}
-											aria-label={$i18n.t('Open User Profile Menu')}
-										/>
+								<div class=" self-center mr-3 relative flex-shrink-0">
+									<img
+										src={`${WEBUI_API_BASE_URL}/users/${$user?.id}/profile/image`}
+										class="size-8 object-cover rounded-full"
+										alt={$i18n.t('Open User Profile Menu')}
+										aria-label={$i18n.t('Open User Profile Menu')}
+									/>
 
-										{#if $config?.features?.enable_user_status}
-											<div class="absolute -bottom-0.5 -right-0.5">
-												<span class="relative flex size-2.5">
-													<span
-														class="relative inline-flex size-2.5 rounded-full {true
-															? 'bg-green-500'
-															: 'bg-gray-300 dark:bg-gray-700'} border-2 border-white dark:border-gray-900"
-													></span>
-												</span>
-											</div>
-										{/if}
-									</div>
-									<div class=" self-center font-normal truncate">{$user?.name}</div>
-								</button>
-							</UserMenu>
-						{/if}
-					</div>
+									{#if $config?.features?.enable_user_status}
+										<div class="absolute -bottom-0.5 -right-0.5">
+											<span class="relative flex size-3">
+												<span
+													class="relative inline-flex size-3 rounded-full {true
+														? 'bg-green-500'
+														: 'bg-gray-300 dark:bg-gray-700'} border-2 border-white dark:border-gray-900"
+												></span>
+											</span>
+										</div>
+									{/if}
+								</div>
+								<div class=" self-center font-medium text-[0.9375rem] truncate">
+									{$user?.name}
+								</div>
+							</button>
+						</UserMenu>
+					{/if}
 				</div>
+			</div>
 			</div>
 		</div>
 
