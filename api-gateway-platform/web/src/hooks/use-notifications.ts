@@ -18,10 +18,71 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { useState, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
 import { getNotice } from '@/lib/api'
 import { useNotificationStore } from '@/stores/notification-store'
+
+/**
+ * 川邮·星语（#190）：Notice 双语解析。
+ *
+ * 存储约定：管理员在系统设置里可用分段标记存储双语公告——
+ *
+ *   [zh]
+ *   中文内容
+ *   [en]
+ *   English content
+ *
+ * 解析规则：
+ *  - 按行扫描，遇到 [zh] / [en] 标记即开始对应语言的段落，直到下一个标记或结尾
+ *  - 目标语言段落为空 → 回退另一语言段落（英文用户看不到漏译的空公告）
+ *  - 完全没有标记 → 视为单语原文，两种语言都显示全文（兼容历史数据）
+ */
+export function parseLocalizedNotice(raw: string): {
+  zh: string
+  en: string
+} {
+  const result = { zh: '', en: '' }
+  if (!raw) return result
+
+  const lines = raw.split(/\r?\n/)
+  let current: 'zh' | 'en' | null = null
+  let hasMarker = false
+
+  for (const line of lines) {
+    const marker = line.trim().match(/^\[(zh|en)\]$/)
+    if (marker) {
+      current = marker[1] as 'zh' | 'en'
+      hasMarker = true
+      continue
+    }
+    if (current) {
+      result[current] += (result[current] ? '\n' : '') + line
+    }
+  }
+
+  // 历史数据（无标记）：整段作为两种语言的共同内容
+  if (!hasMarker) {
+    return { zh: raw, en: raw }
+  }
+
+  return {
+    zh: result.zh.trim(),
+    en: result.en.trim(),
+  }
+}
+
+/** 按当前界面语言选取展示内容（目标段为空回退另一段） */
+export function pickLocalizedNotice(
+  raw: string,
+  language: string
+): string {
+  const { zh, en } = parseLocalizedNotice(raw)
+  const isChinese = language.toLowerCase().startsWith('zh')
+  if (isChinese) return zh || en
+  return en || zh
+}
 
 function hashString(input: string): string {
   let hash = 0
@@ -63,6 +124,7 @@ function getAnnouncementKey(item: Record<string, unknown>): string {
  * Provides unread counts and read status management
  */
 export function useNotifications() {
+  const { i18n } = useTranslation()
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'notice' | 'announcements'>(
     'notice'
@@ -95,10 +157,14 @@ export function useNotifications() {
     isAnnouncementRead,
   } = useNotificationStore()
 
-  // Extract notice content
-  const noticeContent = noticeResponse?.success
+  // Extract notice content (localized #190)
+  const rawNotice = noticeResponse?.success
     ? (noticeResponse.data || '').trim()
     : ''
+  const noticeContent = useMemo(
+    () => pickLocalizedNotice(rawNotice, i18n.language),
+    [rawNotice, i18n.language]
+  )
 
   // Calculate unread counts
   const unreadCounts = useMemo(() => {

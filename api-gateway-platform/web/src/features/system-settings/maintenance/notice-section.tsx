@@ -39,6 +39,7 @@ import { useUpdateOption } from '../hooks/use-update-option'
 
 const noticeSchema = z.object({
   Notice: z.string().optional(),
+  NoticeEn: z.string().optional(),
 })
 
 type NoticeFormValues = z.infer<typeof noticeSchema>
@@ -47,22 +48,52 @@ type NoticeSectionProps = {
   defaultValue: string
 }
 
+/**
+ * 川邮·星语（#190）：Notice 双语编辑。
+ *
+ * 存储格式沿用 use-notifications.ts 的解析约定：
+ *   [zh]\n中文内容\n[en]\nEnglish content
+ * 管理界面拆成两个输入框，保存时拼回分段格式；
+ * 读取时若为旧版单语数据（无 [zh]/[en] 标记）填入中文框。
+ */
+function splitNoticeStorage(raw: string): { zh: string; en: string } {
+  if (!raw) return { zh: '', en: '' }
+  if (!/^\[(zh|en)\]\s*$/m.test(raw)) return { zh: raw, en: '' }
+
+  const zhMatch = raw.match(/^\[zh\]\s*\n([\s\S]*?)(?=\n\[en\]\s*$|$)/m)
+  const enMatch = raw.match(/^\[en\]\s*\n([\s\S]*?)$/m)
+  return {
+    zh: (zhMatch?.[1] || '').trim(),
+    en: (enMatch?.[1] || '').trim(),
+  }
+}
+
+function joinNoticeStorage(zh: string, en: string): string {
+  const parts: string[] = []
+  if (zh.trim()) parts.push(`[zh]\n${zh.trim()}`)
+  if (en.trim()) parts.push(`[en]\n${en.trim()}`)
+  return parts.join('\n')
+}
+
 export function NoticeSection({ defaultValue }: NoticeSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const initial = splitNoticeStorage(defaultValue ?? '')
   const form = useForm<NoticeFormValues>({
     resolver: zodResolver(noticeSchema),
     defaultValues: {
-      Notice: defaultValue ?? '',
+      Notice: initial.zh,
+      NoticeEn: initial.en,
     },
   })
 
   useEffect(() => {
-    form.reset({ Notice: defaultValue ?? '' })
+    const next = splitNoticeStorage(defaultValue ?? '')
+    form.reset({ Notice: next.zh, NoticeEn: next.en })
   }, [defaultValue, form])
 
   const onSubmit = async (values: NoticeFormValues) => {
-    const normalized = values.Notice ?? ''
+    const normalized = joinNoticeStorage(values.Notice ?? '', values.NoticeEn ?? '')
     if (normalized === (defaultValue ?? '')) {
       return
     }
@@ -86,7 +117,26 @@ export function NoticeSection({ defaultValue }: NoticeSectionProps) {
             name='Notice'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Announcement content')}</FormLabel>
+                <FormLabel>{t('Announcement content')}（中文）</FormLabel>
+                <FormControl>
+                  <Textarea
+                    rows={8}
+                    placeholder={t(
+                      'Planned maintenance on Friday at 22:00 UTC...'
+                    )}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='NoticeEn'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Announcement content')} (English)</FormLabel>
                 <FormControl>
                   <Textarea
                     rows={8}
