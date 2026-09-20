@@ -122,26 +122,40 @@
 		cameraStream = null;
 	};
 
-	const takeScreenshot = () => {
+	// 川邮·星语 #14：截图压缩后再提交（voice mode 摄像头 413 修复）
+	// 原版直接 canvas.toDataURL('image/png')，1080p 摄像头截图 base64 约 1.5-4MB，
+	// 会永久存入会话历史且每轮重发给网关，超出网关 nginx body 限制后 413，
+	// 表现为"开摄像头后无反应、退出后文字输入也废掉"。
+	// 现改为：最长边压到 1280px + JPEG quality 0.85，单张约 150-400KB。
+	const takeScreenshot = async () => {
 		const video = document.getElementById('camera-feed');
 		const canvas = document.getElementById('camera-canvas');
 
-		if (!canvas) {
+		if (!canvas || !video) {
 			return;
 		}
 
 		const context = canvas.getContext('2d');
 
-		// Make the canvas match the video dimensions
-		canvas.width = video.videoWidth;
-		canvas.height = video.videoHeight;
+		// 限制最长边 1280px，等比缩放
+		const MAX_EDGE = 1280;
+		let targetWidth = video.videoWidth || MAX_EDGE;
+		let targetHeight = video.videoHeight || MAX_EDGE;
+		if (Math.max(targetWidth, targetHeight) > MAX_EDGE) {
+			const scale = MAX_EDGE / Math.max(targetWidth, targetHeight);
+			targetWidth = Math.round(targetWidth * scale);
+			targetHeight = Math.round(targetHeight * scale);
+		}
 
-		// Draw the image from the video onto the canvas
-		context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+		canvas.width = targetWidth;
+		canvas.height = targetHeight;
 
-		// Convert the canvas to a data base64 URL and console log it
-		const dataURL = canvas.toDataURL('image/png');
-		console.log(dataURL);
+		// Draw the image from the video onto the canvas (scaled)
+		context.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+		// JPEG 压缩替代无压缩 PNG
+		const dataURL = canvas.toDataURL('image/jpeg', 0.85);
+		console.log(`[voice-mode] screenshot ${targetWidth}x${targetHeight}, ${Math.round(dataURL.length / 1024)}KB`);
 
 		return dataURL;
 	};
@@ -154,7 +168,7 @@
 	const MIN_DECIBELS = -55;
 	const VISUALIZER_BUFFER_LENGTH = 300;
 
-	const transcribeHandler = async (audioBlob) => {
+	const transcribeHandler = async (audioBlob, voiceFiles = []) => {
 		// Create a blob from the audio chunks
 		if (!audioBlob || audioBlob.size < 100) {
 			console.log('Audio blob too small or empty, skipping transcription');
@@ -177,7 +191,8 @@
 			console.log(res.text);
 
 			if (res.text !== '') {
-				const _responses = await submitPrompt(res.text, { _raw: true });
+				// _raw 链路：files 由本次语音轮次的截图提供，不经过共享输入状态
+				const _responses = await submitPrompt(res.text, { _raw: true, files: voiceFiles });
 				console.log(_responses);
 			}
 		}
@@ -201,19 +216,24 @@
 				loading = true;
 				emoji = null;
 
-				if (cameraStream) {
-					const imageUrl = takeScreenshot();
+			// 川邮·星语 #14：不再直接替换 bind 下来的共享 files 状态。
+			// 原版 files = [{type:'image', url}] 会污染 MessageInput 的输入状态，
+			// 若转录失败/中断，dataURL 残留在输入框，后续文字输入被连带污染。
+			// 现改为局部副本传给 submitPrompt（_raw 链路直接消费，不回写输入框）。
+			let _voiceFiles = [];
+			if (cameraStream) {
+				const imageUrl = await takeScreenshot();
 
-					files = [
-						{
-							type: 'image',
-							url: imageUrl
-						}
-					];
-				}
+				_voiceFiles = [
+					{
+						type: 'image',
+						url: imageUrl
+					}
+				];
+			}
 
-				const audioBlob = new Blob(_audioChunks, { type: 'audio/wav' });
-				await transcribeHandler(audioBlob);
+			const audioBlob = new Blob(_audioChunks, { type: 'audio/wav' });
+			await transcribeHandler(audioBlob, _voiceFiles);
 
 				confirmed = false;
 				loading = false;

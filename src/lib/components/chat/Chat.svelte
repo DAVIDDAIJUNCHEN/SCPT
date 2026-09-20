@@ -3054,8 +3054,18 @@
 		prompt = '';
 	};
 
-	const submitHandler = async (userPrompt, { _raw = false } = {}) => {
+	// 川邮·星语 #14：新增 files 参数 —— voice mode 摄像头截图经 _raw 链路直传，
+	// 不再污染 MessageInput 的共享 files 状态（原版 CallOverlay 直接 bind 替换，
+	// 转录失败时 dataURL 残留输入框，导致后续文字输入被连带污染）。
+	const submitHandler = async (userPrompt, { _raw = false, files: inlineFiles } = {}) => {
 		console.log('submitHandler', userPrompt, $chatId);
+
+		// voice mode _raw 提交：直接使用传入的截图文件，绕过共享输入状态
+		if (_raw && Array.isArray(inlineFiles) && inlineFiles.length > 0) {
+			console.log('[voice-mode] submit with inline files:', inlineFiles.length);
+			await submitPrompt(userPrompt, structuredClone(inlineFiles));
+			return;
+		}
 
 		const _selectedModels = selectedModels.map((modelId) =>
 			$models.map((m) => m.id).includes(modelId) ? modelId : ''

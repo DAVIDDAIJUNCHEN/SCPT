@@ -58,7 +58,15 @@ export const initI18n = (defaultLocale?: string | undefined) => {
 				order: detectionOrder,
 				caches: ['localStorage'],
 				lookupQuerystring: 'lang',
-				lookupLocalStorage: 'locale'
+				lookupLocalStorage: 'locale',
+				// 川邮·星语 #13（P1-4）：Portal 跳转携带 ?lang=zh / ?lang=en，
+				// 但本地语言包只有 zh-CN / en-US（另有 zh-TW / en-GB）。
+				// 归一化短码，避免加载失败回退英文（中文用户跳 chat 会变英文）。
+				convertDetectedLanguage: (lng) => {
+					if (lng === 'zh') return 'zh-CN';
+					if (lng === 'en') return 'en-US';
+					return lng;
+				}
 			},
 			fallbackLng: {
 				fr: ['fr-FR'],
