@@ -6,7 +6,6 @@ it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
-import { Link } from '@tanstack/react-router'
 import { ChevronLeft } from 'lucide-react'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -84,13 +83,9 @@ export function AuthLayout({ children }: AuthLayoutProps) {
             />
           )}
         </div>
-        {/* 右侧：返回主页（回 Portal）+ API 文档 */}
-        {/* 右侧：语言切换 + 返回主页（回 Portal）+ API 文档 */}
+        {/* 右侧：返回主页（回 Portal）+ 语言切换 */}
+        {/* 川邮·星语：语言切换放在返回主页右边，API 开发文档入口已移除（用户 #200） */}
         <div className='flex items-center gap-2.5'>
-          {/* 川邮·星语：登录页语言切换（中/英），与 Portal 语言联动 */}
-          <LoginLanguageToggle />
-          {/* 川邮·星语：登出/未登录都会落到本页，这里给一条明确的回 Portal 主页通道。
-              仅在 Portal 与星语同源部署时展示，避免独立端口访问时点出死循环。 */}
           {canReturnToPortal && (
             <a
               href={portalHomeUrl}
@@ -101,13 +96,8 @@ export function AuthLayout({ children }: AuthLayoutProps) {
               {t('返回主页')}
             </a>
           )}
-          {/* DeepSeek 风格 API 文档方框按钮 → 登录页也指向自建公开文档页 */}
-          <Link
-            to='/docs'
-            className='inline-flex items-center rounded-md border border-[#378ADD]/50 bg-[#1B2A4E]/60 px-4 py-2 text-sm text-foreground shadow-sm backdrop-blur-sm transition-colors hover:border-[#378ADD] hover:bg-[#1B2A4E]/80'
-          >
-            {t('API 开发文档')}
-          </Link>
+          {/* 川邮·星语：登录页语言切换（中/英），与 Portal 语言联动 */}
+          <LoginLanguageToggle />
         </div>
       </header>
 
