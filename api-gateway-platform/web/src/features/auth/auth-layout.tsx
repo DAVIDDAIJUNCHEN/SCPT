@@ -23,11 +23,11 @@ import {
 import { CosmicBackground } from './components/cosmic-background'
 import { LoginLanguageToggle } from './components/login-language-toggle'
 
+// #191：品牌文案改走 i18n（en 态显示英文），中文仍为 key 原文
 const BRAND_NAME = '川邮·星语'
-const TAGLINE = '使用川邮·星语 API 构建你的应用'
-const SUBTAGLINE = '人类的梦想是星辰大海'
-
-const HIGHLIGHTS = [
+const TAGLINE_KEY = '使用川邮·星语 API 构建你的应用'
+const SUBTAGLINE_KEY = '人类的梦想是星辰大海'
+const HIGHLIGHT_KEYS = [
   '主流大语言模型全覆盖 · deepseek-v4-pro / qwen3.8 / glm-5.3',
   '多模态能力 · ASR / TTS / 视频生成 / 图片生成',
   '毫秒级推理 · H20 自营算力',
@@ -117,11 +117,11 @@ export function AuthLayout({ children }: AuthLayoutProps) {
           {/* 左：品牌 hero（文字从校徽左侧垂直下方开始，即靠最左对齐） */}
           <div className='hidden lg:block'>
             <h2 className='max-w-md text-3xl font-medium leading-tight tracking-tight text-foreground xl:text-4xl'>
-              {TAGLINE}
+              {t(TAGLINE_KEY)}
             </h2>
-            <p className='mt-3 max-w-md text-base italic text-muted-foreground'>{SUBTAGLINE}</p>
+            <p className='mt-3 max-w-md text-base italic text-muted-foreground'>{t(SUBTAGLINE_KEY)}</p>
             <ul className='mt-8 max-w-md space-y-3'>
-              {HIGHLIGHTS.map((item, i) => (
+              {HIGHLIGHT_KEYS.map((item, i) => (
                 <li key={i} className='flex items-center gap-2.5 text-sm text-foreground/90'>
                   <span
                     className='h-1.5 w-1.5 shrink-0 rounded-full'
@@ -129,7 +129,7 @@ export function AuthLayout({ children }: AuthLayoutProps) {
                       background: ['#378ADD', '#7F77DD', '#EF9F27'][i % 3],
                     }}
                   />
-                  {item}
+                  {t(item)}
                 </li>
               ))}
             </ul>
@@ -148,7 +148,7 @@ export function AuthLayout({ children }: AuthLayoutProps) {
       <footer className='relative z-10 px-6 pb-5 sm:px-10'>
         <div className='flex flex-col items-center justify-between gap-1 text-xs text-muted-foreground/70 sm:flex-row'>
           <span>{BRAND_NAME}</span>
-          <span>四川邮电职业技术学院 版权所有</span>
+          <span>{t('四川邮电职业技术学院 版权所有')}</span>
         </div>
       </footer>
     </div>

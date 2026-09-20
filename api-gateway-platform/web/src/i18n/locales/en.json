@@ -5620,6 +5620,13 @@
     "验证码发送失败，请稍后重试": "Failed to send verification code, please try again later",
     "验证码已发送": "Verification code sent",
     "验证码登录": "Code login",
-    "验证身份": "Verify identity"
+    "验证身份": "Verify identity",
+    "使用川邮·星语 API 构建你的应用": "Build your apps with Chuanyou Xingyu API",
+    "人类的梦想是星辰大海": "Our dream is the sea of stars",
+    "主流大语言模型全覆盖 · deepseek-v4-pro / qwen3.8 / glm-5.3": "Full coverage of mainstream LLMs · deepseek-v4-pro / qwen3.8 / glm-5.3",
+    "多模态能力 · ASR / TTS / 视频生成 / 图片生成": "Multimodal capabilities · ASR / TTS / video & image generation",
+    "毫秒级推理 · H20 自营算力": "Millisecond inference · in-house H20 compute",
+    "按量计费透明 · 余额实时可见": "Transparent usage-based billing · real-time balance",
+    "四川邮电职业技术学院 版权所有": "© Sichuan Post and Telecommunication College"
   }
 }
