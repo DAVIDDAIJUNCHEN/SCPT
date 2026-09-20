@@ -750,7 +750,7 @@
 									<textarea
 										id="message-edit-{message.id}"
 										bind:this={editTextAreaElement}
-										class=" bg-transparent outline-hidden focus-visible:outline-none! w-full resize-none text-[0.9375rem]"
+										class=" bg-transparent outline-hidden focus-visible:outline-none! w-full resize-none text-[1rem]"
 										bind:value={editedContent}
 										on:input={(e) => {
 											const messagesContainer = document.getElementById('messages-container');
@@ -883,7 +883,7 @@
 							{/if}
 
 							{#if !message.done && !message.error && (hasResponseContent || !hasVisibleStatus)}
-								<div class="text-[0.9375rem] leading-relaxed">
+								<div class="text-[1rem] leading-relaxed">
 									<span
 										class="inline-block w-[0.125rem] h-3.5 bg-gray-400 dark:bg-gray-500 ml-0.5 animate-pulse align-text-bottom"
 									></span>

@@ -63,7 +63,7 @@
 	};
 
 	$: detailButtonClassName = `py-0.5 ${
-		compactPreview ? 'text-xs' : 'text-[0.9375rem]'
+		compactPreview ? 'text-xs' : 'text-[1rem]'
 	} text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition`;
 
 	$: displayItems = buildOutputDisplayItems(output) as OutputDisplayItem[];
@@ -95,7 +95,7 @@
 				/>
 			</div>
 		{:else}
-			<div class="whitespace-pre-wrap text-[0.9375rem]">{displayItem.text}</div>
+			<div class="whitespace-pre-wrap text-[1rem]">{displayItem.text}</div>
 		{/if}
 	{:else if displayItem.type === 'detail_group'}
 		<ConsecutiveDetailsGroup

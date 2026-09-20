@@ -972,14 +972,14 @@
 							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
 						>
 							<div
-								class="self-center flex size-[calc(30px*var(--app-text-scale,1))] items-center justify-center rounded-lg transition group-hover:bg-gray-100 dark:group-hover:bg-gray-900"
+								class="self-center flex size-[calc(34px*var(--app-text-scale,1))] items-center justify-center rounded-lg transition group-hover:bg-gray-100 dark:group-hover:bg-gray-900"
 							>
 								<!-- LICENSE covers this Open WebUI sidebar logo.
 							Do not alter, remove, obscure, or replace it except as LICENSE permits:
 							https://docs.openwebui.com/license. -->
 								<img
 									src="{WEBUI_BASE_URL}/static/favicon.png"
-									class="sidebar-new-chat-icon size-6 rounded-full group-hover:hidden"
+									class="sidebar-new-chat-icon size-7 rounded-full group-hover:hidden"
 									alt=""
 								/>
 
@@ -1096,7 +1096,7 @@
 									>
 										<img
 											src={`${WEBUI_API_BASE_URL}/users/${$user?.id}/profile/image`}
-											class="size-5.5 object-cover rounded-full"
+											class="size-6 object-cover rounded-full"
 											alt={$i18n.t('Open User Profile Menu')}
 											aria-label={$i18n.t('Open User Profile Menu')}
 										/>
@@ -1166,7 +1166,7 @@
 					<img
 						crossorigin="anonymous"
 						src="{WEBUI_BASE_URL}/static/favicon.png"
-						class="sidebar-new-chat-icon size-6 rounded-full"
+						class="sidebar-new-chat-icon size-7 rounded-full"
 						alt=""
 					/>
 					</a>
@@ -1233,7 +1233,7 @@
 								</div>
 
 								<div class="flex flex-1 self-center translate-y-[0.5px]">
-									<div class=" self-center text-[0.8125rem] leading-5">{$i18n.t('New Chat')}</div>
+									<div class=" self-center text-[0.875rem] leading-5">{$i18n.t('New Chat')}</div>
 								</div>
 
 								<HotkeyHint name="newChat" className=" hover-reveal " />
@@ -1255,7 +1255,7 @@
 								</div>
 
 								<div class="flex flex-1 self-center translate-y-[0.5px]">
-									<div class=" self-center text-[0.8125rem] leading-5">{$i18n.t('Search')}</div>
+									<div class=" self-center text-[0.875rem] leading-5">{$i18n.t('Search')}</div>
 								</div>
 								<HotkeyHint name="search" className=" hover-reveal " />
 							</button>
@@ -1297,7 +1297,7 @@
 											</div>
 
 											<div class="flex self-center translate-y-[0.5px]">
-												<div class=" self-center text-[0.8125rem] leading-5">
+												<div class=" self-center text-[0.875rem] leading-5">
 													{$i18n.t(meta.label)}
 												</div>
 											</div>
@@ -1515,7 +1515,7 @@
 								<div slot="content">
 									<DropdownMenu className="min-w-[10.625rem]">
 										<button
-											class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+											class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.875rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
 											on:click={markAllChatsReadHandler}
 										>
 											<CheckIcon className="size-3.5" />
@@ -1730,7 +1730,7 @@
 									<div class=" self-center mr-3 relative flex-shrink-0">
 										<img
 											src={`${WEBUI_API_BASE_URL}/users/${$user?.id}/profile/image`}
-											class="size-5.5 object-cover rounded-full"
+											class="size-6 object-cover rounded-full"
 											alt={$i18n.t('Open User Profile Menu')}
 											aria-label={$i18n.t('Open User Profile Menu')}
 										/>

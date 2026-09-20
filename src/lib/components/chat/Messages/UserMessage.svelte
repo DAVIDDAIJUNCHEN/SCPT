@@ -160,7 +160,7 @@
 				<Name>
 					{#if message.user}
 						{$i18n.t('You')}
-						<span class=" text-gray-500 text-[0.9375rem] font-normal">{message?.user ?? ''}</span>
+						<span class=" text-gray-500 text-[1rem] font-normal">{message?.user ?? ''}</span>
 					{:else if $settings.showUsername || $_user?.name !== user?.name}
 						{user?.name ?? $i18n.t('You')}
 					{:else}
@@ -278,7 +278,7 @@
 						<textarea
 							id="message-edit-{message.id}"
 							bind:this={messageEditTextAreaElement}
-							class=" bg-transparent outline-hidden focus-visible:outline-none! w-full resize-none text-[0.9375rem]"
+							class=" bg-transparent outline-hidden focus-visible:outline-none! w-full resize-none text-[1rem]"
 							bind:value={editedContent}
 							on:input={(e) => {
 								const messagesContainer = document.getElementById('messages-container');
@@ -400,7 +400,7 @@
 									</div>
 								{:else}
 									<div
-										class="whitespace-pre-wrap text-[0.9375rem]"
+										class="whitespace-pre-wrap text-[1rem]"
 										dir={$settings?.chatDirection ?? 'auto'}
 									>
 										{message.content}

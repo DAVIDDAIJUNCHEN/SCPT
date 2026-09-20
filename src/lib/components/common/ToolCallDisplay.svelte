@@ -45,7 +45,7 @@
 
 	$: if (!open) expandedResult = false;
 	export let buttonClassName =
-		'py-1 text-[0.9375rem] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition';
+		'py-1 text-[1rem] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition';
 
 	const componentId = id || uuidv4();
 

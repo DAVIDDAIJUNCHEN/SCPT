@@ -128,7 +128,7 @@
 	};
 
 	$: detailButtonClassName = `py-0.5 ${
-		compactPreview ? 'text-xs' : 'text-[0.9375rem]'
+		compactPreview ? 'text-xs' : 'text-[1rem]'
 	} text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition`;
 
 	// 川邮·星语 S3.4：思考块（reasoning）头部对齐 DeepSeek —— 比正文小两档的

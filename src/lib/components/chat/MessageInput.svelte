@@ -1647,7 +1647,7 @@
 			<div
 				class="flex flex-col px-3 {($settings?.widescreenMode ?? null)
 					? 'max-w-full'
-					: 'max-w-[46.75rem]'} w-full"
+					: 'max-w-[52rem]'} w-full"
 			>
 				<div class="relative">
 					{#if autoScroll === false && history?.currentId}
@@ -1685,7 +1685,7 @@
 			<div
 				class="{($settings?.widescreenMode ?? null)
 					? 'max-w-full'
-					: 'max-w-[46.75rem]'} px-2 mx-auto inset-x-0"
+					: 'max-w-[52rem]'} px-2 mx-auto inset-x-0"
 			>
 				<!-- 2026-09-19 星语定制：参考 DeepSeek —— 一旦开始正式对话（存在 currentId 的历史），
 				     整个输入区整体上移约一行（-1.75rem = 28px），给下方内容/声明留出呼吸空间；

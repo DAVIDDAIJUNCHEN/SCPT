@@ -3174,15 +3174,10 @@
 			}
 		}
 
-		if (history?.currentId) {
-			const currentMessage = history.messages[history.currentId];
-
-			if (currentMessage.error && !currentMessage.content) {
-				// Error in response
-				toast.error($i18n.t(`Oops! There was an error in the previous response.`));
-				return;
-			}
-		}
+		// 川邮·星语 #212：报错后允许继续对话（对齐 DeepSeek 行为）。
+		// 原版在上一条消息 error 且无 content 时直接 return，堵死了后续输入；
+		// 现在放行，新的 user 消息挂在错误消息之后。空的 assistant 错误消息
+		// 由后端 process_chat_payload 统一过滤，不会发给 LLM。
 
 		// Clear input and submit
 		messageInput?.setText('');

@@ -2228,6 +2228,24 @@ def process_messages_with_output(
         clean_message = dict(message)
         for key in ('id', 'files', 'output', 'model', 'contextSummary', 'context_summary', 'usage'):
             clean_message.pop(key, None)
+
+        # 川邮·星语 #212：跳过空内容的 assistant 消息。
+        # 错误返回的 assistant 消息（content=''、无 output）对 LLM 无语义价值，
+        # 且部分严格 provider 会拒绝空 assistant turn。此处统一过滤，
+        # 用户在错误消息后继续提问时只发送有效的对话历史。
+        if message.get('role') == 'assistant':
+            content = clean_message.get('content')
+            has_text = bool(
+                content
+                if isinstance(content, str)
+                else any(
+                    isinstance(p, dict) and (p.get('text') or '').strip()
+                    for p in (content or [])
+                )
+            )
+            if not has_text and not message.get('tool_calls'):
+                continue
+
         processed.append(clean_message)
 
     return processed
