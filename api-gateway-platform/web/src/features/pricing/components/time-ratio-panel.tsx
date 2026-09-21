@@ -122,6 +122,11 @@ export function TimeRatioPanel(props: TimeRatioPanelProps) {
   const isSpecial = current.ratio !== 1
   const currentTier = describeTier(current.name, current.ratio)
 
+  // location 在配置里是 string 类型（不经过 json.Unmarshal），若被误存成
+  // 带引号的字面量 `"Asia/Shanghai"`，展示时会出现多余引号。这里做一次
+  // 防御性清洗，避免脏配置直接暴露给用户。
+  const cleanLocation = info.location?.trim().replace(/^["']|["']$/g, '') ?? ''
+
   return (
     <Card className={cn('overflow-hidden', props.className)}>
       <CardContent className='py-4 sm:py-5'>
@@ -209,9 +214,9 @@ export function TimeRatioPanel(props: TimeRatioPanelProps) {
             {t(
               'Prices shown are base rates for standard hours. Actual charge = base rate x current time multiplier x group discount.'
             )}
-            {info.location ? (
+            {cleanLocation ? (
               <span className='text-muted-foreground/70 ml-1'>
-                ({t('Timezone')}: {info.location})
+                ({t('Timezone')}: {cleanLocation})
               </span>
             ) : null}
           </span>

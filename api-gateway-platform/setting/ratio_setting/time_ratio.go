@@ -188,7 +188,7 @@ func GetTimeRatioPublicInfo(now time.Time) TimeRatioPublicInfo {
 	s := &timeRatioSetting
 	info := TimeRatioPublicInfo{
 		Enabled:  s.Enabled,
-		Location: s.Location,
+		Location: normalizeLocation(s.Location),
 		Rules:    make([]TimeRatioRule, len(s.Rules)),
 	}
 	copy(info.Rules, s.Rules)
@@ -198,13 +198,29 @@ func GetTimeRatioPublicInfo(now time.Time) TimeRatioPublicInfo {
 
 	// Hour 取 Location 时区下的小时，与 GetTimeRatioAt 的判定口径一致。
 	localized := now
-	if s.Location != "" {
-		if loc, err := time.LoadLocation(s.Location); err == nil {
+	if info.Location != "" {
+		if loc, err := time.LoadLocation(info.Location); err == nil {
 			localized = now.In(loc)
 		}
 	}
 	info.Current.Hour = localized.Hour()
 	return info
+}
+
+// normalizeLocation 清洗时区串外层可能存在的引号。
+//
+// Location 在配置里是 string 字段，写入时若被误做了一次 JSON 编码，
+// 库里会存成 `"Asia/Shanghai"`（含引号）。time.LoadLocation 对这种串
+// 仍能加载成功，计费不受影响，但接口输出与前端展示会带上多余引号。
+// 这里统一剥掉首尾引号，让对外输出始终是干净的裸值。
+func normalizeLocation(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return strings.TrimSpace(s[1 : len(s)-1])
+		}
+	}
+	return s
 }
 
 // describeDays 把星期列表渲染为「周六日」这类紧凑文本。

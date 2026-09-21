@@ -275,3 +275,58 @@ func TestDescribeTimeRatioRules(t *testing.T) {
 		t.Errorf("有规则描述异常: %q", s)
 	}
 }
+
+// TestNormalizeLocation 覆盖时区串清洗：配置误存一层引号时，对外输出必须干净。
+// 背景：2026-09-21 生产首版写入把 location 编码成了 `"Asia/Shanghai"`，
+// time.LoadLocation 容错加载成功（计费正常），但接口与前端展示多出引号。
+func TestNormalizeLocation(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`Asia/Shanghai`, `Asia/Shanghai`},       // 正常裸值
+		{`"Asia/Shanghai"`, `Asia/Shanghai`},     // 双引号包裹（本次生产事故形态）
+		{`'Asia/Shanghai'`, `Asia/Shanghai`},     // 单引号包裹
+		{`  "Asia/Shanghai"  `, `Asia/Shanghai`}, // 前后空白 + 引号
+		{``, ``},
+		{`"`, `"`},       // 单个引号不成对，原样返回
+		{`Asia`, `Asia`}, // 无引号
+		{`"A"`, `A`},     // 极短串也要正确剥壳
+	}
+	for _, c := range cases {
+		if got := normalizeLocation(c.in); got != c.want {
+			t.Errorf("normalizeLocation(%q) = %q，期望 %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestGetTimeRatioPublicInfoStripsQuotedLocation 端到端：脏 location 不影响
+// 公开信息的时区判定与输出。
+func TestGetTimeRatioPublicInfoStripsQuotedLocation(t *testing.T) {
+	orig := timeRatioSetting
+	defer func() { timeRatioSetting = orig }()
+
+	timeRatioSetting = TimeRatioSetting{
+		Enabled:  true,
+		Location: `"Asia/Shanghai"`, // 带引号的脏值
+		Rules: []TimeRatioRule{
+			{Name: "VALLEY", StartHour: 22, EndHour: 8, Ratio: 0.5},
+			{Name: "PEAK", StartHour: 9, EndHour: 12, Ratio: 2.0},
+		},
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("加载时区失败: %v", err)
+	}
+	// 周一 2026-09-21 10:30 → 应命中 PEAK 2.0
+	d := time.Date(2026, 9, 21, 10, 30, 0, 0, loc)
+	info := GetTimeRatioPublicInfo(d)
+
+	if info.Location != "Asia/Shanghai" {
+		t.Errorf("Location 未清洗: %q", info.Location)
+	}
+	if info.Current.Ratio != 2.0 || info.Current.Name != "PEAK" {
+		t.Errorf("脏 location 影响了时段判定: ratio=%v name=%q", info.Current.Ratio, info.Current.Name)
+	}
+	if info.Current.Hour != 10 {
+		t.Errorf("Hour = %d，期望 10（时区判定需基于清洗后的 location）", info.Current.Hour)
+	}
+}
