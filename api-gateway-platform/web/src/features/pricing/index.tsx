@@ -31,6 +31,7 @@ import {
   PricingToolbar,
   ModelCardGrid,
   ModelDetailsDrawer,
+  TimeRatioPanel,
 } from './components'
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
@@ -49,6 +50,7 @@ export function Pricing() {
     usableGroup,
     endpointMap,
     autoGroups,
+    timeRatio,
     isLoading,
     priceRate,
     usdExchangeRate,
@@ -225,6 +227,8 @@ export function Pricing() {
             />
 
             <main className='min-w-0 space-y-4'>
+              <TimeRatioPanel info={timeRatio} />
+
               <PricingToolbar
                 filteredCount={filteredModels.length}
                 totalCount={models?.length}

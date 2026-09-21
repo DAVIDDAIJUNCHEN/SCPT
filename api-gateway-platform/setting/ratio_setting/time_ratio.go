@@ -163,6 +163,50 @@ func DescribeTimeRatioRules() string {
 	return "时段倍率：" + strings.Join(parts, " | ")
 }
 
+// TimeRatioPublicInfo 时段倍率的对外展示结构（产品定价页消费）。
+//
+// 价格页需要把「模型实际怎么收费」讲清楚，但不应把内部配置结构直接暴露给
+// 前端——这里做一层收敛：只给出展示所需字段，并把「当前时刻的倍率」一并
+// 算好，避免前端各自实现一份时段判定逻辑而与后端计费口径漂移。
+type TimeRatioPublicInfo struct {
+	Enabled  bool                 `json:"enabled"`
+	Location string               `json:"location"`
+	Rules    []TimeRatioRule      `json:"rules"`
+	Current  TimeRatioCurrentInfo `json:"current"`
+}
+
+// TimeRatioCurrentInfo 当前时刻的时段状态。
+type TimeRatioCurrentInfo struct {
+	Ratio float64 `json:"ratio"` // 当前生效倍率，未命中规则时为 1.0
+	Name  string  `json:"name"`  // 命中时段名，未命中为空串
+	Hour  int     `json:"hour"`  // 判定所依据的本地小时（调用方可据此校准时区）
+}
+
+// GetTimeRatioPublicInfo 返回用于产品定价页展示的时段倍率信息。
+// now 由调用方传入，便于测试与复用。
+func GetTimeRatioPublicInfo(now time.Time) TimeRatioPublicInfo {
+	s := &timeRatioSetting
+	info := TimeRatioPublicInfo{
+		Enabled:  s.Enabled,
+		Location: s.Location,
+		Rules:    make([]TimeRatioRule, len(s.Rules)),
+	}
+	copy(info.Rules, s.Rules)
+
+	ratio, name := GetTimeRatioAt(now)
+	info.Current = TimeRatioCurrentInfo{Ratio: ratio, Name: name}
+
+	// Hour 取 Location 时区下的小时，与 GetTimeRatioAt 的判定口径一致。
+	localized := now
+	if s.Location != "" {
+		if loc, err := time.LoadLocation(s.Location); err == nil {
+			localized = now.In(loc)
+		}
+	}
+	info.Current.Hour = localized.Hour()
+	return info
+}
+
 // describeDays 把星期列表渲染为「周六日」这类紧凑文本。
 func describeDays(days []int) string {
 	names := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}

@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"time"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -73,6 +75,10 @@ func GetPricing(c *gin.Context) {
 		"supported_endpoint": model.GetSupportedEndpointMap(),
 		"auto_groups":        service.GetUserAutoGroup(group),
 		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
+		// 星语 4.2：产品定价页需要展示「实际怎么收费」。
+		// 时段倍率是全局规则（与具体模型无关），故放顶层而非塞进每个 model，
+		// 避免 N 份重复数据；current 由后端算好，前端不做时段判定。
+		"time_ratio": ratio_setting.GetTimeRatioPublicInfo(time.Now()),
 	})
 }
 

@@ -117,6 +117,38 @@ export type PricingData = {
   usable_group: Record<string, { desc: string; ratio: number }>
   supported_endpoint: Record<string, string>
   auto_groups: string[]
+  /** 时段倍率（峰谷定价）配置，全局生效、与具体模型无关。 */
+  time_ratio?: TimeRatioInfo
+}
+
+/**
+ * 单条时段规则。区间语义为左闭右开 [start_hour, end_hour)，
+ * 支持跨零点（start_hour > end_hour，例如 22 → 8 表示 22:00-次日 08:00）。
+ */
+export type TimeRatioRule = {
+  name: string
+  start_hour: number
+  end_hour: number
+  ratio: number
+  /** 限定生效星期，空/缺省表示不限。0=周日 … 6=周六。 */
+  days?: number[]
+}
+
+/** 当前时刻的时段状态，由后端算好，前端不做时段判定。 */
+export type TimeRatioCurrent = {
+  ratio: number
+  /** 命中的时段名；未命中任何规则时为空串。 */
+  name: string
+  /** 判定所依据的本地小时，用于校准时区展示。 */
+  hour: number
+}
+
+/** 时段倍率整体信息（/api/pricing 顶层字段）。 */
+export type TimeRatioInfo = {
+  enabled: boolean
+  location: string
+  rules: TimeRatioRule[]
+  current: TimeRatioCurrent
 }
 
 export type TokenUnit = 'M' | 'K'
