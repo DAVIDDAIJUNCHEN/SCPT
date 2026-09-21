@@ -52,9 +52,10 @@ ModelRatio 一律按官方**空闲时段单价**换算（即平台默认价 = �
       Qwen3.8-Max    输入 12.0 / 缓存命中 1.5 / 输出 36.0
   智谱开放平台   https://docs.bigmodel.cn/cn/guide/start/pricing
       GLM-5.3        输入 8.0 / 缓存命中 2.0  / 输出 28.0
-      GLM-5.3-Flash  输入 0.8 / 缓存命中 0.23 / 输出 2.8（标准价）
-                     ⚠️ 限时五折价 输入 0.4 / 缓存命中 0.115 / 输出 1.4，
-                        用 --glm-flash-promo 切换
+      GLM-5.3-Flash  ✅默认走限时五折价 输入 0.4 / 缓存命中 0.115 / 输出 1.4
+                     （2026-09-21 上线决策，对齐智谱当期活动价）
+                     标准价 输入 0.8 / 缓存命中 0.23 / 输出 2.8，
+                     用 --glm-flash-standard 切回
 
 ⚠️ 平台特供模型的说明
 --------------------
@@ -71,11 +72,11 @@ ModelRatio 一律按官方**空闲时段单价**换算（即平台默认价 = �
     docker cp xingyu_model_pricing.py allomax-gateway:/tmp/
     docker exec allomax-gateway python3 /tmp/xingyu_model_pricing.py --dry-run
 
-    # 实际写入
+    # 实际写入（GLM-5.3-Flash 默认即限时五折价）
     docker exec allomax-gateway python3 /tmp/xingyu_model_pricing.py --apply
 
-    # 智谱 GLM-5.3-Flash 用限时五折价
-    docker exec allomax-gateway python3 /tmp/xingyu_model_pricing.py --apply --glm-flash-promo
+    # 智谱 GLM-5.3-Flash 改回标准价
+    docker exec allomax-gateway python3 /tmp/xingyu_model_pricing.py --apply --glm-flash-standard
 
     # 只处理某些模型
     docker exec allomax-gateway python3 /tmp/xingyu_model_pricing.py --apply --only DeepSeek-V4.1-Flash
@@ -251,8 +252,11 @@ def upsert_option(cur, table, key, value):
     return "insert"
 
 
-def build_plan(current, promo=False):
-    """生成待写入的三张倍率表（在现有值基础上合并，不动其他模型）。"""
+def build_plan(current, promo=True):
+    """生成待写入的三张倍率表（在现有值基础上合并，不动其他模型）。
+
+    promo=True（默认）：glm-5.3-flash 取智谱限时五折价。
+    """
     def parse(key):
         raw = current.get(key)
         if not raw:
@@ -353,8 +357,8 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true", help="只预演，不改库")
     g.add_argument("--apply", action="store_true", help="实际写入配置")
-    ap.add_argument("--glm-flash-promo", action="store_true",
-                    help="GLM-5.3-Flash 使用智谱限时五折价")
+    ap.add_argument("--glm-flash-standard", action="store_true",
+                    help="GLM-5.3-Flash 改回智谱标准价（默认走限时五折价）")
     ap.add_argument("--only", nargs="+", metavar="MODEL",
                     help="只处理指定模型（默认全部）")
     ap.add_argument("--db", help="SQLite 数据库路径（默认自动探测）")
@@ -379,7 +383,7 @@ def main():
     print(f"配置表: {table}")
 
     current = load_options(cur, table)
-    plan, changes = build_plan(current, promo=args.glm_flash_promo)
+    plan, changes = build_plan(current, promo=not args.glm_flash_standard)
     print_plan(changes, only=args.only)
 
     # 自检：换算必须能精确还原官方单价（容差同上：CacheRatio 存在循环小数截断）
