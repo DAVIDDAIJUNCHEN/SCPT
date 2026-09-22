@@ -124,6 +124,14 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 | 接口限流（用户级/模型级） | 现仅登录接口有 CriticalRateLimit（已调 200）；正式 API 调用缺细粒度限流，单用户可打满算力 |
 | **外部拨测** | 🔴 **当前监控最大盲区**：healthcheck.sh 在 VPS 本机跑，发现不了「容器活着但服务假死」及网络层不可达 |
 
+**体验批次 · TTS 音色多元化（2026-09-22 立项调研，P2，排序约束：S-1 之后）**
+
+| 层 | 任务 | 要点 |
+|---|---|---|
+| ① | 加载官方预置音色 | 30691 CosyVoice v3 部署时未加载预置音色包（`preset_voices: []` 实测为空），从 ModelScope 拉官方资源即可；这是「合规声音」的正解，勿用网上来路不明音频建音色（声音权属不清） |
+| ② | OWUI 用户级音色选择 | voice 现为全局配置非 per-user，需 fork 小改（用户设置 → Audio 开放下拉） |
+| ③ | 用户自克隆音色 | 服务端 `/v1/voices/create`（zero_shot 3-30s）已就绪；需网关放行 voices 路由 + per-user 存储 + **确权声明 UI**（深度合成规定红线）。**硬约束：S-1 加 key 之前不得开放**（30691 现裸奔，开放克隆=无鉴权端口上开克隆任意人声音的口子） |
+
 **域名切换 · 六步清单（✅ 2026-09-22 全部完成，仅校内 DNS 生效）**
 
 ① ~~证书重签含三子域 SAN~~ ✅（自签 825 天，SAN=IP+ai/ai-platform/ai-chat/ai-docs.sptc.edu.cn，至 2028-12-25）→ ② ~~nginx server_name 切换~~ ✅（四房间 SNI 分流 + IP default_server 兜底双轨 + 8443→301 ai-chat；307 无 /v1 兼容层仅配 ai-platform 块）→ ③ ~~options 表 ServerAddress 改域名~~ ✅ → ④ ~~OWUI 端点改域名~~ ✅（compose env 九处 + **webui.db config 表 5 处**，DB 优先铁律）→ ⑤ ~~OIDC redirect_uri 白名单改域名~~ ✅（双轨：IP:8443 + ai-chat 域名 callback 并存）→ ⑥ cloudflared quick tunnel 退出（待确认）
