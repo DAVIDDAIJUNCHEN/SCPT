@@ -78,6 +78,30 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 
 ### 5.1 分批执行计划（剩余全部工作）
 
+**第一批 · 安全收口（P0，2026-09-22 实测立项）**
+
+> 背景：实测发现 AlloMax 模型 NodePort（10.32.1.3:305xx-307xx）**无 key 即可推理**（`/v1/models` 与 `/v1/chat/completions` 无鉴权返回 200），全校网络可达即可白嫖。"token 不外流"的前提是端口本身有门。
+
+| # | 任务 | 要点 |
+|---|---|---|
+| S-1 | 在役模型全部加 API key | vLLM `VLLM_API_KEY` / SGLang `--api-key`，每模型独立 key，只配到星语渠道；AlloMax Web UI 改部署参数（需大王手动操作） |
+| S-2 | 节点防火墙白名单 | 30500-30800 段限制源 IP = 星语 VPS 10.255.12.210 + 管理机；与智算中心网络管理员协调 iptables |
+| S-3 | 星语侧 token 治理 | 限流（与第四批合并执行）+ 单 token 日用量异常告警（飞书）+ 续约复核最小授权 |
+| S-4 | 外部平台接入策略 | 电信平台等一律走星语发 token（可计费/可撤销/可限额），**绝不直发 AlloMax key** —— 唯一入口即控制 |
+
+**模型分层授权（2026-09-22 立项，方案已核实代码落点）**
+
+> 目标：按用户层级（学生/教师/合作单位等）分配 Chat 与 API 平台可用模型，替代现状「模型广场人人可见全部 + Chat 仅 admin/普通二分」。
+> **代码体检结论：两侧原生能力均已具备，仅需 1 处代码改动（星语 OIDC 补 groups claim）+ 配置编排**：
+
+| # | 任务 | 要点 |
+|---|---|---|
+| M-1 | 星语侧建用户分组 | `users.Group`（管理后台用户编辑已原生支持选组）→ `abilities` 表按 (group, model, channel) 开模型 → 模型广场 pricing.go 已按 `user.Group` 过滤（零改动） |
+| M-2 | 星语 OIDC userinfo 补 `groups` claim | `controller/oidc_provider.go` OIDCUserinfo 返回值加 `"groups": []string{user.Group}`（唯一代码改动，~3 行） |
+| M-3 | OWUI 开启 OIDC 组映射 | `ENABLE_OAUTH_GROUP_MANAGEMENT=true` + `OAUTH_GROUPS_CLAIM=groups`（OWUI 原生支持，utils/oauth.py update_user_groups 自动进组/退组）；建对应层级组，per-group `access_grants` 开模型（现白名单机制已验证过该表） |
+| M-4 | svc-chat 服务账号归组 | OWUI 调星语的服务 token 归入对应组，使 Chat 可用模型 = 该层级 API 可用模型 |
+| M-5 | 分层定价联动（可选） | `GroupRatio` 按组差异化倍率（如 partner 组 1.2x），原生支持无需开发 |
+
 **第二批 · 计费三项（阶段 4 的地基，可立即开工）**
 
 | # | 任务 | 要点 |
@@ -111,7 +135,7 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 |---|---|
 | OIDC 错误码规范化 | 拒绝授权的文案与错误码归一 |
 | `SESSION_COOKIE_SECURE=true` | 现为 false（自签 IP + http 兼容）。**切域名 + 正式证书后必须开** |
-| 模型精细授权 | per-user / per-group 替代当前「4 模型粗粒度白名单」 |
+| 模型精细授权 | per-user / per-group 替代当前「4 模型粗粒度白名单」→ **已升级为第一批 M-1~M-5 完整方案（2026-09-22），见 §5.1** |
 | ~~Portal 遗留 5 项~~ | ✅ **2026-09-19 全部完成**（S3.6）。rAF visibilitychange / og 标签 / 公告死链 / skip-link+noscript / base64 外置 —— 详见 §5.3 |
 
 **P3 合规（对外服务前硬门槛，校内不阻塞）**
@@ -286,6 +310,8 @@ xingyu-chat/docs/
 
 ## 7. 下一步行动
 
+- **第一批（安全收口）P0 待执行**：S-1 在役模型加 API key（大王手动改 AlloMax 部署参数）→ S-2 节点防火墙白名单 → S-3/S-4 token 治理与接入策略
+- **模型分层授权**：M-1~M-5 方案已定稿（仅 1 处代码改动：星语 OIDC 补 groups claim），与安全收口无依赖，可并行开工
 - **第二批（计费三项）待启动**：4.1 赠金双账户 → 4.2 错峰时间倍率（最简，可插队）→ 4.3 月度赠金刷新。全走 SCPT 库。
 - 并行可选：第三批 OIDC refresh_token grant、用量回流 Webhook
 - **需大王线下推进**：三条子域 DNS 申请、校内收费合规报批
