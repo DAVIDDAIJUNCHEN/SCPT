@@ -1,7 +1,7 @@
 # 川邮·星语 · 全局开发计划（Master Plan）
 
 > **项目定位**：把学校智算中心做成**类 DeepSeek 的一体化 AI 服务**——Chat 对话 + API 开放平台双入口、一个账号两边通用、校内免费配额 + 校外付费
-> **文档版本**：v1.3（2026-09-19，**S3 收尾完成**、进入 S4 计费改造前时点）
+> **文档版本**：v1.4（2026-09-22，**域名切换上线完成 + 4.2 错峰倍率已上线**时点）
 > **维护约定**：每阶段收工/启动时更新本文档的进度看板与阶段索引
 
 ---
@@ -53,7 +53,7 @@
 | **Stage 1** | Portal 主页（StarWhisper 门户，24+ 轮迭代） | 09-16~09-17 | ✅ **收工 8.9 分** | [stage1-portal/README.md](stage1-portal/README.md) |
 | **Stage 2** | Chat 开发（OWUI 部署→账号打通→DeepSeek 化定制） | 09-18 起 | 🟢 **S1/S2 收工，S3 收尾完成（含 S3.6），S4 待启动** | [stage2-chat/README.md](stage2-chat/README.md) |
 | Stage 3 | 能力补全（RAG 知识库、代码沙箱、Anthropic 协议、文件解析增强） | 待排 | ⚪ 未启动 | — |
-| Stage 4 | 商业化（错峰定价、分层配额、计费对账、并发分级、user_id 三重隔离） | 与 S2/S4 交错 | ⚪ 部分体检已做 | — |
+| Stage 4 | 商业化（错峰定价、分层配额、计费对账、并发分级、user_id 三重隔离） | 与 S2/S4 交错 | 🟡 **4.2 错峰倍率+价目表已上线（09-21）**；4.1/4.3 待启动 | — |
 | Stage 5 | 规模化与合规（生成式 AI 备案、算法备案、等保、收费报批、开放注册、B 端） | 6-12 月 | ⚪ 未启动 | — |
 
 ### Stage 2 内部里程碑
@@ -97,18 +97,18 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 | # | 任务 | 要点 |
 |---|---|---|
 | M-1 | 星语侧建用户分组 | `users.Group`（管理后台用户编辑已原生支持选组）→ `abilities` 表按 (group, model, channel) 开模型 → 模型广场 pricing.go 已按 `user.Group` 过滤（零改动） |
-| M-2 | 星语 OIDC userinfo 补 `groups` claim | `controller/oidc_provider.go` OIDCUserinfo 返回值加 `"groups": []string{user.Group}`（唯一代码改动，~3 行） |
+| M-2 | 星语 OIDC userinfo 补 `groups` claim + 会话 cookie 域 | ① `controller/oidc_provider.go` OIDCUserinfo 返回值加 `"groups": []string{user.Group}`（唯一代码改动，~3 行）② **星语会话 cookie 加 `Domain=.sptc.edu.cn`**（域名切换后新增子项：ai-chat 与 ai-platform 跨站 cookie 不通 → S3.7 OIDC 预检与 B2 双向登出被迫禁用，加 cookie Domain 后恢复，nginx 配置已留恢复位置） |
 | M-3 | OWUI 开启 OIDC 组映射 | `ENABLE_OAUTH_GROUP_MANAGEMENT=true` + `OAUTH_GROUPS_CLAIM=groups`（OWUI 原生支持，utils/oauth.py update_user_groups 自动进组/退组）；建对应层级组，per-group `access_grants` 开模型（现白名单机制已验证过该表） |
 | M-4 | svc-chat 服务账号归组 | OWUI 调星语的服务 token 归入对应组，使 Chat 可用模型 = 该层级 API 可用模型 |
 | M-5 | 分层定价联动（可选） | `GroupRatio` 按组差异化倍率（如 partner 组 1.2x），原生支持无需开发 |
 
 **第二批 · 计费三项（阶段 4 的地基，可立即开工）**
 
-| # | 任务 | 要点 |
-|---|---|---|
-| 4.1 | 赠金/充值双账户 | `users.GrantedQuota` 拆两个账本，扣减有先后（先赠金后充值），赠金设有效期 |
-| 4.2 | 错峰时间倍率 | `setting/ratio_setting/time_ratio.go`（新文件），计费最后一步乘时段系数 → 引导免费 Chat 流量到低谷 |
-| 4.3 | Chat 月度赠金自动刷新 | 按自然月重置 svc-chat 额度，替代人工批配额。**依赖 4.1 先落地** |
+| # | 任务 | 要点 | 状态 |
+|---|---|---|---|
+| 4.1 | 赠金/充值双账户 | `users.GrantedQuota` 拆两个账本，扣减有先后（先赠金后充值），赠金设有效期 | ⚪ 待启动 |
+| 4.2 | 错峰时间倍率 | `setting/ratio_setting/time_ratio.go`，计费最后一步乘时段系数 → 引导免费 Chat 流量到低谷 | ✅ **已上线 09-21**（4.2 倍率 + 官方价目表 + 定价页；上线脚本 `xingyu_model_pricing_pg.sh` + `xingyu_time_ratio_setup.sh`） |
+| 4.3 | Chat 月度赠金自动刷新 | 按自然月重置 svc-chat 额度，替代人工批配额。**依赖 4.1 先落地** | ⚪ 待启动 |
 
 **第三批 · 账号续期与用量对账**
 
@@ -124,17 +124,20 @@ S1 基础部署 ✅ 09-18 ──→ S2 账号打通 ✅ 09-18 ──→ S3 定�
 | 接口限流（用户级/模型级） | 现仅登录接口有 CriticalRateLimit（已调 200）；正式 API 调用缺细粒度限流，单用户可打满算力 |
 | **外部拨测** | 🔴 **当前监控最大盲区**：healthcheck.sh 在 VPS 本机跑，发现不了「容器活着但服务假死」及网络层不可达 |
 
-**域名到位后 · 六步切换清单（预估 0.5 天）**
+**域名切换 · 六步清单（✅ 2026-09-22 全部完成，仅校内 DNS 生效）**
 
-① 证书重签含三子域 SAN → ② nginx server_name 切换 → ③ options 表 ServerAddress 改域名 → ④ OWUI 的 `OPENID_END_SESSION_ENDPOINT` / OAuth 端点改域名 → ⑤ OIDC redirect_uri 与 post_logout 白名单改域名 → ⑥ 退出 cloudflared quick tunnel
-> ⚠️ 阻塞于线下：`ai` / `ai-chat` / `ai-platform.scpt.edu.cn` 三条子域 DNS 申请 + 正式证书
+① ~~证书重签含三子域 SAN~~ ✅（自签 825 天，SAN=IP+ai/ai-platform/ai-chat/ai-docs.sptc.edu.cn，至 2028-12-25）→ ② ~~nginx server_name 切换~~ ✅（四房间 SNI 分流 + IP default_server 兜底双轨 + 8443→301 ai-chat；307 无 /v1 兼容层仅配 ai-platform 块）→ ③ ~~options 表 ServerAddress 改域名~~ ✅ → ④ ~~OWUI 端点改域名~~ ✅（compose env 九处 + **webui.db config 表 5 处**，DB 优先铁律）→ ⑤ ~~OIDC redirect_uri 白名单改域名~~ ✅（双轨：IP:8443 + ai-chat 域名 callback 并存）→ ⑥ cloudflared quick tunnel 退出（待确认）
+>
+> **✅ 已上线内容**：DNS 由图情中心绑定四条 A 记录 → 10.255.12.210；`sptc.edu.cn` 公网泛解析到 CDN → **仅校内 DNS 可解析**（VPS 侧两 compose 加 `extra_hosts` 四域名静态映射修复容器解析）；系统体检 16 项全过（含域名下真实 chat 调用）。**遗留**：S3.7 OIDC 预检 + B2 双向登出禁用中（跨站 cookie 不通，待 M-2 cookie Domain），nginx 配置已留恢复位置注释。
+>
+> **⚠️ 注意**：学校域名是 `sptc.edu.cn`（非 scpt）。正式 CA 阶段可替换自签证书。
 
 **P2 收尾 · 打磨与加固**
 
 | 项 | 要点 |
 |---|---|
 | OIDC 错误码规范化 | 拒绝授权的文案与错误码归一 |
-| `SESSION_COOKIE_SECURE=true` | 现为 false（自签 IP + http 兼容）。**切域名 + 正式证书后必须开** |
+| `SESSION_COOKIE_SECURE=true` | 现为 false（自签 IP + http 兼容）。**切域名 + 正式证书后必须开**（域名切换已完成 09-22，待正式 CA 后一并开） |
 | 模型精细授权 | per-user / per-group 替代当前「4 模型粗粒度白名单」→ **已升级为第一批 M-1~M-5 完整方案（2026-09-22），见 §5.1** |
 | ~~Portal 遗留 5 项~~ | ✅ **2026-09-19 全部完成**（S3.6）。rAF visibilitychange / og 标签 / 公告死链 / skip-link+noscript / base64 外置 —— 详见 §5.3 |
 
@@ -311,10 +314,11 @@ xingyu-chat/docs/
 ## 7. 下一步行动
 
 - **第一批（安全收口）P0 待执行**：S-1 在役模型加 API key（大王手动改 AlloMax 部署参数）→ S-2 节点防火墙白名单 → S-3/S-4 token 治理与接入策略
-- **模型分层授权**：M-1~M-5 方案已定稿（仅 1 处代码改动：星语 OIDC 补 groups claim），与安全收口无依赖，可并行开工
-- **第二批（计费三项）待启动**：4.1 赠金双账户 → 4.2 错峰时间倍率（最简，可插队）→ 4.3 月度赠金刷新。全走 SCPT 库。
+- **模型分层授权 M-1~M-5**：方案已定稿，唯一代码改动 = M-2（OIDC groups claim + 会话 cookie Domain），做完即恢复 ai-chat 的 OIDC 预检与双向登出。与安全收口无依赖，可并行开工
+- **第二批（计费三项）**：✅ 4.2 已上线；剩 4.1 赠金双账户 → 4.3 月度赠金刷新。全走 SCPT 库
+- **域名切换已收官（09-22）**：遗留仅「cloudflared quick tunnel 退出确认」与「正式 CA 后开 SESSION_COOKIE_SECURE + 替换自签证书」
 - 并行可选：第三批 OIDC refresh_token grant、用量回流 Webhook
-- **需大王线下推进**：三条子域 DNS 申请、校内收费合规报批
+- **需大王线下推进**：校内收费合规报批；正式证书走学校 CA（DNS-01/HTTP-01 均不可行）
 - **待确认**：SSRF 白名单是否收窄到 `10.32.1.3/32`（见 §5.1 技术债）
 
 ### 盘点方法论（2026-09-19 沉淀）
