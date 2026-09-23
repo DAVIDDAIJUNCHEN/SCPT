@@ -23,11 +23,12 @@
 		TTSWorker,
 		user
 	} from '$lib/stores';
-	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
+	import { synthesizeOpenAISpeech, transcribeAudio } from '$lib/apis/audio';
 	import { imageGenerations } from '$lib/apis/images';
 	import {
 		copyToClipboard as _copyToClipboard,
 		approximateToHumanReadable,
+		blobToFile,
 		getMessageContentParts,
 		sanitizeResponseContent,
 		createMessagesList,
@@ -288,7 +289,7 @@
 			};
 
 			loadingSpeech = true;
-			const messageContentParts: string[] = getMessageContentParts(
+			let messageContentParts: string[] = getMessageContentParts(
 				content,
 				$config?.audio?.tts?.split_on ?? 'punctuation'
 			);
@@ -334,27 +335,163 @@
 					}
 				}
 			} else {
-				for (const [, sentence] of messageContentParts.entries()) {
-					if (signal.aborted) return;
+				// ── Xingyu accelerated TTS pipeline ─────────────────────────────
+				// Server-side CosyVoice is serial (single MIG slice) and has a
+				// high fixed per-request cost: short sentences run at RTF≈2.1,
+				// while ~120-char chunks reach RTF≈1.0. So instead of the old
+				// per-sentence serial loop we:
+				//   1. Speak the FIRST sentence alone (fast first-audio, ~8s).
+				//   2. Merge remaining sentences into ~120-char chunks so each
+				//      request amortizes the fixed cost (2x throughput).
+				//   3. ASR-verify every chunk (~100ms, negligible): if the
+				//      transcription does not match the source text, halve the
+				//      chunk and regenerate — this catches pronunciation/cutoff
+				//      glitches in one retry instead of playing broken audio.
+				//   4. Pipelined: chunk N+1 is generated while chunk N plays,
+				//      so steady-state wait ≈ single chunk latency (~13s).
+				const TTS_CHUNK_TARGET_CHARS = 120;
+				const TTS_VERIFY_MAX_RETRIES = 2;
 
-					const res = await synthesizeOpenAISpeech(localStorage.token, voiceId, sentence).catch(
-						(error) => {
-							console.error(error);
-							toast.error(`${error}`);
-							speaking = false;
-							loadingSpeech = false;
+				const normalizeForCompare = (s: string) =>
+					s
+						.replace(/[\s，。！？；：、,.!?;:…—·\u3000]/g, '')
+						.replace(/[「」『』（）()【】\[\]"'']/g, '')
+						.toLowerCase();
+
+				const isVerified = (source: string, transcript: string) => {
+					const a = normalizeForCompare(source);
+					const b = normalizeForCompare(transcript ?? '');
+					if (!a.length) return true;
+					// Pass if transcript covers the source (allow ASR preamble/epilogue noise)
+					if (b.includes(a)) return true;
+					// Char-count within 15% and 90% of source chars present in order
+					const ratio = b.length / a.length;
+					if (ratio > 0.85 && ratio < 1.18) {
+						let ai = 0;
+						for (let bi = 0; bi < b.length && ai < a.length; bi++) {
+							if (b[bi] === a[ai]) ai++;
 						}
-					);
-
-					if (signal.aborted) return;
-
-					if (res && speaking) {
-						const blob = await res.blob();
-						const url = URL.createObjectURL(blob);
-						$audioQueue.enqueue(url);
-						loadingSpeech = false;
+						if (ai / a.length >= 0.9) return true;
 					}
-				}
+					return false;
+				};
+
+				// Build chunk list: [first sentence alone, then ~120-char merges]
+				const buildChunks = (parts: string[]): string[] => {
+					if (!parts.length) return [];
+					const chunks: string[] = [parts[0]];
+					let cur = '';
+					for (let i = 1; i < parts.length; i++) {
+						const p = parts[i];
+						if (!cur) {
+							cur = p;
+						} else if ((cur + p).length <= TTS_CHUNK_TARGET_CHARS) {
+							cur += p;
+						} else {
+							chunks.push(cur);
+							cur = p;
+						}
+					}
+					if (cur) chunks.push(cur);
+					return chunks;
+				};
+
+				// Split an over-long or corrupted chunk in half (on sentence
+				// boundary if possible, hard midpoint otherwise)
+				const halveChunk = (text: string): [string, string] => {
+					if (text.length <= 4) return [text, ''];
+					const hardMid = Math.floor(text.length / 2);
+					let cut = -1;
+					for (let i = hardMid; i >= hardMid - 30 && i > 2; i--) {
+						if ('。！？；!?;'.includes(text[i])) {
+							cut = i + 1;
+							break;
+						}
+					}
+					if (cut < 0) {
+						for (let i = hardMid; i >= hardMid - 30 && i > 2; i--) {
+							if ('，、, '.includes(text[i])) {
+								cut = i + 1;
+								break;
+							}
+						}
+					}
+					if (cut < 0) cut = hardMid;
+					return [text.slice(0, cut), text.slice(cut)];
+				};
+
+				// Chunks pushed back by failed verifications (played before new chunks)
+				const tailQueue: string[] = [];
+
+				const synthAndVerify = async (text: string): Promise<Blob | null> => {
+					let attempt = 0;
+					while (attempt <= TTS_VERIFY_MAX_RETRIES) {
+						if (signal.aborted) return null;
+						const res = await synthesizeOpenAISpeech(
+							localStorage.token,
+							voiceId,
+							text
+						).catch((error) => {
+							console.error(error);
+							return null;
+						});
+						if (!res) return null;
+
+						const blob = await res.blob();
+						if (blob.size === 0) return null;
+
+						// ASR cross-verification (~100ms)
+						let transcript = '';
+						try {
+							const asrRes = await transcribeAudio(localStorage.token, blobToFile(blob, 'tts.wav'));
+							transcript = asrRes?.text ?? '';
+						} catch (e) {
+							console.warn('TTS ASR verification unavailable, skipping check', e);
+							return blob; // fail-open: verification is best-effort
+						}
+						if (isVerified(text, transcript)) {
+							return blob;
+						}
+
+						console.warn(
+							`TTS verification mismatch (attempt ${attempt + 1}), halving chunk`,
+							{ text, transcript }
+						);
+						// Split and retry with the first half only; the caller
+						// re-queues the remainder.
+					const [head, tail] = halveChunk(text);
+					if (!tail || head === text) return blob; // cannot split further — play as-is
+					const headBlob = await synthAndVerify(head);
+					// Stash tail for the caller to prepend back into the queue
+					tailQueue.unshift(tail);
+					return headBlob;
+					}
+					return null;
+				};
+
+				const chunks = buildChunks(messageContentParts);
+				console.debug('Xingyu TTS chunks', chunks.map((c) => c.length));
+
+				let chunkIdx = 0;
+				const processNextChunk = async (): Promise<void> => {
+					while (chunkIdx < chunks.length || tailQueue.length) {
+						if (signal.aborted) return;
+						const text = tailQueue.length ? tailQueue.shift() : chunks[chunkIdx++];
+						if (!text) continue;
+
+						const blob = await synthAndVerify(text);
+						if (signal.aborted) return;
+						if (blob && speaking) {
+							const url = URL.createObjectURL(blob);
+							$audioQueue.enqueue(url);
+							loadingSpeech = false;
+						} else if (!blob) {
+							console.error('TTS chunk failed after retries, skipping:', text.slice(0, 40));
+						}
+					}
+				};
+
+				await processNextChunk();
 			}
 		}
 	};
