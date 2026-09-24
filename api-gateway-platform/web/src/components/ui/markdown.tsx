@@ -605,6 +605,44 @@ function renderSequenceDiagram(source: string): string {
 const markdownRenderer = new Renderer()
 const renderDefaultCode = markdownRenderer.code.bind(markdownRenderer)
 
+const headingSlugCache = new Map<string, string>()
+
+function slugifyHeading(text: string): string {
+  const cached = headingSlugCache.get(text)
+
+  if (cached) {
+    return cached
+  }
+
+  const baseSlug = text
+    .toLowerCase()
+    .trim()
+    .replace(/[\s*_`~\[\]()#]+/g, '-')
+    .replace(/[，。、；：？！“”‘’（）【】《》…—·]/g, '')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-')
+  const slug = baseSlug || 'section'
+
+  headingSlugCache.set(text, slug)
+
+  return slug
+}
+
+// 标题锚点：为 h1-h6 注入 id，供页内/跨页 #锚点 跳转。
+// 注意：marked 的 use() 会把 renderer 包装到新实例上，parser 只挂在
+// 实际调用的 receiver 上——默认 heading 依赖 this.parser.parseInline，
+// 因此必须用普通函数 + prototype 借用 this，不能用 bind（会丢 this.parser）。
+markdownRenderer.heading = function headingWithAnchor(
+  this: Renderer,
+  token: Tokens.Heading
+): string {
+  const inner = token.text || token.raw || ''
+  const html = Renderer.prototype.heading.call(this, token)
+  const id = slugifyHeading(inner)
+
+  return html.replace(/^<h([1-6])/, `<h$1 id="${id}" data-heading`)
+}
+
 markdownRenderer.code = (token: Tokens.Code): string => {
   const language = token.lang?.toLowerCase()
 
@@ -727,6 +765,13 @@ function addExternalLinkAttributes(html: string): string {
   template.innerHTML = html
 
   template.content.querySelectorAll('a[href]').forEach((link) => {
+    const href = link.getAttribute('href') ?? ''
+
+    // 站内链接（/docs 等）走前端路由，不新开标签页
+    if (href.startsWith('/') || href.startsWith('#')) {
+      return
+    }
+
     link.setAttribute('target', '_blank')
     link.setAttribute('rel', 'noopener noreferrer')
   })

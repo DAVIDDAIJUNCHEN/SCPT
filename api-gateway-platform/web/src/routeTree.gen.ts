@@ -30,6 +30,7 @@ import { Route as AuthenticatedChat2linkRouteImport } from './routes/_authentica
 import { Route as AuthenticatedSystemSettingsRouteRouteImport } from './routes/_authenticated/system-settings/route'
 import { Route as AboutIndexRouteImport } from './routes/about/index'
 import { Route as DocsIndexRouteImport } from './routes/docs/index'
+import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
 import { Route as OauthProviderRouteImport } from './routes/oauth/$provider'
 import { Route as OidcAuthorizeRouteImport } from './routes/oidc/authorize'
 import { Route as PricingIndexRouteImport } from './routes/pricing/index'
@@ -175,6 +176,11 @@ const AboutIndexRoute = AboutIndexRouteImport.update({
 const DocsIndexRoute = DocsIndexRouteImport.update({
   id: '/docs/',
   path: '/docs/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocsSlugRoute = DocsSlugRouteImport.update({
+  id: '/docs/$slug',
+  path: '/docs/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OauthProviderRoute = OauthProviderRouteImport.update({
@@ -438,6 +444,7 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/chat2link': typeof AuthenticatedChat2linkRoute
+  '/docs/$slug': typeof DocsSlugRoute
   '/oauth/$provider': typeof OauthProviderRoute
   '/oidc/authorize': typeof OidcAuthorizeRoute
   '/about/': typeof AboutIndexRoute
@@ -500,6 +507,7 @@ export interface FileRoutesByTo {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/chat2link': typeof AuthenticatedChat2linkRoute
+  '/docs/$slug': typeof DocsSlugRoute
   '/oauth/$provider': typeof OauthProviderRoute
   '/oidc/authorize': typeof OidcAuthorizeRoute
   '/about': typeof AboutIndexRoute
@@ -566,6 +574,7 @@ export interface FileRoutesById {
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
   '/_authenticated/chat2link': typeof AuthenticatedChat2linkRoute
+  '/docs/$slug': typeof DocsSlugRoute
   '/oauth/$provider': typeof OauthProviderRoute
   '/oidc/authorize': typeof OidcAuthorizeRoute
   '/about/': typeof AboutIndexRoute
@@ -631,6 +640,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/chat2link'
+    | '/docs/$slug'
     | '/oauth/$provider'
     | '/oidc/authorize'
     | '/about/'
@@ -693,6 +703,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/chat2link'
+    | '/docs/$slug'
     | '/oauth/$provider'
     | '/oidc/authorize'
     | '/about'
@@ -758,6 +769,7 @@ export interface FileRouteTypes {
     | '/(errors)/500'
     | '/(errors)/503'
     | '/_authenticated/chat2link'
+    | '/docs/$slug'
     | '/oauth/$provider'
     | '/oidc/authorize'
     | '/about/'
@@ -815,6 +827,7 @@ export interface RootRouteChildren {
   errors404Route: typeof errors404Route
   errors500Route: typeof errors500Route
   errors503Route: typeof errors503Route
+  DocsSlugRoute: typeof DocsSlugRoute
   OauthProviderRoute: typeof OauthProviderRoute
   OidcAuthorizeRoute: typeof OidcAuthorizeRoute
   AboutIndexRoute: typeof AboutIndexRoute
@@ -972,6 +985,13 @@ declare module '@tanstack/react-router' {
       path: '/docs'
       fullPath: '/docs/'
       preLoaderRoute: typeof DocsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/docs/$slug': {
+      id: '/docs/$slug'
+      path: '/docs/$slug'
+      fullPath: '/docs/$slug'
+      preLoaderRoute: typeof DocsSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/oauth/$provider': {
@@ -1420,6 +1440,7 @@ const rootRouteChildren: RootRouteChildren = {
   errors404Route: errors404Route,
   errors500Route: errors500Route,
   errors503Route: errors503Route,
+  DocsSlugRoute: DocsSlugRoute,
   OauthProviderRoute: OauthProviderRoute,
   OidcAuthorizeRoute: OidcAuthorizeRoute,
   AboutIndexRoute: AboutIndexRoute,

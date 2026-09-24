@@ -21,3 +21,9 @@ For commercial licensing, please contact support@quantumnous.com
 declare module '@visactor/react-vchart' {
   export const VChart: React.ComponentType<Record<string, unknown>>
 }
+
+// /docs 文档站：md 内容以原文字符串导入（rsbuild asset/source 规则）
+declare module '*.md' {
+  const content: string
+  export default content
+}

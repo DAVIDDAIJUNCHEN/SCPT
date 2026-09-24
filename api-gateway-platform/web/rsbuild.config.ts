@@ -1,20 +1,22 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { defineConfig, loadEnv } from '@rsbuild/core'
-import { Compilation, sources } from '@rspack/core'
+import { defineConfig, loadEnv, type ConfigParams, type RsbuildConfig } from '@rsbuild/core'
+import { Compilation, Compiler, sources } from '@rspack/core'
 import { pluginReact } from '@rsbuild/plugin-react'
 import { pluginTailwindcss } from '@rsbuild/plugin-tailwindcss'
 import { tanstackRouter } from '@tanstack/router-plugin/rspack'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export default defineConfig(({ envMode }) => {
+export default defineConfig(({ envMode }: ConfigParams): RsbuildConfig => {
   const env = loadEnv({ mode: envMode, prefixes: ['VITE_'] })
   const serverUrl =
     process.env.VITE_REACT_APP_SERVER_URL ||
     env.rawPublicVars.VITE_REACT_APP_SERVER_URL ||
-    'http://localhost:3000'
+    // 川邮·星语本地开发：后端为 OrbStack 内 starx-local-gw（生产版网关，
+    // 占 127.0.0.1:3001）；3000 常被残留 dev 进程/其他服务占用，勿回退到 3000
+    'http://127.0.0.1:3001'
 
   const isProd = envMode === 'production'
   const devProxy = Object.fromEntries(
@@ -90,9 +92,9 @@ export default defineConfig(({ envMode }) => {
       // 与模板里已有的 favicon-round.png 声明并存 → 页面上两个 rel="icon"，
       // 浏览器两个都请求，实测 /favicon.ico 在 930/966ms 各请求一次、36KB。
       //
-      // 注意：favicon 配置项与删除 public/favicon.ico 均**无效**（已实测），
-      // 该注入不受配置控制。因此改用下面的 html.tags 后处理钩子移除。
-      favicon: false,
+      // 注意：html.favicon 配置项类型只接受 string（无 false 开关）且实测
+      // 无法关闭注入、删除 public/favicon.ico 也无效（已实测），该注入不受
+      // 配置控制。因此改用下面的 html.tags 后处理钩子移除。
     },
     server: {
       host: '0.0.0.0',
@@ -117,6 +119,16 @@ export default defineConfig(({ envMode }) => {
     },
     tools: {
       rspack: {
+        // 川邮·星语（2026-09-23）：/docs 文档站 13 页 Markdown 以原文内联。
+        // RSPack 无 Vite 的 ?raw 语法，用 asset/source 把 .md 直接作为字符串模块导入。
+        module: {
+          rules: [
+            {
+              test: /\.md$/i,
+              type: 'asset/source',
+            },
+          ],
+        },
         plugins: [
           tanstackRouter({
             target: 'react',
@@ -137,25 +149,7 @@ export default defineConfig(({ envMode }) => {
            * 不会误伤模板里的 `<link rel="icon" type="image/png" ...>`。
            */
           {
-            apply(compiler: {
-              hooks: {
-                thisCompilation: {
-                  tap: (
-                    name: string,
-                    cb: (compilation: {
-                      hooks: {
-                        processAssets: {
-                          tap: (
-                            opts: { name: string; stage: number },
-                            cb: () => void
-                          ) => void
-                        }
-                      }
-                    }) => void
-                  ) => void
-                }
-              }
-            }) {
+            apply(compiler: Compiler) {
               compiler.hooks.thisCompilation.tap(
                 'XingyuStripRedundantFavicon',
                 (compilation) => {

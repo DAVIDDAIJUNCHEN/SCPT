@@ -23,7 +23,9 @@ services:
     container_name: new-api-dev
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # 宿主 3999：避开 starx-local-gw（生产版网关，占 127.0.0.1:3001）
+      # 及历史 dev 环境残留进程对 3000 的占用
+      - "3999:3000"
     volumes:
       - dev_data:/data
     environment:

@@ -165,22 +165,24 @@ export function Footer(props: FooterProps) {
   const isDemoSiteMode = Boolean(demoSiteEnabled)
   const currentYear = new Date().getFullYear()
 
+  // 川邮·星语（2026-09-24）：footer 链接指向站内 /docs 文档站（T8 上线），
+  // 不再外链 docs.newapi.pro。站内相对路径由 FooterLinkItem 走内部 Link。
   const fallbackColumns = useMemo<FooterColumnProps[]>(
     () => [
       {
-        title: t('footer.columns.about.title'),
+        title: t('footer.columns.quickstart.title'),
         links: [
           {
-            text: t('footer.columns.about.links.aboutProject'),
-            href: 'https://docs.newapi.pro/wiki/project-introduction/',
+            text: t('footer.columns.quickstart.links.quickstart'),
+            href: '/docs/quickstart',
           },
           {
-            text: t('footer.columns.about.links.contact'),
-            href: 'https://docs.newapi.pro/support/community-interaction/',
+            text: t('footer.columns.quickstart.links.firstCall'),
+            href: '/docs/first-call',
           },
           {
-            text: t('footer.columns.about.links.features'),
-            href: 'https://docs.newapi.pro/wiki/features-introduction/',
+            text: t('footer.columns.quickstart.links.models'),
+            href: '/docs/models',
           },
         ],
       },
@@ -188,16 +190,16 @@ export function Footer(props: FooterProps) {
         title: t('footer.columns.docs.title'),
         links: [
           {
-            text: t('footer.columns.docs.links.quickStart'),
-            href: 'https://docs.newapi.pro/getting-started/',
+            text: t('footer.columns.docs.links.streaming'),
+            href: '/docs/streaming',
           },
           {
-            text: t('footer.columns.docs.links.installation'),
-            href: 'https://docs.newapi.pro/installation/',
+            text: t('footer.columns.docs.links.errors'),
+            href: '/docs/errors',
           },
           {
-            text: t('footer.columns.docs.links.apiDocs'),
-            href: 'https://docs.newapi.pro/api/',
+            text: t('footer.columns.docs.links.faq'),
+            href: '/docs/faq',
           },
         ],
       },
