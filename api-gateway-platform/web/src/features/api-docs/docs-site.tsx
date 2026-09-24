@@ -36,6 +36,7 @@ import {
   rewriteInternalLinks,
   type DocEntry,
 } from './content/registry'
+import { DocsSearchBox } from './docs-search'
 
 const BASE_URL = `${resolveServerAddress()}/v1`
 
@@ -287,6 +288,10 @@ export function DocsLanding() {
           </div>
         </div>
 
+        <div className='mx-auto mb-6 max-w-xl'>
+          <DocsSearchBox />
+        </div>
+
         <BaseUrlCard />
 
         <div className='grid gap-4 sm:grid-cols-2'>
@@ -345,6 +350,25 @@ export function DocsPage({ slug }: { slug: string }) {
     document.title = entry ? `${entry.title} · 川邮·星语文档` : '川邮·星语 API 文档'
   }, [entry])
 
+  // URL hash 定位（搜索结果跳转 / 分享链接）：等内容渲染后滚动到目标标题
+  useEffect(() => {
+    const hash = decodeURIComponent(window.location.hash.slice(1))
+    if (!hash) {
+      return
+    }
+    let attempts = 0
+    const tryScroll = () => {
+      const el = document.getElementById(hash)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' })
+      } else if (attempts < 16) {
+        attempts += 1
+        setTimeout(tryScroll, 120)
+      }
+    }
+    tryScroll()
+  }, [slug])
+
   if (!entry) {
     return <DocsLanding />
   }
@@ -354,12 +378,18 @@ export function DocsPage({ slug }: { slug: string }) {
       <div className='mx-auto flex w-full max-w-[1400px] gap-8 px-4 py-8 sm:px-6'>
         {/* 左侧目录（桌面端） */}
         <aside className='sticky top-20 hidden h-[calc(100vh-6rem)] w-60 shrink-0 overflow-y-auto lg:block'>
+          <div className='mb-4'>
+            <DocsSearchBox />
+          </div>
           <SidebarNav activeSlug={slug} />
         </aside>
 
         {/* 右侧内容 */}
         <main className='min-w-0 flex-1'>
           {/* 移动端分册切换条（lg 以下显示，横向滑动） */}
+          <div className='mb-4 lg:hidden'>
+            <DocsSearchBox />
+          </div>
           <div className='-mx-4 mb-6 overflow-x-auto px-4 pb-2 lg:hidden'>
             <div className='flex gap-2'>
               {DOC_FLATLIST.map((e) => (

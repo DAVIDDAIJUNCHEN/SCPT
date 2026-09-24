@@ -607,7 +607,8 @@ const renderDefaultCode = markdownRenderer.code.bind(markdownRenderer)
 
 const headingSlugCache = new Map<string, string>()
 
-function slugifyHeading(text: string): string {
+/** 标题 → 锚点 id（供文档搜索等外部消费方复用，保证与渲染 id 一致） */
+export function slugifyHeading(text: string): string {
   const cached = headingSlugCache.get(text)
 
   if (cached) {
