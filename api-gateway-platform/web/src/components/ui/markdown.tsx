@@ -619,6 +619,8 @@ function slugifyHeading(text: string): string {
     .trim()
     .replace(/[\s*_`~\[\]()#]+/g, '-')
     .replace(/[，。、；：？！“”‘’（）【】《》…—·]/g, '')
+    // 剥除 emoji（✅🔴 等），否则标题含 emoji 时生成的 id 与手写锚点对不上
+    .replace(/\p{Extended_Pictographic}/gu, '')
     .replace(/^-+|-+$/g, '')
     .replace(/-+/g, '-')
   const slug = baseSlug || 'section'
