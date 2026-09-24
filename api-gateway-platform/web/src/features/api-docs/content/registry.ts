@@ -97,9 +97,9 @@ const ENTRIES: DocEntry[] = [
   },
   {
     slug: 'vision',
-    title: '视觉理解（VL）',
+    title: '视觉与图像生成',
     group: 'dev',
-    description: 'Qwen3-VL 图片理解调用（base64 / URL）。',
+    description: 'Qwen3-VL 图片理解 + FLUX.2 文生图调用样例。',
     raw: vision,
   },
   {

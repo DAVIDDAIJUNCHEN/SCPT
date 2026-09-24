@@ -34,62 +34,62 @@
 
 ## 第三步：发出第一个请求
 
-=== "curl"
+三语言任选其一（均已实测通过，2026-09-23）：
 
-    ```bash
-    curl -k https://ai-platform.sptc.edu.cn/v1/chat/completions \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer ${你的令牌}" \
-      -d '{
-            "model": "DeepSeek-V4.1-Flash",
-            "messages": [
-              {"role": "user", "content": "你好，请用一句话介绍你自己"}
-            ]
-          }'
-    ```
+### curl
 
-    > 此样例 2026-09-23 实测返回 HTTP 200。
+```bash
+curl -k https://ai-platform.sptc.edu.cn/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${你的令牌}" \
+  -d '{
+        "model": "DeepSeek-V4.1-Flash",
+        "messages": [
+          {"role": "user", "content": "你好，请用一句话介绍你自己"}
+        ]
+      }'
+```
 
-=== "Python"
+### Python
 
-    ```python
-    # pip install openai httpx
-    import httpx
-    from openai import OpenAI
+```python
+# pip install openai httpx
+import httpx
+from openai import OpenAI
 
-    client = OpenAI(
-        base_url="https://ai-platform.sptc.edu.cn/v1",
-        api_key="sk-你的令牌",
-        http_client=httpx.Client(verify=False),  # 校园自签证书
-    )
+client = OpenAI(
+    base_url="https://ai-platform.sptc.edu.cn/v1",
+    api_key="sk-你的令牌",
+    http_client=httpx.Client(verify=False),  # 校园自签证书
+)
 
-    resp = client.chat.completions.create(
-        model="DeepSeek-V4.1-Flash",
-        messages=[{"role": "user", "content": "你好，请用一句话介绍你自己"}],
-    )
-    print(resp.choices[0].message.content)
-    ```
+resp = client.chat.completions.create(
+    model="DeepSeek-V4.1-Flash",
+    messages=[{"role": "user", "content": "你好，请用一句话介绍你自己"}],
+)
+print(resp.choices[0].message.content)
+```
 
-=== "Node.js"
+### Node.js
 
-    ```js
-    // npm install openai
-    // 启动前: export NODE_EXTRA_CA_CERTS=/path/to/scpt-gateway.crt
-    import OpenAI from "openai";
+```js
+// npm install openai
+// 启动前: export NODE_EXTRA_CA_CERTS=/path/to/scpt-gateway.crt
+import OpenAI from "openai";
 
-    const client = new OpenAI({
-      baseURL: "https://ai-platform.sptc.edu.cn/v1",
-      apiKey: "sk-你的令牌",
-    });
+const client = new OpenAI({
+  baseURL: "https://ai-platform.sptc.edu.cn/v1",
+  apiKey: "sk-你的令牌",
+});
 
-    const resp = await client.chat.completions.create({
-      model: "DeepSeek-V4.1-Flash",
-      messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
-    });
-    console.log(resp.choices[0].message.content);
-    ```
+const resp = await client.chat.completions.create({
+  model: "DeepSeek-V4.1-Flash",
+  messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
+});
+console.log(resp.choices[0].message.content);
+```
 
-**流式输出**：在请求中加 `"stream": true` 即可（Python SDK 传 `stream=True`），逐字返回。详细用法见功能页（编写中）。
+**流式输出**：在请求中加 `"stream": true` 即可（Python SDK 传 `stream=True`），逐字返回。详细用法见 [02-4 流式输出](02-4-流式输出.md)。
 
 ---
 

@@ -40,9 +40,15 @@ data: [DONE]
 ## Python SDK 流式
 
 ```python
+# pip install openai httpx
+import httpx
 from openai import OpenAI
 
-client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.cn/v1", verify=False)
+client = OpenAI(
+    api_key="YOUR_API_KEY",
+    base_url="https://ai-platform.sptc.edu.cn/v1",
+    http_client=httpx.Client(verify=False),  # 校园自签证书
+)
 
 stream = client.chat.completions.create(
     model="DeepSeek-V4.1-Flash",
@@ -54,14 +60,10 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
-> 注：OpenAI SDK 不支持 `verify=False` 参数；校园自签证书场景请见 [02-0 首次调用](02-0-首次调用API.md) 的证书挂法。
+> 证书挂法详情见 [02-0 首次调用](02-0-首次调用API.md) 第二步。
 
 ## 与思考模式的配合
 
 - **DeepSeek-V4.1-Flash**：默认非思考模式，`delta.reasoning_content` 为 null【实测】
 - **Qwen3.8-Flash-Next**：always-thinking，思考过程通过 `delta.reasoning_content` 先于正文流出
 - GLM-5.3（vip）：思考型，行为同上
-
----
-
-上一页：[02-4 1M 长上下文](02-4-1M长上下文.md) ｜ 下一页：[02-6 多模态视觉理解](02-6-多模态视觉理解.md)

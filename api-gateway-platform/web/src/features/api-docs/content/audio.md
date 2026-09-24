@@ -9,7 +9,7 @@
 | 语音合成 | **cosyvoice-v3** | `POST /v1/audio/speech` | 文本→语音（wav） |
 | 语音识别 | **Qwen3-ASR-1.7B** | `POST /v1/audio/transcriptions` | 音频→文本 |
 | 音频理解 | **Qwen2-Audio-7B-Instruct** | `POST /v1/chat/completions` | 可对音频内容问答 |
-| 文档解析 | **MinerU2.5-2509-1.2B** | `POST /v1/chat/completions` | PDF/图片→结构化 Markdown |
+| 文档解析 | **MinerU2.5-2509-1.2B** | `POST /v1/chat/completions` | 接入联调中，暂不稳定（见下文） |
 
 ## TTS 语音合成（cosyvoice-v3）
 
@@ -57,7 +57,16 @@ multipart 文件上传，音频文件直接附在 `file` 字段。适合课堂�
 
 ## 文档解析（MinerU2.5）
 
-PDF / 扫描件 → 结构化 Markdown，返回字段 `md_content`。适合课件 PDF 转可检索文本。注意：MinerU 与 LLM 协议不同，调用方式以平台文档页为准（本页仅列清单，不做详细样例）。
+> **状态交底**【实测 2026-09-24】：MinerU 正在接入联调中，当前经网关调用图片/文档解析**返回结果不稳定**，暂不建议在课程场景使用。
+
+当前替代方案：
+
+| 需求 | 推荐替代 |
+|---|---|
+| 图片文字提取（板书/作业照片） | **Qwen3-VL**（[视觉理解](02-6-多模态视觉理解.md)，OCR 能力实测稳定） |
+| PDF 长文阅读 | 复制文本后用 **DS-V4.1-Flash**（1M 长上下文） |
+
+MinerU 联调完成后本页将补充完整调用样例，可联系智算中心了解进度。
 
 ## 场景搭配建议
 
@@ -66,8 +75,4 @@ PDF / 扫描件 → 结构化 Markdown，返回字段 `md_content`。适合课�
 | 课件配音 | TTS（cosyvoice-v3） |
 | 课堂录音纪要 | ASR（Qwen3-ASR）→ LLM 总结（DS-V4.1-Flash 1M 长文） |
 | 英语听说训练 | ASR 识别学生语音 + LLM 评分反馈 + TTS 示范朗读 |
-| 试卷/作业照片批量处理 | VL（Qwen3-VL）或 MinerU 文档解析 |
-
----
-
-上一页：[02-6 多模态视觉理解](02-6-多模态视觉理解.md) ｜ 下一页：[02-8 Embedding 与 RAG](02-8-Embedding与RAG.md)
+| 试卷/作业照片批量处理 | VL（Qwen3-VL，OCR 实测稳定） |
