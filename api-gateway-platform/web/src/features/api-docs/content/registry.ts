@@ -64,7 +64,7 @@ const ENTRIES: DocEntry[] = [
     slug: 'models',
     title: '模型与价格',
     group: 'dev',
-    description: '普通师生 4 款 + 教师 vip 分组双口径价格总表。',
+    description: 'default / vip 分组模型与价格双口径总表。',
     raw: models,
   },
   {
@@ -120,7 +120,7 @@ const ENTRIES: DocEntry[] = [
     slug: 'workbuddy',
     title: 'WorkBuddy 接入',
     group: 'clients',
-    description: 'Mac 客户端四步接入手册（Win 版实测待补）。',
+    description: 'Windows 零证书优先 / Mac 证书配置的客户端接入手册。',
     raw: workbuddy,
   },
   {

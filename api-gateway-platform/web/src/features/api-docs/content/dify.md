@@ -54,7 +54,7 @@ Dify 右上角头像 → **设置 → 模型供应商** → 在"安装模型供�
 | 最大输出 | 32768 |
 | 功能开关 | 支持工具调用 ✅ / 支持视觉 ✅（该模型支持，见 [02-1 模型与价格](T8-02-1-模型与价格.md)） |
 
-按需重复添加其他模型（GLM-5.3-Flash / Qwen3.8-Flash-Next / DeepSeek-V4-Flash-0731；GLM-5.3 为 vip 专享，普通令牌不可用）。
+按需重复添加其他模型（GLM-5.3-Flash / Qwen3.8-Flash-Next / DeepSeek-V4-Flash-0731；GLM-5.3 为 vip 分组专享，default 分组令牌不可用，如需开通联系智算中心）。
 
 > 🔴 **命名红线**：模型名必须逐字符一致（如 `DeepSeek-V4.1-Flash` 不能写成 `deepseek-v4.1-flash`），写错调用时报 503 `model_not_found`。
 
@@ -68,8 +68,8 @@ Dify 右上角头像 → **设置 → 模型供应商** → 在"安装模型供�
 
 ```bash
 # 在 Dify 宿主机上执行；容器名按实际 docker ps 确认
-# ① 拿到星语网关证书
-scp root@10.255.12.210:/data/nginx/cert/xy.crt ./scpt-gateway.crt
+# ① 下载星语网关证书（此时证书尚未被信任，-k 仅本次下载需要）
+curl -k -O https://ai-platform.sptc.edu.cn/scpt-gateway.crt
 
 # ② 追加进 plugin-daemon 容器的 certifi 信任链，然后重启容器
 docker cp ./scpt-gateway.crt <plugin-daemon容器>:/usr/local/share/ca-certificates/
@@ -112,7 +112,7 @@ docker restart <plugin-daemon容器>
 | 现象 | 原因 | 解决 |
 |---|---|---|
 | 凭据验证报 `certificate verify failed` | 🔴 自签证书未处理（最高频） | 第四节方案 A |
-| 调用报 503 `model_not_found` | 模型名写错（大小写/版本号）或用了未授权模型（GLM-5.3） | 核对模型名逐字符一致；vip 模型找管理员 |
+| 调用报 503 `model_not_found` | 模型名写错（大小写/版本号）或用了未授权模型（GLM-5.3） | 核对模型名逐字符一致；vip 模型联系智算中心开通 |
 | 调用报 503 `no available channel` | 高峰排队满 | 等 1~2 分钟；Dify 工作流里加重试节点 |
 | 凭据验证报 401 | 令牌错误/被禁用 | 控制台核对令牌 |
 | Dify 容器 curl 不通 ai-platform 域名 | Dify 服务器不在校园网 / DNS 解析不到 | 先在 Dify 容器内 `curl https://ai-platform.sptc.edu.cn/v1/models` 验证网络，再谈配置 |
@@ -121,7 +121,7 @@ docker restart <plugin-daemon容器>
 ## 五、进阶提示
 
 - **知识库（RAG）搭配**：课程资料上传 Dify 知识库时，检索用的 Embedding 模型也可指向星语 `bge-m3`（配置方法同上，模型类型选"文本嵌入"，见 [02-8 Embedding 与 RAG](T8-02-8-Embedding与RAG.md)）。
-- **计费**：Dify 应用产生的用量计入你的星语令牌，学生用得多额度消耗快，留意控制台用量统计（计费口径见[附录](T8-附录-模型计费与FAQ.md)）。
+- **计费**：Dify 应用产生的用量计入你的星语令牌，使用人数多时额度消耗快，留意控制台用量统计（计费口径见[附录](T8-附录-模型计费与FAQ.md)）。
 - **给学生用时**：发布的应用链接由 Dify 托管，学生无需星语令牌——令牌只在你配置供应商时用一次，不要泄露。
 
 ---

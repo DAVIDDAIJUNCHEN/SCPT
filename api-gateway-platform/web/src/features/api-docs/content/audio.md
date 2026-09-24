@@ -20,12 +20,12 @@ curl https://ai-platform.sptc.edu.cn/v1/audio/speech -k \
   -d '{
     "model": "cosyvoice-v3",
     "input": "你好，欢迎使用川邮星语",
-    "voice": "7bfd2603e70f"
+    "voice": "VOICE_ID"
   }' \
   --output output.wav
 ```
 
-**要点**：`voice` 必须用 voice ID（音色编号），不能用名称；可用音色清单查 `GET /v1/voices`。
+**要点**：`voice` 必须用 voice ID（音色编号），不能用名称。平台音色库正在建设中（将提供公共音色与声音克隆能力），当前可用 voice ID 请联系**智算中心**获取。
 
 ```python
 from openai import OpenAI
@@ -34,7 +34,7 @@ client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.c
 
 resp = client.audio.speech.create(
     model="cosyvoice-v3",
-    voice="7bfd2603e70f",  # voice ID，查询 /v1/voices
+    voice="VOICE_ID",  # voice ID，向智算中心获取
     input="你好，欢迎使用川邮星语",
 )
 resp.write_to_file("output.wav")

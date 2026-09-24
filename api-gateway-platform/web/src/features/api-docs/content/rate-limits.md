@@ -54,7 +54,7 @@ def call_with_retry(fn, max_retries=3):
                 time.sleep(2 ** (i + 1))  # 2s → 4s → 8s
                 continue
             raise
-    raise RuntimeError("重试次数用尽，请稍后再试或联系管理员")
+    raise RuntimeError("重试次数用尽，请稍后再试或联系智算中心")
 ```
 
 **三类错误的重试策略**：
