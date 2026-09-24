@@ -78,10 +78,27 @@ function DocsMarkdown({ entry }: { entry: DocEntry }) {
         return
       }
 
-      // 站内文档链接：接管为前端路由跳转
+      // 站内文档链接：接管为前端路由跳转（hash 单独拆出，导航后滚动定位）
       if (href.startsWith('/docs/')) {
         event.preventDefault()
-        navigate({ to: href })
+
+        const hashIndex = href.indexOf('#')
+        const path = hashIndex >= 0 ? href.slice(0, hashIndex) : href
+        const hash = hashIndex >= 0 ? decodeURIComponent(href.slice(hashIndex + 1)) : ''
+
+        if (hash && path === location.pathname) {
+          // 同页锚点（经改写后的 /docs/xx#yy 格式）：直接滚动
+          document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth' })
+        } else {
+          navigate({ to: path })
+
+          if (hash) {
+            // 等内容渲染后滚动到目标标题
+            setTimeout(() => {
+              document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth' })
+            }, 120)
+          }
+        }
       }
     }
 

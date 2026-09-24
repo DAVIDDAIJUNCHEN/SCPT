@@ -640,7 +640,10 @@ markdownRenderer.heading = function headingWithAnchor(
   const html = Renderer.prototype.heading.call(this, token)
   const id = slugifyHeading(inner)
 
-  return html.replace(/^<h([1-6])/, `<h$1 id="${id}" data-heading`)
+  return html.replace(
+    /^<h([1-6])/,
+    `<h$1 id="${id}" data-heading style="scroll-margin-top:80px"`
+  )
 }
 
 markdownRenderer.code = (token: Tokens.Code): string => {
