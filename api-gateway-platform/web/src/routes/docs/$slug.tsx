@@ -9,12 +9,12 @@ License, or (at your option) any later version.
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { DOC_MAP } from '@/features/api-docs/content/registry'
+import { DOC_SLUGS } from '@/features/api-docs/content/registry'
 import { DocsPage } from '@/features/api-docs/docs-site'
 
 export const Route = createFileRoute('/docs/$slug')({
   beforeLoad: ({ params }) => {
-    if (!DOC_MAP[params.slug]) {
+    if (!DOC_SLUGS.has(params.slug)) {
       throw redirect({ to: '/docs' })
     }
   },

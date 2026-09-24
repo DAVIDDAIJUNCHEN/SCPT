@@ -10,10 +10,11 @@ License, or (at your option) any later version.
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { useTranslation } from 'react-i18next'
 
 import { Input } from '@/components/ui/input'
 
-import { DOC_FLATLIST } from './content/registry'
+import { getDocFlatListByLang, toDocLang } from './content/registry'
 import { searchDocs, type SearchHit } from './search'
 
 /** 摘要高亮：按 [matchStart, matchStart+matchLength) 加 mark */
@@ -35,6 +36,7 @@ function Highlight({ hit }: { hit: SearchHit }) {
  * 结果下拉支持 ↑/↓ 选择、Enter 跳转、Esc 关闭，点击外部自动收起。
  */
 export function DocsSearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
+  const { t, i18n } = useTranslation()
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
@@ -42,6 +44,8 @@ export function DocsSearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
+  const lang = toDocLang(i18n.language)
+  const entries = useMemo(() => getDocFlatListByLang(lang), [lang])
 
   // 防抖
   useEffect(() => {
@@ -50,8 +54,8 @@ export function DocsSearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
   }, [query])
 
   const hits = useMemo(
-    () => (debouncedQuery.trim() ? searchDocs(debouncedQuery, DOC_FLATLIST) : []),
-    [debouncedQuery]
+    () => (debouncedQuery.trim() ? searchDocs(debouncedQuery, entries, lang) : []),
+    [debouncedQuery, entries, lang]
   )
 
   const close = useCallback(() => {
@@ -140,14 +144,14 @@ export function DocsSearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder='搜索文档…（⌘K）'
+          placeholder={t('搜索文档…（⌘K）')}
           className='h-9 pl-8 pr-8 text-sm'
-          aria-label='搜索文档'
+          aria-label={t('搜索文档')}
         />
         {query && (
           <button
             type='button'
-            aria-label='清空'
+            aria-label={t('清空')}
             className='absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground'
             onClick={() => {
               setQuery('')
@@ -163,7 +167,7 @@ export function DocsSearchBox({ autoFocus = false }: { autoFocus?: boolean }) {
         <div className='absolute left-0 right-0 z-50 mt-1.5 overflow-hidden rounded-lg border bg-popover shadow-lg'>
           {hits.length === 0 ? (
             <div className='px-3 py-6 text-center text-sm text-muted-foreground'>
-              没有找到相关内容
+              {t('没有找到相关内容')}
             </div>
           ) : (
             <ul className='max-h-[60vh] overflow-y-auto py-1' role='listbox'>

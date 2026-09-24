@@ -30,10 +30,11 @@ import { Markdown } from '@/components/ui/markdown'
 import { resolveServerAddress } from '@/lib/server-address'
 
 import {
-  DOC_FLATLIST,
-  DOC_GROUPS,
-  DOC_MAP,
+  getDocGroupsByLang,
+  getDocFlatListByLang,
+  getDocMapByLang,
   rewriteInternalLinks,
+  toDocLang,
   type DocEntry,
 } from './content/registry'
 import { DocsSearchBox } from './docs-search'
@@ -124,6 +125,10 @@ function DocsMarkdown({ entry }: { entry: DocEntry }) {
 // ---------- 侧边栏 ----------
 
 function SidebarNav({ activeSlug }: { activeSlug: string | null }) {
+  const { t, i18n } = useTranslation()
+  const lang = toDocLang(i18n.language)
+  const groups = useMemo(() => getDocGroupsByLang(lang), [lang])
+
   return (
     <nav className='space-y-6'>
       <Link
@@ -134,11 +139,11 @@ function SidebarNav({ activeSlug }: { activeSlug: string | null }) {
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
         }`}
       >
-        <span>文档首页</span>
+        <span>{t('文档首页')}</span>
         {activeSlug === null && <ChevronRight className='h-3.5 w-3.5' />}
       </Link>
 
-      {DOC_GROUPS.map((group) => (
+      {groups.map((group) => (
         <div key={group.key}>
           <div className='mb-2 px-3 text-xs font-semibold tracking-wider text-muted-foreground'>
             {group.label}
@@ -174,14 +179,18 @@ function SidebarNav({ activeSlug }: { activeSlug: string | null }) {
 // ---------- 上一页 / 下一页 ----------
 
 function PrevNextNav({ slug }: { slug: string }) {
-  const index = DOC_FLATLIST.findIndex((entry) => entry.slug === slug)
+  const { t, i18n } = useTranslation()
+  const lang = toDocLang(i18n.language)
+  const flatList = useMemo(() => getDocFlatListByLang(lang), [lang])
+
+  const index = flatList.findIndex((entry) => entry.slug === slug)
 
   if (index === -1) {
     return null
   }
 
-  const prev = index > 0 ? DOC_FLATLIST[index - 1] : null
-  const next = index < DOC_FLATLIST.length - 1 ? DOC_FLATLIST[index + 1] : null
+  const prev = index > 0 ? flatList[index - 1] : null
+  const next = index < flatList.length - 1 ? flatList[index + 1] : null
 
   if (!prev && !next) {
     return null
@@ -197,7 +206,7 @@ function PrevNextNav({ slug }: { slug: string }) {
         >
           <ArrowLeft className='h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary' />
           <span className='min-w-0'>
-            <span className='block text-xs text-muted-foreground'>上一页</span>
+            <span className='block text-xs text-muted-foreground'>{t('上一页')}</span>
             <span className='block truncate text-sm font-medium'>{prev.title}</span>
           </span>
         </Link>
@@ -211,7 +220,7 @@ function PrevNextNav({ slug }: { slug: string }) {
           className='group flex max-w-[45%] flex-1 items-center justify-end gap-3 rounded-lg border p-4 text-right transition-colors hover:border-primary/50 hover:bg-muted/50'
         >
           <span className='min-w-0'>
-            <span className='block text-xs text-muted-foreground'>下一页</span>
+            <span className='block text-xs text-muted-foreground'>{t('下一页')}</span>
             <span className='block truncate text-sm font-medium'>{next.title}</span>
           </span>
           <ArrowRight className='h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary' />
@@ -268,7 +277,9 @@ const LANDING_ICONS: Record<string, typeof Sparkles> = {
 }
 
 export function DocsLanding() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const lang = toDocLang(i18n.language)
+  const groups = useMemo(() => getDocGroupsByLang(lang), [lang])
 
   return (
     <PublicLayout showMainContainer={false}>
@@ -278,8 +289,7 @@ export function DocsLanding() {
             {t('川邮·星语 API 文档')}
           </h1>
           <p className='mx-auto mt-3 max-w-2xl text-muted-foreground'>
-            OpenAI 兼容接口 · 文本 / 视觉 / 语音 / 图像 / 向量 全模态。
-            从下方卡片或顶部导航进入对应分册。
+            {t('OpenAI 兼容接口 · 文本 / 视觉 / 语音 / 图像 / 向量 全模态。从下方卡片或顶部导航进入对应分册。')}
           </p>
           <div className='mt-4 flex flex-wrap justify-center gap-2'>
             <Badge>OpenAI Compatible</Badge>
@@ -295,7 +305,7 @@ export function DocsLanding() {
         <BaseUrlCard />
 
         <div className='grid gap-4 sm:grid-cols-2'>
-          {DOC_GROUPS.map((group) => {
+          {groups.map((group) => {
             const Icon = LANDING_ICONS[group.key] ?? BookOpen
             const first = group.entries[0]
 
@@ -314,7 +324,7 @@ export function DocsLanding() {
                   <Icon className='h-4 w-4 text-[#378ADD]' />
                   <h2 className='text-base font-semibold'>{group.label}</h2>
                   <span className='text-xs text-muted-foreground'>
-                    {group.entries.length} 册
+                    {t('{{count}} 册', { count: group.entries.length })}
                   </span>
                 </div>
                 <p className='mt-1 text-sm text-muted-foreground'>
@@ -343,12 +353,17 @@ export function DocsLanding() {
 // ---------- 文档页 ----------
 
 export function DocsPage({ slug }: { slug: string }) {
-  const entry = DOC_MAP[slug]
+  const { t, i18n } = useTranslation()
+  const lang = toDocLang(i18n.language)
+  const entry = useMemo(() => getDocMapByLang(lang)[slug], [lang, slug])
+  const flatList = useMemo(() => getDocFlatListByLang(lang), [lang])
 
   useEffect(() => {
     // 各分册页独立标签标题，便于多标签页区分
-    document.title = entry ? `${entry.title} · 川邮·星语文档` : '川邮·星语 API 文档'
-  }, [entry])
+    document.title = entry
+      ? `${entry.title} · ${t('川邮·星语文档')}`
+      : t('川邮·星语 API 文档')
+  }, [entry, t])
 
   // URL hash 定位（搜索结果跳转 / 分享链接）：等内容渲染后滚动到目标标题
   useEffect(() => {
@@ -392,7 +407,7 @@ export function DocsPage({ slug }: { slug: string }) {
           </div>
           <div className='-mx-4 mb-6 overflow-x-auto px-4 pb-2 lg:hidden'>
             <div className='flex gap-2'>
-              {DOC_FLATLIST.map((e) => (
+              {flatList.map((e) => (
                 <Link
                   key={e.slug}
                   to='/docs/$slug'

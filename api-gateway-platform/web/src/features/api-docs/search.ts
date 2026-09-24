@@ -37,6 +37,8 @@ interface Section {
   docTitle: string
   title: string
   anchor: string
+  /** 属于哪种语言的内容（缓存分桶 key） */
+  lang: string
   /** 检索用正文：剥除 md 标记后的纯文本 */
   text: string
 }
@@ -62,7 +64,7 @@ const SNIPPET_WIDTH = 76
 const SNIPPET_CONTEXT = 18
 
 /** 按标题把一册 md 切成 section 索引 */
-function buildSections(entry: DocEntry): Section[] {
+function buildSections(entry: DocEntry, lang: string): Section[] {
   const headingRe = /^#{1,6}\s+(.+?)\s*$/gm
   const sections: Section[] = []
   let lastHeading: { title: string; anchor: string; start: number } | null = null
@@ -70,18 +72,19 @@ function buildSections(entry: DocEntry): Section[] {
 
   while ((m = headingRe.exec(entry.raw)) !== null) {
     if (lastHeading) {
-      sections.push(toSection(entry, lastHeading, entry.raw.slice(lastHeading.start, m.index)))
+      sections.push(toSection(entry, lang, lastHeading, entry.raw.slice(lastHeading.start, m.index)))
     }
     lastHeading = { title: m[1], anchor: slugifyHeading(m[1]), start: m.index }
   }
   if (lastHeading) {
-    sections.push(toSection(entry, lastHeading, entry.raw.slice(lastHeading.start)))
+    sections.push(toSection(entry, lang, lastHeading, entry.raw.slice(lastHeading.start)))
   }
   return sections
 }
 
 function toSection(
   entry: DocEntry,
+  lang: string,
   heading: { title: string; anchor: string; start: number },
   chunk: string
 ): Section {
@@ -90,18 +93,22 @@ function toSection(
     docTitle: entry.title,
     title: heading.title,
     anchor: heading.anchor,
+    lang,
     text: stripMarkdown(chunk),
   }
 }
 
-/** 全部 section（模块级缓存：bundle 加载时构建一次） */
-let cachedSections: Section[] | null = null
+/** 全部 section（模块级缓存：按来源语言分桶，各建一次） */
+const cachedSectionsByLang = new Map<string, Section[]>()
 
-function getSections(entries: DocEntry[]): Section[] {
-  if (!cachedSections || cachedSections.length === 0) {
-    cachedSections = entries.flatMap(buildSections)
+function getSections(entries: DocEntry[], lang: string): Section[] {
+  const cached = cachedSectionsByLang.get(lang)
+  if (cached && cached.length > 0) {
+    return cached
   }
-  return cachedSections
+  const sections = entries.flatMap((entry) => buildSections(entry, lang))
+  cachedSectionsByLang.set(lang, sections)
+  return sections
 }
 
 /**
@@ -113,6 +120,7 @@ function getSections(entries: DocEntry[]): Section[] {
 export function searchDocs(
   query: string,
   entries: DocEntry[],
+  lang: string,
   limit = 12
 ): SearchHit[] {
   const keywords = query
@@ -124,7 +132,7 @@ export function searchDocs(
     return []
   }
 
-  const sections = getSections(entries)
+  const sections = getSections(entries, lang)
   const hits: SearchHit[] = []
 
   for (const section of sections) {
