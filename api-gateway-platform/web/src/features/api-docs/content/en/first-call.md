@@ -21,7 +21,7 @@
 >
 > **Expiry and quota**: when creating a token you may optionally set an "expiry time" (leave blank for **no expiry**; 1-day / 1-month quick options are available for short-term scenarios such as course labs) and a quota limit. Once expired or exhausted, calls return 401 / 402 — just create a new token on the "Tokens" page.
 
-## Step 2: Handle the Campus Self-Signed Certificate (StarWhisper-specific, the most important step)
+## Step 2 · Handle the Campus Self-Signed Certificate — the Most Important Step
 
 The platform uses a campus self-signed HTTPS certificate. **Code and CLI tools validate certificates by default and will fail**, manifesting as SSL errors or 502. Attach the certificate (or bypass validation) per your environment:
 

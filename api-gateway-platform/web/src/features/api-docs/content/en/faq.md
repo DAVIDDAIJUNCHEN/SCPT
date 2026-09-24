@@ -48,7 +48,7 @@
 | Question | Answer |
 |---|---|
 | How do I get started? | On the campus network open https://ai-platform.sptc.edu.cn and register with a phone number; chat directly at https://ai-chat.sptc.edu.cn |
-| How do I pick a model? | Everyday Q&A: DeepSeek-V4.1-Flash (default); deep reasoning / code: GLM-5.3 (vip required); image understanding: Qwen3-VL; see the [model table](#1-model-quick-reference) |
+| How do I pick a model? | Everyday Q&A: DeepSeek-V4.1-Flash (default); deep reasoning / code: GLM-5.3 (vip required); image understanding: Qwen3-VL; see the [model table](#1.-model-quick-reference) |
 | Do million-character documents really work? How long is the wait? | Yes — a 974K-character document was tested end-to-end [verified]; ~80K characters returns in ~10 s, a full million characters starts answering in ~6.5 min. This is normal |
 | Why doesn't GLM-5.3 support 1M context? | The model architecture (DSA attention) has heavy VRAM overhead — an industry-wide ceiling, not a platform defect; use the three 1M models for long documents |
 | "Try again later" / queuing? | Concurrency is full at peak hours — retry after 1–2 minutes; **no data loss, no crashes** [load-test verified] |

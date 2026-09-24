@@ -10,8 +10,8 @@
 
 | Your computer | Jump to | Configuration | Time |
 |---|---|---|---|
-| 🪟 **Windows** | → [Section 3, Windows Setup](#3-windows-zero-certificate-3-steps-about-5-minutes) | **Zero certificate**, 3 steps | ~5 minutes |
-| 🍎 **macOS** | → [Section 4, macOS Setup](#4-macos-full-setup-4-steps-about-10-minutes) | One-time certificate setup, 4 steps | ~10 minutes |
+| <img src="/brands/microsoft.svg" alt="Windows" width="16" height="16" style="vertical-align:-2px" /> **Windows** | → [Section 3 · Windows Setup](#3.-windows-zero-certificate-setup) | **Zero certificate**, 3 steps | ~5 minutes |
+| <img src="/brands/apple.svg" alt="macOS" width="16" height="16" style="vertical-align:-2px" /> **macOS** | → [Section 4 · macOS Setup](#4.-macos-full-setup) | One-time certificate setup, 4 steps | ~10 minutes |
 
 > Both platforms end up with identical capabilities; the only difference is network access (Windows uses the plaintext port 3080 with no certificate; macOS uses HTTPS and needs a one-time certificate install).
 
@@ -32,7 +32,7 @@
 2. **WorkBuddy installed**: both Windows and macOS flows are covered (UI details may vary by version).
 3. **StarWhisper account + API token**: log in at `https://ai-platform.sptc.edu.cn` → console → "API Tokens" → create a token, **copy and save it** (looks like `sk-xxxxxxxx`, shown only once).
 
-## 3. Windows (✅ zero certificate, 3 steps, ~5 minutes)
+## 3. Windows Zero-Certificate Setup
 
 > **Windows does not need a certificate.** The platform opens a dedicated plaintext port 3080 for the API — zero certificate configuration throughout. This is the biggest difference from the macOS path.
 
@@ -163,7 +163,7 @@ WorkBuddy's network stack doesn't read the Windows certificate store, and self-s
 | 503 | Model queue full or unauthorized (e.g. GLM-5.3) | See the GLM-5.3 note in Section 3 |
 | 404 on `http://...:3080/` root path | Normal — 3080 serves the API only, no web pages | Call the API under `/v1` |
 
-## 4. macOS Full Setup (4 steps, ~10 minutes)
+## 4. macOS Full Setup
 
 > One-sentence rationale: StarWhisper uses a college self-signed certificate; the macOS browser trusting it ≠ WorkBuddy trusting it — WorkBuddy's network stack doesn't read the system keychain, so the certificate must be placed into its own directory. **Configure once, effective forever** (after client upgrades, redo Step 2 — it's a single command).
 

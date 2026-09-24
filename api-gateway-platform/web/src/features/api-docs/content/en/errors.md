@@ -41,7 +41,7 @@
 ## 502 — Gateway Error
 
 **Cause**: **campus self-signed certificate validation failed** (the most frequent error on StarWhisper) [tested]. Your tool didn't attach the certificate, the TLS handshake was rejected, and the request never reached the model.
-**Fix**: attach the certificate as described in [First API Call — Step 2](/docs/first-call#step-2-handle-the-campus-self-signed-certificate-xingyu-specific-the-most-important-step) — add `-k` for curl, `verify=False` for Python, set `NODE_EXTRA_CA_CERTS` for Node. WorkBuddy users: see the ca.pem procedure in the WorkBuddy guide.
+**Fix**: attach the certificate as described in [First API Call — Step 2](/docs/first-call#step-2-handle-the-campus-self-signed-certificate-the-most-important-step) — add `-k` for curl, `verify=False` for Python, set `NODE_EXTRA_CA_CERTS` for Node. WorkBuddy users: see the ca.pem procedure in the WorkBuddy guide.
 
 ## 503 — Service Busy (two distinct cases — read the payload first)
 

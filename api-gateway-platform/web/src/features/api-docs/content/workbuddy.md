@@ -10,8 +10,8 @@
 
 | 你的电脑 | 跳转 | 配置量 | 耗时 |
 |---|---|---|---|
-| 🪟 **Windows** | → [第三节 Windows 配置](#三windows-版-零证书三步约-5-分钟) | **零证书**，3 步 | 约 5 分钟 |
-| 🍎 **macOS** | → [第四节 macOS 配置](#四macos-配置全流程四步约-10-分钟) | 需一次性证书配置，4 步 | 约 10 分钟 |
+| <img src="/brands/microsoft.svg" alt="Windows" width="16" height="16" style="vertical-align:-2px" /> **Windows** | → [第三节 Windows 配置](#三windows-版-零证书三步约-5-分钟) | **零证书**，3 步 | 约 5 分钟 |
+| <img src="/brands/apple.svg" alt="macOS" width="16" height="16" style="vertical-align:-2px" /> **macOS** | → [第四节 macOS 配置](#四macos-配置全流程四步约-10-分钟) | 需一次性证书配置，4 步 | 约 10 分钟 |
 
 > 两平台配出来的能力完全一致；区别只在网络接入方式（Windows 走明文 3080 端口免证书，Mac 走 HTTPS 需装一次证书）。
 
