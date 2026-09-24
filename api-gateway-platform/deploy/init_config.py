@@ -185,6 +185,8 @@ def main():
     print(f"   quota_display_type=CNY: {'✅' if s else '❌ ' + msg}")
     s, msg = set_option(args.base, token, "general_setting.usd_exchange_rate", USD_EXCHANGE_RATE)
     print(f"   usd_exchange_rate=7.3: {'✅' if s else '❌ ' + msg}")
+    s, msg = set_option(args.base, token, "general_setting.docs_link", "/docs")
+    print(f"   docs_link=/docs: {'✅' if s else '❌ ' + msg}")
 
     print("\n🎉 初始化完成！请到「模型广场」和「渠道」页面核对。")
 
