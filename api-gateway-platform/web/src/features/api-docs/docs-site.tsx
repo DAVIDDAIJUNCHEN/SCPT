@@ -93,10 +93,16 @@ function DocsMarkdown({ entry }: { entry: DocEntry }) {
           navigate({ to: path })
 
           if (hash) {
-            // 等内容渲染后滚动到目标标题
-            setTimeout(() => {
-              document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth' })
-            }, 120)
+            // 等内容渲染后滚动到目标标题（dev/慢网络下渲染可能超 120ms，带重试）
+            const tryScroll = (attempt: number) => {
+              const el = document.getElementById(hash)
+              if (el) {
+                el.scrollIntoView({ behavior: 'smooth' })
+              } else if (attempt < 16) {
+                setTimeout(() => tryScroll(attempt + 1), 120)
+              }
+            }
+            tryScroll(0)
           }
         }
       }
@@ -334,6 +340,11 @@ export function DocsLanding() {
 export function DocsPage({ slug }: { slug: string }) {
   const entry = DOC_MAP[slug]
 
+  useEffect(() => {
+    // 各分册页独立标签标题，便于多标签页区分
+    document.title = entry ? `${entry.title} · 川邮·星语文档` : '川邮·星语 API 文档'
+  }, [entry])
+
   if (!entry) {
     return <DocsLanding />
   }
@@ -341,13 +352,32 @@ export function DocsPage({ slug }: { slug: string }) {
   return (
     <PublicLayout showMainContainer={false}>
       <div className='mx-auto flex w-full max-w-[1400px] gap-8 px-4 py-8 sm:px-6'>
-        {/* 左侧目录 */}
+        {/* 左侧目录（桌面端） */}
         <aside className='sticky top-20 hidden h-[calc(100vh-6rem)] w-60 shrink-0 overflow-y-auto lg:block'>
           <SidebarNav activeSlug={slug} />
         </aside>
 
         {/* 右侧内容 */}
         <main className='min-w-0 flex-1'>
+          {/* 移动端分册切换条（lg 以下显示，横向滑动） */}
+          <div className='-mx-4 mb-6 overflow-x-auto px-4 pb-2 lg:hidden'>
+            <div className='flex gap-2'>
+              {DOC_FLATLIST.map((e) => (
+                <Link
+                  key={e.slug}
+                  to='/docs/$slug'
+                  params={{ slug: e.slug }}
+                  className={`shrink-0 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                    e.slug === slug
+                      ? 'border-primary bg-primary/10 font-medium text-primary'
+                      : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  {e.title}
+                </Link>
+              ))}
+            </div>
+          </div>
           <BaseUrlCard />
           <DocsMarkdown entry={entry} />
           <PrevNextNav slug={slug} />
