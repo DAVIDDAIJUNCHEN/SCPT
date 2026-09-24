@@ -1,7 +1,7 @@
 # WorkBuddy Client Setup Guide
 
-> For: users who want to use XingYu LLMs in a desktop client (instead of the web app).
-> After reading you can: chat with all 5 XingYu models in WorkBuddy, including million-character document processing.
+> For: users who want to use StarWhisper LLMs in a desktop client (instead of the web app).
+> After reading you can: chat with all 5 StarWhisper models in WorkBuddy, including million-character document processing.
 > Data and UI verified: 2026-09-24 (Windows zero-certificate path and full macOS path both tested).
 
 ---
@@ -17,7 +17,7 @@
 
 ## 1. What Is WorkBuddy, and How It Differs from the Web App
 
-| | XingYu Chat web (ai-chat.sptc.edu.cn) | WorkBuddy client |
+| | StarWhisper Chat web (ai-chat.sptc.edu.cn) | WorkBuddy client |
 |---|---|---|
 | Barrier to entry | Browser, zero setup | Client install; zero config on Windows, one-time certificate setup on macOS (~10 min) |
 | Model capability | All platform models | Same, all models |
@@ -30,7 +30,7 @@
 
 1. **Campus network**: WorkBuddy talks to `ai-platform.sptc.edu.cn`, currently reachable on campus only (off-campus access not yet available; will be announced when it opens).
 2. **WorkBuddy installed**: both Windows and macOS flows are covered (UI details may vary by version).
-3. **XingYu account + API token**: log in at `https://ai-platform.sptc.edu.cn` → console → "API Tokens" → create a token, **copy and save it** (looks like `sk-xxxxxxxx`, shown only once).
+3. **StarWhisper account + API token**: log in at `https://ai-platform.sptc.edu.cn` → console → "API Tokens" → create a token, **copy and save it** (looks like `sk-xxxxxxxx`, shown only once).
 
 ## 3. Windows (✅ zero certificate, 3 steps, ~5 minutes)
 
@@ -165,7 +165,7 @@ WorkBuddy's network stack doesn't read the Windows certificate store, and self-s
 
 ## 4. macOS Full Setup (4 steps, ~10 minutes)
 
-> One-sentence rationale: XingYu uses a college self-signed certificate; the macOS browser trusting it ≠ WorkBuddy trusting it — WorkBuddy's network stack doesn't read the system keychain, so the certificate must be placed into its own directory. **Configure once, effective forever** (after client upgrades, redo Step 2 — it's a single command).
+> One-sentence rationale: StarWhisper uses a college self-signed certificate; the macOS browser trusting it ≠ WorkBuddy trusting it — WorkBuddy's network stack doesn't read the system keychain, so the certificate must be placed into its own directory. **Configure once, effective forever** (after client upgrades, redo Step 2 — it's a single command).
 
 ### Step 1: Download the gateway certificate
 

@@ -1,6 +1,6 @@
 # Rate Limits & Capacity
 
-> SCPT XingYu API Developer Guide · Last verified 2026-09-23
+> StarWhisper API Developer Guide · Last verified 2026-09-23
 > The platform sets **no global token RPM/TPM limits** [verified 2026-09-23]; capacity protection happens at the model-service layer. This page explains per-model concurrency caps, behavior under full load, and how your code should handle it.
 
 ## Per-Model Concurrency Capacity [verified 2026-09-23 via get_server_info]
@@ -73,4 +73,4 @@ At roughly 1 concurrent lane ≈ 10–20 light-usage students/teachers [theoreti
 
 ---
 
-*SCPT XingYu Platform · maintained by the AI Computing Center · 2026-09-23*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-23*

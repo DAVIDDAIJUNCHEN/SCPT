@@ -19,7 +19,7 @@ curl https://ai-platform.sptc.edu.cn/v1/audio/speech -k \
   -H "Authorization: Bearer $YOUR_API_KEY" \
   -d '{
     "model": "cosyvoice-v3",
-    "input": "Hello, welcome to SCPT XingYu",
+    "input": "Hello, welcome to StarWhisper",
     "voice": "VOICE_ID"
   }' \
   --output output.wav
@@ -35,7 +35,7 @@ client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.c
 resp = client.audio.speech.create(
     model="cosyvoice-v3",
     voice="VOICE_ID",  # voice ID, obtain from the AI Computing Center
-    input="Hello, welcome to SCPT XingYu",
+    input="Hello, welcome to StarWhisper",
 )
 resp.write_to_file("output.wav")
 ```

@@ -1,6 +1,6 @@
 # Models & Pricing
 
-> SCPT XingYu API Developer Guide · Last verified 2026-09-24
+> StarWhisper API Developer Guide · Last verified 2026-09-24
 > Unit: **per million tokens**. A token is the smallest unit of text a model processes; for Chinese, **1 token ≈ 1 character** (a rule of thumb for estimation — exact counts come from the `usage` field in API responses).
 
 ## Model Overview
@@ -53,4 +53,4 @@ Platform models are exposed by **group**: registration puts you in the **default
 > Tool Calls / JSON Output follow the OpenAI format. Detailed examples for each feature are in the "Developer Guide" volumes in the sidebar (Streaming / Long Context / Vision & Image Generation / Audio / Embedding & RAG); data marked [tested] was verified on 2026-09-23.
 
 ---
-*SCPT XingYu Platform · maintained by the AI Computing Center · 2026-09-23*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-23*

@@ -1,4 +1,4 @@
-# SCPT XingYu AI Platform · Quick Start
+# StarWhisper AI Platform · Quick Start
 
 > For: all registered users (no technical background required)
 > Updated: 2026-09-23 (model names follow what the platform actually displays)

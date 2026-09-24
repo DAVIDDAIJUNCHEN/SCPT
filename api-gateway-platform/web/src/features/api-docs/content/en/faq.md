@@ -1,6 +1,6 @@
 # Appendix · Model Billing and FAQ
 
-> SCPT XingYu API Platform · Last verified 2026-09-23
+> StarWhisper API Platform · Last verified 2026-09-23
 > For all registered users. Unit: **per million tokens**; in Chinese **1 token ≈ 1 character** (a colloquial approximation — the exact count is whatever the API's `usage` field reports).
 
 ---
@@ -83,4 +83,4 @@ Usage questions → School of Information Engineering (AI Computing Center); API
 
 ---
 
-*SCPT XingYu Platform · maintained by the AI Computing Center · 2026-09-23*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-23*

@@ -52,4 +52,4 @@ Just put the long text directly in `content` — no chunked upload needed; set `
 
 1. **Feed the full document, not a summary** — the model is markedly more accurate reading the original text than reading a summary.
 2. Beyond ~1 million characters, split the work (e.g. ask chapter by chapter, or retrieve first then read closely).
-3. Both the web app (XingYu Chat) and the API support 1M — no special parameters needed.
+3. Both the web app (StarWhisper Chat) and the API support 1M — no special parameters needed.

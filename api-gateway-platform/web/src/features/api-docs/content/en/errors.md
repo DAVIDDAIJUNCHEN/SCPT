@@ -1,7 +1,7 @@
 # Error Codes
 
-> SCPT XingYu API Developer Guide · Last verified 2026-09-23
-> Errors you may encounter when calling the XingYu API. Each entry lists the **cause** and the **fix**; payloads marked [tested] are real platform responses.
+> StarWhisper API Developer Guide · Last verified 2026-09-23
+> Errors you may encounter when calling the StarWhisper API. Each entry lists the **cause** and the **fix**; payloads marked [tested] are real platform responses.
 
 ## 400 — Bad Request
 
@@ -40,7 +40,7 @@
 
 ## 502 — Gateway Error
 
-**Cause**: **campus self-signed certificate validation failed** (the most frequent error on XingYu) [tested]. Your tool didn't attach the certificate, the TLS handshake was rejected, and the request never reached the model.
+**Cause**: **campus self-signed certificate validation failed** (the most frequent error on StarWhisper) [tested]. Your tool didn't attach the certificate, the TLS handshake was rejected, and the request never reached the model.
 **Fix**: attach the certificate as described in [First API Call — Step 2](/docs/first-call#step-2-handle-the-campus-self-signed-certificate-xingyu-specific-the-most-important-step) — add `-k` for curl, `verify=False` for Python, set `NODE_EXTRA_CA_CERTS` for Node. WorkBuddy users: see the ca.pem procedure in the WorkBuddy guide.
 
 ## 503 — Service Busy (two distinct cases — read the payload first)
@@ -69,4 +69,4 @@ Error → does it mention SSL/certificate or is it a 502?
 ```
 
 ---
-*SCPT XingYu Platform · maintained by the AI Computing Center · 2026-09-24*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-24*

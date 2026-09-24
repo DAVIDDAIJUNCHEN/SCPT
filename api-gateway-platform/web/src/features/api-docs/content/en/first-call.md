@@ -1,12 +1,12 @@
 # First API Call
 
-> SCPT XingYu API Developer Guide · Last verified 2026-09-23
-> The XingYu API is **fully OpenAI-API compatible** — use the OpenAI SDK or any OpenAI-compatible software directly.
+> StarWhisper API Developer Guide · Last verified 2026-09-23
+> The StarWhisper API is **fully OpenAI-API compatible** — use the OpenAI SDK or any OpenAI-compatible software directly.
 
 | Parameter | Value |
 |---|---|
 | base_url | `https://ai-platform.sptc.edu.cn/v1` |
-| api_key | A token created in the XingYu console (see Step 1) |
+| api_key | A token created in the StarWhisper console (see Step 1) |
 | model (beginner pick) | `DeepSeek-V4.1-Flash` |
 
 ---
@@ -21,7 +21,7 @@
 >
 > **Expiry and quota**: when creating a token you may optionally set an "expiry time" (leave blank for **no expiry**; 1-day / 1-month quick options are available for short-term scenarios such as course labs) and a quota limit. Once expired or exhausted, calls return 401 / 402 — just create a new token on the "Tokens" page.
 
-## Step 2: Handle the Campus Self-Signed Certificate (XingYu-specific, the most important step)
+## Step 2: Handle the Campus Self-Signed Certificate (StarWhisper-specific, the most important step)
 
 The platform uses a campus self-signed HTTPS certificate. **Code and CLI tools validate certificates by default and will fail**, manifesting as SSL errors or 502. Attach the certificate (or bypass validation) per your environment:
 
@@ -109,4 +109,4 @@ console.log(resp.choices[0].message.content);
 
 ---
 
-*SCPT XingYu Platform · maintained by the AI Computing Center · 2026-09-23*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-23*
