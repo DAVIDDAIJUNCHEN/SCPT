@@ -176,10 +176,13 @@ Tested: `a cute capybara reading a book by candlelight` → 1024×1024 PNG retur
 |---|---|
 | `size` | Supports `512x512` / `1024x1024` / `1664x928` (wide) and more — no FLUX-style 1024 cap observed |
 | `generator_device` | **Must be `"cpu"`** (noise generator runs on CPU); omitting it causes an error |
+| `output_format` | 🔴 **Must be explicitly `"png"` or `"webp"`**: the default is treated as `jpeg`, whose server-side encoding path is currently broken — omitting this parameter returns 500 Internal Server Error (isolated and verified 2026-09-25) |
 | `response_format` | `b64_json` (returns base64); defaults to url mode when omitted |
 | `n` (images per call) | Always 1 image per call |
 | Generation speed | 512: ~6 s; 1024: ~21 s; 1664 wide: ~33 s (H20 measured) |
 | Billing | Per image (same price as FLUX); see [Models & Pricing](/docs/models) |
+
+> ⚠️ **Troubleshooting**: a `500 Internal Server Error` (failing after ~5 s) is almost always a missing `output_format`. Add `"output_format": "png"` and retry. `generator_device: "cuda"` also works with png (verified 2026-09-25), but `cpu` is recommended per the official cookbook.
 
 ## Choosing Between Qwen-Image-2.1 and FLUX.2
 
