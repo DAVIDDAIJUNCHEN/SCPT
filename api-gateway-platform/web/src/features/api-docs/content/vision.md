@@ -7,7 +7,8 @@
 | 模型 | 能力 | 端点 |
 |---|---|---|
 | **Qwen3-VL-30B-A3B-Instruct** | 图像理解：描述、问答、OCR、图表读数、截图转文字 | `/v1/chat/completions` |
-| **FLUX.2-klein-4B** | 图像生成：文生图 | `/v1/images/generations` |
+| **Qwen-Image-2.1** | 图像生成：文生图，质量最佳，支持中英文提示词 | `/v1/images/generations` |
+| **FLUX.2-klein-4B** | 图像生成：文生图，速度最快 | `/v1/images/generations` |
 
 ## 调用样例（实测通过）
 
@@ -127,3 +128,72 @@ curl -o result.jpg "http://ai-platform.sptc.edu.cn:3080/v1/images/<id>/content?a
 - **课件素材**：快速生成示意图、配图、图标草图
 - **美术/设计课**：prompt 工程练习——同一主题不同描述对比生成效果
 - **辅助创作**：给写作课生成插图灵感
+
+---
+
+# 图像生成（Qwen-Image-2.1）
+
+> 文字描述 → 图片。default 分组可用。2026-09-25 上线，提示词支持中英文。
+
+## 调用样例（实测通过）
+
+```bash
+curl https://ai-platform.sptc.edu.cn/v1/images/generations -k \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_API_KEY" \
+  -d '{
+    "model": "qwen-image-2.1",
+    "prompt": "一只水豚在烛光下读书",
+    "generator_device": "cpu",
+    "output_format": "png",
+    "response_format": "b64_json"
+  }'
+```
+
+返回结构（返回的是 **base64 编码的图片**，非 URL）：
+
+```json
+{
+  "created": 1790327419,
+  "data": [{
+    "b64_json": "iVBORw0KGgo...",
+    "prompt_filter_results": []
+  }]
+}
+```
+
+解码保存为图片：
+
+```bash
+# Mac/Linux：把返回 JSON 里的 b64_json 字段存为图片
+python3 -c "import json,base64; open('out.png','wb').write(base64.b64decode(json.load(open('resp.json'))['data'][0]['b64_json']))"
+```
+
+实测：`a cute capybara reading a book by candlelight` → 23 秒返回 1024×1024 PNG ✅（2026-09-25 经星语网关验证）
+
+## 参数与限制（实测边界）
+
+| 参数 | 实测结论 |
+|---|---|
+| `size` | 支持 `512x512` / `1024x1024` / `1664x928`（宽幅）等，未发现 FLUX 那种 1024 上限 |
+| `generator_device` | **必须传 `"cpu"`**（噪声生成器放 CPU），缺省会报错 |
+| `response_format` | `b64_json`（返回 base64）；不传时默认 url 模式 |
+| `n`（每次张数） | 固定每次 1 张 |
+| 生成速度 | 512: ~6 秒；1024: ~21 秒；1664 宽幅: ~33 秒（H20 实测） |
+| 计费 | 按张计费（与 FLUX 同价），价格见[模型与价格](02-1-模型与价格.md) |
+
+## 与 FLUX.2 怎么选
+
+| 维度 | Qwen-Image-2.1 | FLUX.2-klein-4B |
+|---|---|---|
+| 中文提示词 | ✅ 原生优化 | 一般 |
+| 图像质量/构图 | 更强（DiT 7B + Qwen3-VL 8B 编码器） | 轻量级 |
+| 最大分辨率 | 1664 宽幅实测通过 | 上限 768 |
+| 速度 | 6~33 秒/张 | 3~5 秒/张 |
+| 返回格式 | base64 | URL 下载 |
+
+## 教学场景建议（Qwen-Image-2.1）
+
+- **中文提示词课程**：直接用中文描述生成，门槛低于 FLUX
+- **设计基础**：更高分辨率 + 更好构图，适合海报/插画类作业
+- **AIGC 通识课**：与 FLUX 对比讲「模型规模 vs 速度」的取舍
