@@ -335,21 +335,26 @@
 					}
 				}
 			} else {
-				// ── Xingyu accelerated TTS pipeline ─────────────────────────────
-				// Server-side CosyVoice is serial (single MIG slice) and has a
-				// high fixed per-request cost: short sentences run at RTF≈2.1,
-				// while ~120-char chunks reach RTF≈1.0. So instead of the old
-				// per-sentence serial loop we:
-				//   1. Speak the FIRST sentence alone (fast first-audio, ~8s).
+				// ── Xingyu accelerated TTS pipeline v2 ────────────────────────
+				// Server-side CosyVoice is serial (single MIG 1g.18gb slice)
+				// with a hard fixed per-request cost (~4.3s prefill, cache
+				// hit included) + ~0.27s/char marginal (RTF≈1.0 at scale).
+				// Measured 2026-09-26: 3 chars → 4.3s; 35 chars → 8.8s;
+				// 105 chars → 13.1s. So we:
+				//   1. Speak a MINIMAL first chunk (first sentence capped at
+				//      25 chars) and skip ASR verification on it — first
+				//      audio lands in ~5s instead of ~8s.
 				//   2. Merge remaining sentences into ~120-char chunks so each
-				//      request amortizes the fixed cost (2x throughput).
-				//   3. ASR-verify every chunk (~100ms, negligible): if the
-				//      transcription does not match the source text, halve the
-				//      chunk and regenerate — this catches pronunciation/cutoff
-				//      glitches in one retry instead of playing broken audio.
+				//      request amortizes the fixed cost.
+				//   3. ASR-verify non-first chunks (~1s): on mismatch halve
+				//      the chunk and regenerate — catches glitches in one
+				//      retry instead of playing broken audio.
 				//   4. Pipelined: chunk N+1 is generated while chunk N plays,
-				//      so steady-state wait ≈ single chunk latency (~13s).
+				//      so steady-state wait ≈ single chunk latency.
+				//   5. pcm streaming is NOT viable on this deployment (first
+				//      audio chunk arrives ~11s, 3-4x worse throughput).
 				const TTS_CHUNK_TARGET_CHARS = 120;
+				const TTS_FIRST_CHUNK_MAX_CHARS = 25;
 				const TTS_VERIFY_MAX_RETRIES = 2;
 
 				const normalizeForCompare = (s: string) =>
@@ -376,13 +381,24 @@
 					return false;
 				};
 
-				// Build chunk list: [first sentence alone, then ~120-char merges]
+				// Build chunk list: [minimal first chunk (≤25 chars, quick
+				// start), then ~120-char merges]
+				const splitFirstChunk = (text: string): string[] => {
+					if (text.length <= TTS_FIRST_CHUNK_MAX_CHARS) return [text];
+					// Prefer a comma/顿号 break near the cap
+					for (let i = TTS_FIRST_CHUNK_MAX_CHARS; i > 8; i--) {
+						if ('，、, '.includes(text[i])) return [text.slice(0, i + 1), text.slice(i + 1)];
+					}
+					return [text.slice(0, TTS_FIRST_CHUNK_MAX_CHARS), text.slice(TTS_FIRST_CHUNK_MAX_CHARS)];
+				};
+
 				const buildChunks = (parts: string[]): string[] => {
 					if (!parts.length) return [];
-					const chunks: string[] = [parts[0]];
+					const firstParts = splitFirstChunk(parts[0]);
+					const chunks: string[] = [firstParts[0]];
+					const rest = [...firstParts.slice(1), ...parts.slice(1)];
 					let cur = '';
-					for (let i = 1; i < parts.length; i++) {
-						const p = parts[i];
+					for (const p of rest) {
 						if (!cur) {
 							cur = p;
 						} else if ((cur + p).length <= TTS_CHUNK_TARGET_CHARS) {
@@ -423,7 +439,7 @@
 				// Chunks pushed back by failed verifications (played before new chunks)
 				const tailQueue: string[] = [];
 
-				const synthAndVerify = async (text: string): Promise<Blob | null> => {
+				const synthAndVerify = async (text: string, skipVerify = false): Promise<Blob | null> => {
 					let attempt = 0;
 					while (attempt <= TTS_VERIFY_MAX_RETRIES) {
 						if (signal.aborted) return null;
@@ -440,7 +456,9 @@
 						const blob = await res.blob();
 						if (blob.size === 0) return null;
 
-						// ASR cross-verification (~100ms)
+						if (skipVerify) return blob; // quick-start: trust short first chunk
+
+						// ASR cross-verification (~1s)
 						let transcript = '';
 						try {
 							const asrRes = await transcribeAudio(localStorage.token, blobToFile(blob, 'tts.wav'));
@@ -473,13 +491,16 @@
 				console.debug('Xingyu TTS chunks', chunks.map((c) => c.length));
 
 				let chunkIdx = 0;
+				let isFirstChunk = true;
 				const processNextChunk = async (): Promise<void> => {
 					while (chunkIdx < chunks.length || tailQueue.length) {
 						if (signal.aborted) return;
 						const text = tailQueue.length ? tailQueue.shift() : chunks[chunkIdx++];
 						if (!text) continue;
 
-						const blob = await synthAndVerify(text);
+						const skipVerify = isFirstChunk; // first chunk is short → skip ASR to save ~1-2s
+						isFirstChunk = false;
+						const blob = await synthAndVerify(text, skipVerify);
 						if (signal.aborted) return;
 						if (blob && speaking) {
 							const url = URL.createObjectURL(blob);
