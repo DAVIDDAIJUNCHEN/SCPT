@@ -27,18 +27,38 @@ License, or (at your option) any later version.
 const PORTAL_HOST_HINT_KEY = 'xingyu:entered-from-portal'
 const LOCAL_DEV_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
+// 四域名架构（2026-09）：Portal 独占 ai.sptc.edu.cn（nginx 静态页），
+// 星语 SPA 挂在 ai-platform.sptc.edu.cn（及 3080 明文 API）。
+// 「返回主页」必须跨源跳 Portal 主域——返回当前源根路径只会落回星语 SPA
+// 自己的根（/ → /dashboard → 未登录 → /sign-in），表现为「点了没反应」。
+const PORTAL_FQDN = 'ai.sptc.edu.cn'
+
 // 是否可能处在「Portal + 星语 同源」的部署形态下（用于决定跳不跳根路径）
 export function isPortalCapableHost(): boolean {
   if (typeof window === 'undefined') return false
   if (import.meta.env.DEV) return false
-  return !LOCAL_DEV_HOSTS.has(window.location.hostname)
+  if (LOCAL_DEV_HOSTS.has(window.location.hostname)) return false
+  // 四域名架构：只在 *.sptc.edu.cn（含 Portal 主域）下确定 Portal 可达。
+  // IP 直连 / 教学独立部署等形态无法确定 Portal 位置，不提供该入口
+  // （否则跳当前源根路径会落回 SPA 自身，形成死循环）。
+  return (
+    window.location.hostname === PORTAL_FQDN ||
+    window.location.hostname.endsWith('.' + PORTAL_FQDN.split('.').slice(1).join('.'))
+  )
 }
 
-// Portal 主页地址（当前源 + 根路径，自动适配 IP / 域名 / https 升级）
-// 星语自身不再使用根路径（`/` 路由已重定向到 /dashboard），所以根路径是 Portal 独占的。
+// Portal 主页地址。
+// · 访问域就是 Portal（ai.sptc.edu.cn）或老的同源部署形态 → 当前源根路径；
+// · 星语挂在其他 sptc 子域（ai-platform 等）→ 跨源跳 Portal 主域。
 export function resolvePortalHomeUrl(): string {
   if (typeof window === 'undefined') return '/'
-  return new URL('/', window.location.origin).toString()
+  const host = window.location.hostname
+  if (host === PORTAL_FQDN || !host.endsWith('.sptc.edu.cn')) {
+    // Portal 本尊，或无法识别的部署形态：沿用同源根路径（老行为）
+    return new URL('/', window.location.origin).toString()
+  }
+  // 星语在 sptc 子域上（ai-platform / 3080 等）→ Portal 独立主域
+  return `https://${PORTAL_FQDN}/`
 }
 
 // 标记「本次会话由 Portal 进入」，供登出时判断是否该回 Portal。
