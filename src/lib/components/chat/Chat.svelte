@@ -2178,6 +2178,22 @@
 			}
 		}
 
+		// 川邮·星语：Portal 主页输入框携带消息跳入（xy_msg），仅预填输入框不自动发送
+		const xyMsg = $page.url.searchParams.get('xy_msg');
+		if (xyMsg) {
+			prompt = xyMsg;
+			messageInput?.setText(xyMsg);
+
+			// 清掉参数，防刷新 / 二次导航重复注入
+			const xyParams = new URLSearchParams($page.url.searchParams);
+			xyParams.delete('xy_msg');
+			window.history.replaceState(
+				window.history.state,
+				'',
+				`${$page.url.pathname}${xyParams.toString() ? `?${xyParams.toString()}` : ''}`
+			);
+		}
+
 		if ($page.url.searchParams.get('call') === 'true') {
 			openCallOverlay();
 		}
