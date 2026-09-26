@@ -95,8 +95,82 @@ const AGREEMENT_MD = `
 3. 如对本协议有任何疑问，请联系四川邮电职业技术学院智算中心相关负责人。
 `
 
+const AGREEMENT_MD_EN = `
+**Last updated: September 7, 2026**
+**Effective date: September 7, 2026**
+
+Welcome to the StarWhisper Open Platform!
+
+The StarWhisper Open Platform is built and operated by the **Intelligent Computing Center of Sichuan Post and Telecommunication College** ("we" or "the Center"). This StarWhisper Open Platform Service Agreement (this "Agreement") applies specifically to your use, as a faculty member, student, researcher, or developer ("you" or "User"), of the application programming interfaces (APIs) and accompanying developer tools provided by the Platform for teaching, research, academic activities, or development of on-campus applications.
+
+Before using the services of the Platform (the "Services"), please read and fully understand this Agreement carefully. We specifically remind you to carefully read and fully understand all terms of this Agreement before using the Services. By clicking to confirm, checking boxes, or otherwise agreeing to this Agreement through the web page, or by actually using the Services, you indicate that you and we have reached agreement on this Agreement and that you consent to be bound by it. If you do not agree to any term, please stop using the Services.
+
+## I. Service Content
+
+1. The Platform is a large-model API gateway service for the teaching, research, and on-campus application scenarios of Sichuan Post and Telecommunication College, covering text conversation, image generation, speech synthesis, speech recognition, and other capabilities, and will continue to expand with new service types as technology evolves. Based on the Services, you may integrate the relevant model capabilities into various downstream systems, applications, or features for their intended purposes and specific scenarios.
+2. The Platform software is developed on the basis of the **New API open-source project (AGPL v3)**, with functional extensions and interface customization for on-campus needs.
+3. During your use of the Services, the models generate corresponding content as a response (the "Output") through computational inference based on the prompts you enter (the "Input"), including text, tables, code, images, etc.
+4. As generative artificial intelligence technology and laws and regulations continue to develop, the Center may add to, upgrade, modify, suspend, or terminate the Services, or make necessary adjustments to the technology, methods, or performance of the Services. If such changes materially affect your rights and interests, we will notify you promptly through in-app notifications, website announcements, or other prominent means.
+
+## II. Account Management
+
+1. The Platform uses a unified account system. You shall register with your own genuine and valid mobile phone number and set up your account information as required by the Platform. Registration information must be true, accurate, and complete.
+2. You shall properly safeguard your account, password, and API Keys, and are responsible for all activities under your account. You shall not lend, transfer, or use your account for any activities in violation of this Agreement.
+3. If your account is used for non-teaching, non-research, unauthorized, or illegal purposes, the Platform has the right to suspend or terminate the Services.
+4. The API Keys you create through your account are the necessary credentials for calling the Platform's APIs. Please keep them safe and prevent any form of leakage; do not share them with others or make them public. Losses caused by leakage of API Keys shall be borne by you.
+
+## III. Service Management
+
+1. The Platform provides neutral and basic model technology services, serving only as a part of the downstream systems, applications, or features in the value chain, and cannot determine the final purpose and use of the services. As the provider of the downstream systems, applications, or features, you shall be responsible for them and bear the corresponding legal liability.
+2. In accordance with the *Provisions on the Administration of Deep Synthesis of Internet Information Services*, the *Interim Measures for the Administration of Generative Artificial Intelligence Services*, and other applicable laws and regulations, you shall, as a provider of deep synthesis services and generative artificial intelligence services, bear the corresponding legal responsibilities in providing generative AI services.
+3. In accordance with the *Interim Measures for the Administration of Generative Artificial Intelligence Services*, the *Provisions on the Governance of Network Information Content Ecosystem*, and other applicable laws and regulations, you shall, as a producer of network information content, fulfill network information security obligations, conduct necessary review of inputs and outputs, establish risk identification and filtering mechanisms, and improve network information security review mechanisms.
+4. In accordance with the *Data Security Law*, the *Personal Information Protection Law*, and other applicable laws and regulations, you shall, as a data processor and personal information processor, bear legal responsibility for activities including collecting, processing, using, storing, deleting, and sharing data (including personal information).
+5. In accordance with the *Cybersecurity Law* and other applicable laws and regulations, you shall adopt necessary and effective organizational and technical measures, including but not limited to authorization and permission management, access control, data encryption, monitoring and auditing, and emergency response, to ensure the integrity, confidentiality, and availability of your data and information systems.
+6. In accordance with the *Measures for Labeling AI-Generated Synthetic Content* and other applicable laws, regulations, and standards, you shall label text, images, and other content generated or synthesized using AI technology, and shall not maliciously delete, tamper with, forge, or conceal such labels.
+
+## IV. Input and Output
+
+1. You are responsible for all Input submitted to the Platform and the corresponding Output. You represent and warrant that you possess all rights, licenses, and permissions required to process the Input under this Agreement; that the Input and corresponding Output do not violate laws and regulations; that they do not infringe upon any person's intellectual property, portrait rights, reputation rights, honor rights, name rights, privacy rights, personal information rights and interests, or other lawful rights and interests; and that they do not involve any state secrets, trade secrets, or other data that may adversely affect national security or public interests.
+2. Subject to legal provisions and the terms of this Agreement, you enjoy the corresponding rights in the following matters: (1) you retain any rights, ownership, and interests you hold in the submitted Input; (2) any rights, ownership, and interests in the content Output by the Services belong to you; (3) you may apply the Input and Output of the Services to a wide range of scenarios, including personal use, academic research, course teaching, and derivative product development.
+
+## V. Intellectual Property, Personal Information Protection, and Other Rights
+
+1. The intellectual property rights owned by each party before using the Services remain owned by that party and shall not transfer to the other party by virtue of performing this Agreement. For the avoidance of doubt, the ownership and intellectual property rights of each model connected to the Platform belong to the respective model provider (including but not limited to model parameters, algorithms, code, and framework structures).
+2. The Platform software is developed on the basis of the **New API open-source project (AGPL v3)**. In accordance with the AGPL v3 license, the source code of the Platform's derivative software shall be made available to the public. Any user who obtains the Platform software code shall comply with the terms of AGPL v3, including but not limited to retaining copyright notices, distributing under the same license, and providing users with a means to obtain the corresponding source code when providing network services.
+3. We value the protection of your personal information. For specific processing rules, please refer to the Privacy Policy (i.e., the *StarWhisper Privacy Policy* published by the Platform). We will process your personal information following the principles of legality, propriety, necessity, and good faith.
+4. When using the content Output by the Platform, you shall make your own judgment and bear the corresponding compliance responsibilities; the intellectual property ownership and usage responsibilities of the Output shall be determined in accordance with the law.
+
+## VI. Paid Recharge
+
+1. When you use paid services, you need to recharge in advance on the Platform. You may use the Services normally while your balance (quota) is sufficient; if the balance is insufficient, the Platform has the right to stop the Services. You shall pay attention to your account balance, recharge in a timely manner, and bear any responsibilities and losses caused by failure to recharge in time.
+2. The recharge methods, billing prices, consumption rules, and complimentary quotas for paid services are subject to what is published on the Platform's product pages. The Center may adjust service fees based on business conditions. If such adjustments materially affect your rights and interests, we will notify you promptly through in-app notifications, website announcements, or other prominent means.
+3. When recharging, please carefully verify your account, payment method, and other information. Losses caused by your own operational errors, such as recharging the wrong account, shall be borne by you. Quota, once used or redeemed, is generally non-refundable and non-exchangeable, except as otherwise provided by laws and regulations or otherwise promised by the Platform.
+
+## VII. Breach of Agreement and Limitation of Liability
+
+1. If you breach this Agreement, regardless of whether actual losses are caused, the Platform has the right to take measures such as warning, restricting features, suspending services, or terminating the Agreement as appropriate, and may refuse to refund the unspent balance in your account.
+2. You shall bear all responsibilities and losses arising from violations of laws and regulations or this Agreement. If your violations cause losses to the Platform or third parties, you shall provide compensation.
+3. The Platform is not liable for service abnormalities or data loss caused by force majeure, network failures, third-party service interruptions, or similar causes. To the extent not prohibited by mandatory provisions of law, the Platform provides no express or implied warranties for the Services (including but not limited to merchantability, fitness for a particular purpose, and non-infringement of third-party rights), and makes no guarantee as to the accuracy, completeness, or reliability of large-model generated content.
+
+## VIII. AI-Generated Content
+
+1. The Output of large models is automatically generated by artificial intelligence and may contain inaccurate, incomplete, biased, or untimely content. It is for your reference only and does not represent any position or viewpoint of the Center. You shall exercise independent judgment and verification of the Output and bear all consequences arising from the use of generated content.
+2. You shall not use the Services to generate or disseminate content that infringes upon the rights of others, endangers national security, or violates laws, regulations, or public order and good morals. The Platform has the right to handle violating content in accordance with the law and reserves the right to report to the relevant authorities.
+
+## IX. Governing Law and Jurisdiction
+
+1. The conclusion, performance, interpretation, and dispute resolution of this Agreement are governed by the laws of the People's Republic of China.
+2. Any dispute arising from or in connection with this Agreement shall first be resolved through friendly negotiation; if negotiation fails, either party may file a lawsuit with the people's court with jurisdiction at the place where the Agreement is signed (i.e., where the Platform is located).
+
+## X. Miscellaneous
+
+1. This Agreement constitutes the entire agreement between you and the Platform regarding your use of the Services. If any provision of this Agreement is determined to be invalid or unenforceable, the validity of the remaining provisions shall not be affected.
+2. The Platform may revise this Agreement from time to time; revisions will be published on the Platform with the effective date indicated. Your continued use of the Platform constitutes acceptance of the revised Agreement. You may stop using the Platform at any time; the Platform has the right to terminate the Services if you seriously breach the Agreement or when termination is required by law.
+3. If you have any questions about this Agreement, please contact the relevant person in charge at the Intelligent Computing Center of Sichuan Post and Telecommunication College.
+`
+
 export function UserAgreement() {
-  // #12：标题/返回链接/日期行走 i18n；正文为法律文本，以中文版为准（en 态加英文提示）
+  // #12：标题/返回链接/日期行/正文全部按语言对齐（zh=中文正文，en=英文正文）
   const { t, i18n } = useTranslation()
   const isEn = i18n.language?.startsWith('en')
   return (
@@ -116,16 +190,9 @@ export function UserAgreement() {
         <p className='text-muted-foreground mt-1 text-xs'>
           {t('最近更新：{{date}} · 四川邮电职业技术学院智算中心', { date: '2026-09-07' })}
         </p>
-        {isEn && (
-          <p className='bg-muted text-muted-foreground mb-4 rounded-md px-3 py-2 text-xs'>
-            Note: This is a legally binding agreement written in Chinese. The English
-            translation of the title is provided for reference only; the Chinese
-            version shall prevail.
-          </p>
-        )}
         <RichContent
           mode='markdown'
-          content={AGREEMENT_MD}
+          content={isEn ? AGREEMENT_MD_EN : AGREEMENT_MD}
           className='prose-neutral dark:prose-invert max-w-none'
         />
       </div>

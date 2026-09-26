@@ -90,8 +90,77 @@ const PRIVACY_MD = `
 如对本隐私政策有任何疑问、意见、建议或投诉、举报需求，请通过以下方式联系我们：**四川邮电职业技术学院智算中心**。我们将在收到您的反馈后，在法律法规规定的期限内予以答复处理。
 `
 
+const PRIVACY_MD_EN = `
+**Last updated: September 7, 2026**
+**Effective date: September 7, 2026**
+
+The Intelligent Computing Center of Sichuan Post and Telecommunication College ("we" or "the Center") understands the importance of your personal information. In accordance with applicable laws and regulations, we will take appropriate security measures to keep your personal information secure and under control. Please read and understand this Privacy Policy carefully before using the StarWhisper Open Platform (the "Platform").
+
+## I. How We Collect and Use Your Personal Information
+
+We collect and use your personal information only to the extent necessary for the purposes described in this Policy, following the principles of legality, propriety, necessity, and good faith.
+
+**1. Account Registration, Sign-in, and Verification**
+
+When you register for or sign in to the Platform, we collect your mobile phone number, account display name, sign-in password (stored in encrypted form), and other information necessary for account registration, sign-in verification, and account security management. You may also use other sign-in methods provided by the Platform.
+
+**2. API Calls and Usage Records**
+
+When you call model services through the Platform, we record necessary call information, including: the model name, call time, input and output content (processed briefly only when necessary to provide conversational services to you), token usage, and consumed quota, for the purposes of API billing, quota management, usage statistics, and anomaly monitoring.
+
+**3. Operations and Security Assurance**
+
+To ensure the secure and stable operation of the Platform and to prevent cyber attacks and misuse, we record necessary access logs, including IP address, browser type and version, operating system, access time, and pages visited, for security protection, troubleshooting, and auditing.
+
+**4. Other Rules for Collecting and Using Personal Information**
+
+(1) If we collect or use your personal information beyond the scope of this Policy, we will separately explain this to you and obtain your consent; (2) in accordance with laws and regulations, consent is not required for collecting or using personal information in the following circumstances: directly related to national or defense security; directly related to public safety, public health, or major public interests; directly related to criminal investigation, prosecution, trial, and judgment enforcement; necessary to protect the life, property, or other major lawful rights and interests of you or another individual where it is difficult to obtain that person's consent; the personal information has been made public by you; collected from lawfully disclosed information; and other circumstances prescribed by laws and regulations.
+
+## II. How We Use Cookies and Similar Technologies
+
+To improve your experience on the Platform, we may use cookies and similar technologies to maintain sign-in status, remember interface preferences, and protect sign-in security. You can manage or clear cookies through your browser settings; if you disable cookies, some features of the Platform may not function properly.
+
+## III. How We Entrust Processing, Share, Transfer, or Publicly Disclose Your Personal Information
+
+1. **Principles for Data Sharing**. We do not sell your personal information to any third party. Except in the following circumstances, we do not share your personal information with any company, organization, or individual: (1) sharing with your explicit consent; (2) sharing as required by laws and regulations or by competent authorities; (3) sharing necessary to protect the lawful rights and interests of the Platform, you, or other individuals.
+2. **Data Use for Service Delivery**. To provide you with API gateway services, we may provide necessary call information to the model providers serving your requests; such sharing is limited to what is necessary for the Platform to function, and the relevant parties are required to honor confidentiality obligations.
+3. **Transfer**. In the event of a merger, acquisition, or asset transfer that results in a change of the personal information controller, we will require the successor to remain bound by this Policy; otherwise, we will require the successor to obtain your authorization and consent anew.
+4. **Public Disclosure**. We do not publicly disclose your personal information, except as otherwise provided by laws and regulations or with your separate consent.
+5. **Exceptions to Prior Consent**. In accordance with laws and regulations, prior authorization is not required for sharing, transferring, or publicly disclosing your personal information in the following circumstances: directly related to national or defense security; directly related to public safety, public health, or major public interests; directly related to criminal investigation, prosecution, trial, and judgment enforcement; necessary to protect the life, property, or other major lawful rights and interests of you or another individual where it is difficult to obtain that person's consent; personal information made public by you; collected from lawfully disclosed information; and other circumstances prescribed by laws and regulations.
+
+## IV. How We Protect Your Personal Information
+
+1. We adopt security measures consistent with industry standards to protect your personal information, including but not limited to transmission encryption (HTTPS), storage encryption, access control, permission management, and log auditing.
+2. We have established a data security management system, enforce least-privilege access for employees handling personal information, and record and audit scenarios involving access to personal information.
+3. In the unfortunate event of a personal information security incident, we will, as required by laws and regulations, promptly inform you via email, SMS, in-app notifications, or announcements of the basic situation and possible impact of the incident and the measures we have taken or will take, and report to the competent authorities as appropriate.
+
+## V. How We Store Your Personal Information
+
+1. **Storage Location**. In accordance with laws and regulations, we store your personal information within the territory of China and will not transfer it outside the country.
+2. **Storage Period**. We retain your personal information only for the shortest period necessary to achieve the purposes of this Policy. After the retention period expires, we will delete or anonymize the relevant personal information, unless otherwise provided by laws and regulations.
+
+## VI. How You Can Manage Your Personal Information Rights
+
+1. **Your Rights**. You lawfully enjoy rights over your personal information, including the rights to access, copy, correct, supplement, and delete it, to withdraw authorization, and to cancel your account.
+2. **How to Exercise Your Rights**. You may query and modify your account information through the "Personal Center" of the Platform, or submit requests to us through the contact information described in Section IX. We will process your requests within the time limits prescribed by law.
+
+## VII. How We Protect Minors' Personal Information
+
+1. The Platform is primarily intended for faculty, students, and authorized adult users. We attach great importance to the protection of minors' personal information.
+2. If you are a minor under the age of 18, please read and agree to this Privacy Policy together with your parents or other guardians before using the Platform and related services. We do not knowingly collect personal information from minors under the age of 14 (children); if we discover that a child's personal information has been collected without prior guardian consent, we will endeavor to delete the relevant information as soon as possible.
+
+## VIII. How We Update This Policy
+
+1. To provide you with better services, we may revise this Privacy Policy from time to time. Upon update, we will publish the revised version on the Platform with the effective date indicated and remind you to read it via announcements or other means.
+2. For changes that materially diminish your rights under this Privacy Policy, we will provide more prominent notice. Your continued use of the Platform constitutes your acknowledgment of and consent to the updated Policy.
+
+## IX. How to Contact Us
+
+If you have any questions, comments, suggestions, complaints, or reports regarding this Privacy Policy, please contact us at: **the Intelligent Computing Center of Sichuan Post and Telecommunication College**. We will respond and process your feedback within the time limits prescribed by laws and regulations.
+`
+
 export function PrivacyPolicy() {
-  // #12：标题/返回链接/日期行走 i18n；正文为法律文本，以中文版为准（en 态加英文提示）
+  // #12：标题/返回链接/日期行/正文全部按语言对齐（zh=中文正文，en=英文正文）
   const { t, i18n } = useTranslation()
   const isEn = i18n.language?.startsWith('en')
   return (
@@ -111,16 +180,9 @@ export function PrivacyPolicy() {
         <p className='text-muted-foreground mt-1 text-xs'>
           {t('最近更新：{{date}} · 四川邮电职业技术学院智算中心', { date: '2026-09-07' })}
         </p>
-        {isEn && (
-          <p className='bg-muted text-muted-foreground mb-4 rounded-md px-3 py-2 text-xs'>
-            Note: This privacy policy is a legally binding document written in
-            Chinese. The English translation of the title is provided for reference
-            only; the Chinese version shall prevail.
-          </p>
-        )}
         <RichContent
           mode='markdown'
-          content={PRIVACY_MD}
+          content={isEn ? PRIVACY_MD_EN : PRIVACY_MD}
           className='prose-neutral dark:prose-invert max-w-none'
         />
       </div>
