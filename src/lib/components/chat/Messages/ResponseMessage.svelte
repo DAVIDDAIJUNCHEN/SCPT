@@ -287,6 +287,10 @@
 				speaking = false;
 				speakingIdx = undefined;
 			};
+			// Slow server-side TTS: gaps while the next chunk synthesizes
+			// must HOLD playback, not end the session (fixes "stops after
+			// first sentence" when chunk 2 isn't ready in time).
+			$audioQueue.setExpectMore(true);
 
 			loadingSpeech = true;
 			let messageContentParts: string[] = getMessageContentParts(
@@ -412,110 +416,183 @@
 					return chunks;
 				};
 
-				// Split an over-long or corrupted chunk in half (on sentence
-				// boundary if possible, hard midpoint otherwise)
-				const halveChunk = (text: string): [string, string] => {
-					if (text.length <= 4) return [text, ''];
-					const hardMid = Math.floor(text.length / 2);
-					let cut = -1;
+			// Split an over-long or corrupted chunk in half (on sentence
+			// boundary if possible, hard midpoint otherwise)
+			const halveChunk = (text: string): [string, string] => {
+				if (text.length <= 4) return [text, ''];
+				const hardMid = Math.floor(text.length / 2);
+				let cut = -1;
+				for (let i = hardMid; i >= hardMid - 30 && i > 2; i--) {
+					if ('。！？；!?;'.includes(text[i])) {
+						cut = i + 1;
+						break;
+					}
+				}
+				if (cut < 0) {
 					for (let i = hardMid; i >= hardMid - 30 && i > 2; i--) {
-						if ('。！？；!?;'.includes(text[i])) {
+						if ('，、, '.includes(text[i])) {
 							cut = i + 1;
 							break;
 						}
 					}
-					if (cut < 0) {
-						for (let i = hardMid; i >= hardMid - 30 && i > 2; i--) {
-							if ('，、, '.includes(text[i])) {
-								cut = i + 1;
+				}
+				if (cut < 0) cut = hardMid;
+				return [text.slice(0, cut), text.slice(cut)];
+			};
+
+			// ── Dual-lane parallel synthesis ─────────────────────────────
+			// Server runs 2 MIG workers behind one endpoint (v4 proxy);
+			// two lanes synthesize concurrently and blobs are enqueued IN
+			// ORDER. Halved retry tails get a fractional sequence number
+			// between their parent and the next assigned chunk so global
+			// playback order is preserved.
+			const chunks = buildChunks(messageContentParts);
+			console.debug('Xingyu TTS chunks', chunks.map((c) => c.length));
+
+			const NLANES = 2;
+			const assigned = new Set<number>();
+			const enqueuedSeqs = new Set<number>();
+			const pendingBlobs = new Map<number, Blob | null>();
+			let seqCounter = 0;
+			let chunkIdx = 0;
+			let firstChunkTaken = false;
+
+			const orderedEnqueue = () => {
+				let progressed = true;
+				while (progressed) {
+					progressed = false;
+					const seqs = [...pendingBlobs.keys()].sort((a, b) => a - b);
+					for (const s of seqs) {
+						// Ready only when every assigned seq < s is enqueued
+						let ready = true;
+						for (const a of assigned) {
+							if (a < s && !enqueuedSeqs.has(a)) {
+								ready = false;
 								break;
 							}
 						}
+						if (ready) {
+							const blob = pendingBlobs.get(s) ?? null;
+							pendingBlobs.delete(s);
+							enqueuedSeqs.add(s);
+							if (blob) {
+								const url = URL.createObjectURL(blob);
+								$audioQueue.enqueue(url);
+								loadingSpeech = false;
+							}
+							progressed = true;
+							break;
+						}
 					}
-					if (cut < 0) cut = hardMid;
-					return [text.slice(0, cut), text.slice(cut)];
-				};
+				}
+			};
 
-				// Chunks pushed back by failed verifications (played before new chunks)
-				const tailQueue: string[] = [];
+			const synthOnce = async (text: string): Promise<Blob | null> => {
+				const res = await synthesizeOpenAISpeech(localStorage.token, voiceId, text).catch(
+					(error) => {
+						console.error(error);
+						return null;
+					}
+				);
+				if (!res) return null;
+				const blob = await res.blob();
+				if (blob.size === 0) return null;
+				return blob;
+			};
 
-				const synthAndVerify = async (text: string, skipVerify = false): Promise<Blob | null> => {
-					let attempt = 0;
-					while (attempt <= TTS_VERIFY_MAX_RETRIES) {
-						if (signal.aborted) return null;
-						const res = await synthesizeOpenAISpeech(
+			const runLane = async (): Promise<void> => {
+				type LaneItem = { text: string; seq: number; retries: number; skipVerify: boolean };
+				const localQueue: LaneItem[] = [];
+				while (true) {
+					if (signal.aborted) return;
+					let item = localQueue.shift();
+					if (!item) {
+						if (chunkIdx < chunks.length) {
+							const seq = seqCounter++;
+							assigned.add(seq);
+							item = {
+								text: chunks[chunkIdx++],
+								seq,
+								retries: 0,
+								skipVerify: !firstChunkTaken // first chunk is short → skip ASR
+							};
+							firstChunkTaken = true;
+						} else {
+							return; // lane done
+						}
+					}
+
+					const blob = await synthOnce(item.text);
+					if (signal.aborted) return;
+					if (!blob) {
+						console.error('TTS chunk failed, skipping:', item.text.slice(0, 40));
+						pendingBlobs.set(item.seq, null);
+						orderedEnqueue();
+						continue;
+					}
+					if (item.skipVerify) {
+						pendingBlobs.set(item.seq, blob);
+						orderedEnqueue();
+						continue;
+					}
+
+					// ASR cross-verification (~1s)
+					let transcript = '';
+					try {
+						const asrRes = await transcribeAudio(
 							localStorage.token,
-							voiceId,
-							text
-						).catch((error) => {
-							console.error(error);
-							return null;
-						});
-						if (!res) return null;
-
-						const blob = await res.blob();
-						if (blob.size === 0) return null;
-
-						if (skipVerify) return blob; // quick-start: trust short first chunk
-
-						// ASR cross-verification (~1s)
-						let transcript = '';
-						try {
-							const asrRes = await transcribeAudio(localStorage.token, blobToFile(blob, 'tts.wav'));
-							transcript = asrRes?.text ?? '';
-						} catch (e) {
-							console.warn('TTS ASR verification unavailable, skipping check', e);
-							return blob; // fail-open: verification is best-effort
-						}
-						if (isVerified(text, transcript)) {
-							return blob;
-						}
-
-						console.warn(
-							`TTS verification mismatch (attempt ${attempt + 1}), halving chunk`,
-							{ text, transcript }
+							blobToFile(blob, 'tts.wav')
 						);
-						// Split and retry with the first half only; the caller
-						// re-queues the remainder.
-					const [head, tail] = halveChunk(text);
-					if (!tail || head === text) return blob; // cannot split further — play as-is
-					const headBlob = await synthAndVerify(head);
-					// Stash tail for the caller to prepend back into the queue
-					tailQueue.unshift(tail);
-					return headBlob;
+						transcript = asrRes?.text ?? '';
+					} catch (e) {
+						console.warn('TTS ASR verification unavailable, skipping check', e);
+						pendingBlobs.set(item.seq, blob); // fail-open
+						orderedEnqueue();
+						continue;
 					}
-					return null;
-				};
-
-				const chunks = buildChunks(messageContentParts);
-				console.debug('Xingyu TTS chunks', chunks.map((c) => c.length));
-
-				let chunkIdx = 0;
-				let isFirstChunk = true;
-				const processNextChunk = async (): Promise<void> => {
-					while (chunkIdx < chunks.length || tailQueue.length) {
-						if (signal.aborted) return;
-						const text = tailQueue.length ? tailQueue.shift() : chunks[chunkIdx++];
-						if (!text) continue;
-
-						const skipVerify = isFirstChunk; // first chunk is short → skip ASR to save ~1-2s
-						isFirstChunk = false;
-						const blob = await synthAndVerify(text, skipVerify);
-						if (signal.aborted) return;
-						if (blob && speaking) {
-							const url = URL.createObjectURL(blob);
-							$audioQueue.enqueue(url);
-							loadingSpeech = false;
-						} else if (!blob) {
-							console.error('TTS chunk failed after retries, skipping:', text.slice(0, 40));
-						}
+					if (isVerified(item.text, transcript)) {
+						pendingBlobs.set(item.seq, blob);
+						orderedEnqueue();
+						continue;
 					}
-				};
 
-				await processNextChunk();
-			}
+					console.warn(
+						`TTS verification mismatch (retries ${item.retries}), halving chunk`,
+						{ text: item.text, transcript }
+					);
+					if (item.retries >= TTS_VERIFY_MAX_RETRIES) {
+						pendingBlobs.set(item.seq, blob); // give up — play as-is
+						orderedEnqueue();
+						continue;
+					}
+					const [head, tail] = halveChunk(item.text);
+					if (!tail || head === item.text) {
+						pendingBlobs.set(item.seq, blob); // cannot split further
+						orderedEnqueue();
+						continue;
+					}
+					// Head retries in place (same seq); tail takes a fractional
+					// seq between this chunk and the next assigned one.
+					let nextLarger = item.seq + 1;
+					for (const a of assigned) {
+						if (a > item.seq && a < nextLarger) nextLarger = a;
+					}
+					const tailSeq = (item.seq + nextLarger) / 2;
+					assigned.add(tailSeq);
+					localQueue.unshift(
+						{ text: head, seq: item.seq, retries: item.retries + 1, skipVerify: false },
+						{ text: tail, seq: tailSeq, retries: 0, skipVerify: false }
+					);
+				}
+			};
+
+			await Promise.all(Array.from({ length: NLANES }, () => runLane()));
+			// All chunks enqueued — release the queue so the last chunk's
+			// 'ended' event ends the session normally.
+			$audioQueue.setExpectMore(false);
 		}
-	};
+	}
+};
 
 	let preprocessedDetailsCache = [];
 

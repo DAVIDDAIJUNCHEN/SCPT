@@ -11,6 +11,7 @@ export class AudioQueue {
 	private audio: HTMLAudioElement;
 	private queue: string[] = [];
 	private current: string | null = null;
+	private expecting = false; // producer promised more audio (slow/streamed TTS)
 	private readonly _onEnded = () => this.next();
 
 	id: string | null = null;
@@ -31,6 +32,20 @@ export class AudioQueue {
 
 	setPlaybackRate(rate: number) {
 		this.audio.playbackRate = rate;
+	}
+
+	/**
+	 * Producer protocol for slow server-side TTS pipelines:
+	 * While true, an empty queue HOLDS (audio paused, no onStopped) instead
+	 * of finishing — a gap while the next chunk is still synthesizing no
+	 * longer kills the whole playback session. Set to false when generation
+	 * is done; if everything has already drained, fires empty-queue at once.
+	 */
+	setExpectMore(v: boolean) {
+		this.expecting = v;
+		if (!v && !this.current && this.queue.length === 0 && this.audio.paused) {
+			this.onStopped?.({ event: 'empty-queue', id: this.id });
+		}
 	}
 
 	enqueue(url: string) {
@@ -56,6 +71,9 @@ export class AudioQueue {
 		if (this.current) {
 			this.audio.src = this.current;
 			this.audio.play();
+		} else if (this.expecting) {
+			// More audio is being synthesized upstream — hold instead of
+			// stopping. The next enqueue() auto-resumes playback.
 		} else {
 			this.#halt();
 			this.onStopped?.({ event: 'empty-queue', id: this.id });
@@ -84,5 +102,6 @@ export class AudioQueue {
 		this.audio.load();
 		this.queue = [];
 		this.current = null;
+		this.expecting = false;
 	}
 }
