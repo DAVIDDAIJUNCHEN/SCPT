@@ -877,6 +877,14 @@
 		await config.set(await getBackendConfig());
 	};
 
+	// Xingyu UX: after an explicit save on a personal settings tab, confirm
+	// via toast and close the modal so users don't have to hit Back again.
+	const saveAndClose = async () => {
+		toast.success($i18n.t('Settings saved successfully!'));
+		await tick();
+		show = false;
+	};
+
 	const searchDebounceHandler = () => {
 		if (searchDebounceTimeout) {
 			clearTimeout(searchDebounceTimeout);
@@ -1201,22 +1209,22 @@
 
 	<div class="flex-1 min-w-0 min-h-0 p-4 md:px-5 flex flex-col">
 		<div class="flex-1 min-h-0 overflow-hidden">
-			{#if selectedTab === 'general'}
-				<General
-					{getModels}
-					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
-			{:else if selectedTab === 'interface'}
-				<Interface
-					{saveSettings}
-					personalSettingsValue={personalUiSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+		{#if selectedTab === 'general'}
+			<General
+				{getModels}
+				{saveSettings}
+				on:save={() => {
+					saveAndClose();
+				}}
+			/>
+		{:else if selectedTab === 'interface'}
+			<Interface
+				{saveSettings}
+				personalSettingsValue={personalUiSettings}
+				on:save={() => {
+					saveAndClose();
+				}}
+			/>
 			{:else if selectedTab === 'notifications'}
 				<Notifications {saveSettings} />
 			{:else if selectedTab === 'shortcuts'}
@@ -1235,32 +1243,32 @@
 						toast.success($i18n.t('Settings saved successfully!'));
 					}}
 				/>
-			{:else if selectedTab === 'personalization'}
-				<Personalization
-					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
-			{:else if selectedTab === 'audio'}
-				<Audio
-					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+		{:else if selectedTab === 'personalization'}
+			<Personalization
+				{saveSettings}
+				on:save={() => {
+					saveAndClose();
+				}}
+			/>
+		{:else if selectedTab === 'audio'}
+			<Audio
+				{saveSettings}
+				on:save={() => {
+					saveAndClose();
+				}}
+			/>
 			{:else if selectedTab === 'data_controls'}
 				<DataControls {saveSettings} />
 			{:else if selectedTab === 'usage'}
 				<Usage />
 			{:else if selectedTab === 'archived_chats'}
 				<ArchivedChats />
-			{:else if selectedTab === 'account'}
-				<Account
-					saveHandler={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+		{:else if selectedTab === 'account'}
+			<Account
+				saveHandler={() => {
+					saveAndClose();
+				}}
+			/>
 			{:else if selectedTab === 'about'}
 				<About />
 			{:else if selectedTab === 'admin:general'}
