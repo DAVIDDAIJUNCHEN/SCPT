@@ -3121,5 +3121,7 @@
 	"Please record audio first (3-30 seconds).": "请先录音（3-30 秒）。",
 	"Recording too short. Please record at least 3 seconds.": "录音太短，请至少录制 3 秒。",
 	"Please enter a voice name.": "请输入音色名称。",
-	"Unable to access the microphone. Please check browser permissions.": "无法访问麦克风，请检查浏览器权限。"
+	"Unable to access the microphone. Please check browser permissions.": "无法访问麦克风，请检查浏览器权限。",
+	"Transcribing...": "转写中...",
+	"(editable)": "（自动转写，可修改）"
 }

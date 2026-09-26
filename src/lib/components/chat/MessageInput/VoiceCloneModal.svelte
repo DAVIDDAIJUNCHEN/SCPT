@@ -1,9 +1,15 @@
 <script lang="ts">
 	import { getContext, onDestroy } from 'svelte';
-	import { fade, scale } from 'svelte/transition';
+	import { fade } from 'svelte/transition';
 	import { toast } from 'svelte-sonner';
 
-	import { getUserVoices, createVoiceClone, deleteUserVoice, type UserVoice } from '$lib/apis/audio';
+	import {
+		getUserVoices,
+		createVoiceClone,
+		deleteUserVoice,
+		transcribeAudio,
+		type UserVoice
+	} from '$lib/apis/audio';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 
@@ -15,10 +21,10 @@
 	let audioChunks: Blob[] = [];
 	let audioBlob: Blob | null = null;
 	let audioUrl: string | null = null;
-	let audioPlayer: HTMLAudioElement | null = null;
 
 	let recording = false;
 	let processing = false;
+	let transcribing = false;
 	let elapsed = 0;
 	let timerInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -41,7 +47,7 @@
 		}
 	};
 
-	$: if (show && !loadingVoices) {
+	$: if (show && !loadingVoices && voices.length === 0) {
 		loadVoices();
 	}
 
@@ -53,6 +59,25 @@
 		audioUrl = null;
 		audioChunks = [];
 		elapsed = 0;
+	};
+
+	// 录音结束后：自动转写回填参考文本（用户可再编辑）
+	const autoTranscribe = async () => {
+		if (!audioBlob) return;
+		transcribing = true;
+		try {
+			const file = new File([audioBlob], 'recording.webm', { type: audioBlob.type });
+			const res = await transcribeAudio(localStorage.token, file);
+			const text = res?.text?.trim();
+			if (text) {
+				refText = text;
+			}
+		} catch (e) {
+			// 转写失败不阻断流程：留空则由 cosyvoice 侧自动转写
+			console.error('auto transcribe failed:', e);
+		} finally {
+			transcribing = false;
+		}
 	};
 
 	const startRecording = async () => {
@@ -73,6 +98,8 @@
 				audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
 				audioUrl = URL.createObjectURL(audioBlob);
 				stream.getTracks().forEach((t) => t.stop());
+				// 自动转写
+				autoTranscribe();
 			};
 
 			mediaRecorder.start();
@@ -145,19 +172,13 @@
 		}
 	};
 
-	const formatTime = (s: number) => {
-		const m = Math.floor(s / 60);
-		const sec = s % 60;
-		return `${m}:${sec.toString().padStart(2, '0')}`;
-	};
-
 	onDestroy(() => {
 		if (timerInterval) clearInterval(timerInterval);
 		if (audioUrl) URL.revokeObjectURL(audioUrl);
 	});
 </script>
 
-<Modal bind:show className="!string">
+<Modal bind:show className="bg-white dark:bg-gray-900 rounded-3xl">
 	<div class="mx-auto max-h-[85vh] max-w-lg overflow-y-auto scrollbar-thin px-6 py-5" transition:fade={{ duration: 150 }}>
 		<div class="mb-4 flex items-center justify-between">
 			<div class="text-lg font-medium">{$i18n.t('Clone My Voice')}</div>
@@ -180,7 +201,7 @@
 			)}
 		</div>
 
-		<!-- 录音区 -->
+		<!-- 录音区：未录 = 大按钮；录制中 = 停止按钮；已录 = 播放器 + 重录 -->
 		<div class="mb-4 flex flex-col items-center rounded-xl bg-gray-50 dark:bg-gray-900/50 p-6">
 			{#if !recording && !audioBlob}
 				<button
@@ -199,42 +220,41 @@
 					{$i18n.t('Tap to start recording')}
 				</div>
 			{:else if recording}
-				<div class="flex flex-col items-center" transition:scale={{ duration: 150 }}>
-					<button
-						class="flex size-16 items-center justify-center rounded-full bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-900 shadow-lg animate-pulse"
-						type="button"
-						on:click={stopRecording}
-					>
-						<svg xmlns="http://www.w3.org/2000/svg" class="size-6" viewBox="0 0 24 24" fill="currentColor">
-							<rect x="6" y="6" width="12" height="12" rx="2" />
-						</svg>
-					</button>
-					<div class="mt-3 flex items-center gap-2 text-sm font-medium text-red-500">
-						<span class="inline-block size-2 rounded-full bg-red-500 animate-pulse"></span>
-						{formatTime(elapsed)} / {formatTime(MAX_SECONDS)}
-					</div>
-					<div class="text-xs text-gray-400 mt-1">{$i18n.t('Tap to stop')}</div>
+				<button
+					class="flex size-16 items-center justify-center rounded-full bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-900 shadow-lg animate-pulse"
+					type="button"
+					on:click={stopRecording}
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="size-6" viewBox="0 0 24 24" fill="currentColor">
+						<rect x="6" y="6" width="12" height="12" rx="2" />
+					</svg>
+				</button>
+				<div class="mt-3 flex items-center gap-2 text-sm font-medium text-red-500">
+					<span class="inline-block size-2 rounded-full bg-red-500 animate-pulse"></span>
+					{elapsed} / {MAX_SECONDS}s
 				</div>
 			{:else}
-				<div class="flex w-full flex-col items-center">
+				<div class="flex w-full flex-col items-center gap-3">
 					{#if audioUrl}
-						<audio bind:this={audioPlayer} src={audioUrl} controls class="w-full"></audio>
+						<audio src={audioUrl} controls class="w-full"></audio>
 					{/if}
-					<button
-						class="mt-3 text-sm text-gray-500 underline hover:text-gray-800 dark:hover:text-gray-200"
-						type="button"
-						on:click={resetRecording}
-					>{$i18n.t('Re-record')}</button>
+					<div class="flex items-center gap-4">
+						<button
+							class="text-sm text-gray-500 underline hover:text-gray-800 dark:hover:text-gray-200"
+							type="button"
+							on:click={resetRecording}
+						>{$i18n.t('Re-record')}</button>
+					</div>
 				</div>
 			{/if}
 		</div>
 
-		<!-- 音色名与参考文本 -->
+		<!-- 名称 + 参考文本（转写结果自动回填，可编辑） -->
 		<div class="mb-4 space-y-3">
 			<div>
 				<div class="mb-1.5 text-sm font-medium">{$i18n.t('Voice Name')}</div>
 				<input
-					class="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-400"
+					class="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-850 px-3 py-2 text-sm text-gray-900 dark:text-gray-50 outline-none focus:ring-1 focus:ring-blue-400"
 					type="text"
 					bind:value={voiceName}
 					maxlength="30"
@@ -242,12 +262,22 @@
 				/>
 			</div>
 			<div>
-				<div class="mb-1.5 text-sm font-medium">
+				<div class="mb-1.5 flex items-center gap-2 text-sm font-medium">
 					{$i18n.t('Reference Text')}
-					<span class="font-normal text-gray-400">{$i18n.t('(optional, auto-transcribed if empty)')}</span>
+					{#if transcribing}
+						<span class="inline-flex items-center gap-1 font-normal text-gray-400">
+							<svg class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+							</svg>
+							{$i18n.t('Transcribing...')}
+						</span>
+					{:else}
+						<span class="font-normal text-gray-400">{$i18n.t('(editable)')}</span>
+					{/if}
 				</div>
 				<textarea
-					class="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-blue-400 resize-none"
+					class="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-850 px-3 py-2 text-sm text-gray-900 dark:text-gray-50 outline-none focus:ring-1 focus:ring-blue-400 resize-none"
 					rows="2"
 					bind:value={refText}
 					placeholder={$i18n.t('What you said in the recording')}
@@ -276,12 +306,7 @@
 		<div>
 			<div class="mb-2 text-sm font-medium">{$i18n.t('My Voices')}</div>
 			{#if loadingVoices}
-				<div class="py-4 text-center text-sm text-gray-400">
-					<svg class="animate-spin h-4 w-4 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-						<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-					</svg>
-				</div>
+				<div class="py-4 text-center text-sm text-gray-400">...</div>
 			{:else if voices.length === 0}
 				<div class="py-3 text-sm text-gray-400">{$i18n.t('No custom voices yet.')}</div>
 			{:else}
@@ -291,7 +316,7 @@
 							<div class="min-w-0 flex-1">
 								<div class="text-sm font-medium truncate">{voice.name}</div>
 								<div class="text-xs text-gray-400 truncate">
-									{voice.id} · {new Date(voice.created_at * 1000).toLocaleDateString()}
+									{new Date(voice.created_at * 1000).toLocaleDateString()}
 								</div>
 							</div>
 							<button
