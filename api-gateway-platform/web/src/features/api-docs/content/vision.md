@@ -180,7 +180,7 @@ python3 -c "import json,base64; open('out.png','wb').write(base64.b64decode(json
 | `output_format` | 🔴 **必须显式传 `"png"` 或 `"webp"`**：缺省值按 `jpeg` 处理，当前服务端 jpeg 编码路径异常，不传此参数会返回 500 Internal Server Error（2026-09-25 实测定位） |
 | `response_format` | `b64_json`（返回 base64）；不传时默认 url 模式 |
 | `n`（每次张数） | 固定每次 1 张 |
-| 生成速度 | 512: ~6 秒；1024: ~21 秒；1664 宽幅: ~33 秒（H20 实测） |
+| 生成速度 | 512: ~6 秒；1024: ~21 秒；1664 宽幅: ~33 秒（自营智算平台实测） |
 | 计费 | 按张计费（与 FLUX 同价），价格见[模型与价格](02-1-模型与价格.md) |
 
 > ⚠️ **常见报错排查**：调用返回 `500 Internal Server Error`（约 5 秒后失败）→ 九成是漏传 `output_format`。补上 `"output_format": "png"` 即可。`generator_device` 传 `"cuda"` 也可用（2026-09-25 实测 png+cuda 正常），但推荐按官方 cookbook 用 `cpu`。
