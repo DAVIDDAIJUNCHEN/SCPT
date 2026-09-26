@@ -27,10 +27,10 @@ const BRAND_NAME = '川邮·星语'
 const TAGLINE_KEY = '使用川邮·星语 API 构建你的应用'
 const SUBTAGLINE_KEY = '人类的梦想是星辰大海'
 const HIGHLIGHT_KEYS = [
-  '主流大语言模型全覆盖 · DeepSeek-V4.1 / Qwen3.8 / GLM-5.3',
-  '多模态能力 · ASR / TTS / 视频生成 / 图片生成',
-  '毫秒级推理 · 自营智算 · 数据不出校',
-  '按量计费透明 · 余额实时可见',
+  '主流大模型全覆盖 · DeepSeek-V4.1 / Qwen3.8 / GLM-5.3',
+  '多模态能力 · 语音识别 / 语音合成 / 图像生成 / 视频生成',
+  '自营智算 25.7 PFLOPS · 7.5TB 显存 · 数据不出校',
+  '注册即送 ¥10 · 按量计费 · 余额实时可见',
 ]
 
 type AuthLayoutProps = {
