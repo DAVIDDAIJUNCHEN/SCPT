@@ -1,7 +1,19 @@
 # Rate Limits & Capacity
 
-> StarWhisper API Developer Guide · Last verified 2026-09-23
-> The platform sets **no global token RPM/TPM limits** [verified 2026-09-23]; capacity protection happens at the model-service layer. This page explains per-model concurrency caps, behavior under full load, and how your code should handle it.
+> StarWhisper API Developer Guide · Last verified 2026-09-26
+> API-level rate limiting was **enabled on 2026-09-24**: requests are capped per user group per minute; exceeding the cap returns 429 (retry with exponential backoff). This page covers the rate-limit rules, per-model concurrency caps, behavior under full load, and how your code should handle it.
+
+## API-Level Rate Limiting (since 2026-09-24) [verified 2026-09-24]
+
+| Group | Requests per minute |
+|---|---|
+| default (on registration) | **100** |
+| vip | **300** |
+
+- 1-minute rolling window; requests beyond the cap return **429** with a `retry_after` hint in the payload.
+- The limit counts per **user group**, not per token — all tokens of one account share the quota.
+- Load test: under a 220-concurrent burst, 89 succeeded (200) and 131 were rate-limited (429) — protection worked, zero downtime.
+- Normal individual usage (chat / long documents / classroom demos) is nowhere near the cap; only a code bug calling the API in a tight loop would trigger it.
 
 ## Per-Model Concurrency Capacity [verified 2026-09-23 via get_server_info]
 
@@ -73,4 +85,4 @@ At roughly 1 concurrent lane ≈ 10–20 light-usage students/teachers [theoreti
 
 ---
 
-*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-23*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-26*

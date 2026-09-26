@@ -1,6 +1,6 @@
 # 语音能力（TTS / ASR / 音频理解）
 
-> 数据：2026-09-23 实测整理。语音三件套：合成（TTS）、识别（ASR）、音频理解（Audio）。
+> 数据：2026-09-26 实测整理。语音三件套：合成（TTS）、识别（ASR）、音频理解（Audio）。
 
 ## 模型与端点
 
@@ -20,12 +20,33 @@ curl https://ai-platform.sptc.edu.cn/v1/audio/speech -k \
   -d '{
     "model": "cosyvoice-v3",
     "input": "你好，欢迎使用川邮星语",
-    "voice": "VOICE_ID"
+    "voice": "5a4ff23e588f"
   }' \
   --output output.wav
 ```
 
-**要点**：`voice` 必须用 voice ID（音色编号），不能用名称。平台音色库正在建设中（将提供公共音色与声音克隆能力），当前可用 voice ID 请联系**智算中心**获取。
+**要点**：`voice` 必须用 voice ID（音色编号），不能用名称。
+
+### 公共音色库（2026-09-26 上线，8 款）
+
+音色列表可直接从接口拉取（无需令牌）：
+
+```bash
+curl -k https://ai-platform.sptc.edu.cn/v1/audio/voices
+```
+
+| voice ID | 音色 |
+|---|---|
+| `9c3ca98d75b2` | 代军（沉稳男声） |
+| `5a4ff23e588f` | 婷婷（标准女声） |
+| `8a5c746b6944` | 阳光少年 |
+| `ef71ecb5bc9e` | 温柔淑女 |
+| `064af56f6a74` | 活泼男孩 |
+| `a28b196a096a` | 沉稳男声 |
+| `59f513d7a264` | 甜美女声 |
+| `4ef11cc62e48` | 沉稳长者 |
+
+网页端（ai-chat.sptc.edu.cn）的语音设置中可直接下拉选择上述音色。**个人声音克隆**能力建设中，上线后将在本页补充使用说明。
 
 ```python
 from openai import OpenAI
@@ -34,7 +55,7 @@ client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.c
 
 resp = client.audio.speech.create(
     model="cosyvoice-v3",
-    voice="VOICE_ID",  # voice ID，向智算中心获取
+    voice="5a4ff23e588f",  # voice ID，如：婷婷（标准女声）；完整列表见上表
     input="你好，欢迎使用川邮星语",
 )
 resp.write_to_file("output.wav")

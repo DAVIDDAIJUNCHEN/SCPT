@@ -30,8 +30,8 @@
 
 ## 429 — Rate Limit Reached
 
-**Cause**: too many requests in a short window triggered rate limiting.
-**Fix**: retry after 30–60 seconds; add exponential backoff in code (retry intervals 2s → 4s → 8s). The platform currently has no global token RPM cap [verified 2026-09-23]; normal individual usage almost never triggers it — if it fires frequently, contact the AI Computing Center for a check.
+**Cause**: too many requests in a short window triggered platform rate limiting (enabled 2026-09-24, per user group: default 100 requests/minute, vip 300/minute).
+**Fix**: retry after 30–60 seconds; add exponential backoff in code (retry intervals 2s → 4s → 8s). The limit counts per user group; normal individual usage (chat / long documents / classroom demos) almost never triggers it — if it fires frequently, check your code for a retry loop, or contact the AI Computing Center for a check.
 
 ## 500 — Server Error
 
@@ -69,4 +69,4 @@ Error → does it mention SSL/certificate or is it a 502?
 ```
 
 ---
-*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-24*
+*StarWhisper Platform · maintained by the AI Computing Center · 2026-09-26*
