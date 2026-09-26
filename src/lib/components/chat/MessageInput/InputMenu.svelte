@@ -26,6 +26,7 @@
 	import Notes from './InputMenu/Notes.svelte';
 	import Knowledge from './InputMenu/Knowledge.svelte';
 	import AttachWebpageModal from './AttachWebpageModal.svelte';
+	import VoiceCloneModal from './VoiceCloneModal.svelte';
 	import GlobeAlt from '$lib/components/icons/GlobeAlt.svelte';
 
 	const i18n = getContext('i18n');
@@ -51,6 +52,7 @@
 	let tab = '';
 
 	let showAttachWebpageModal = false;
+	let showVoiceCloneModal = false;
 	const toolApprovalModes = [
 		{
 			value: 'full',
@@ -113,6 +115,8 @@
 	}}
 />
 
+<VoiceCloneModal bind:show={showVoiceCloneModal} />
+
 <!-- Hidden file input used to open the camera on mobile -->
 <input
 	id="camera-input"
@@ -143,7 +147,35 @@
 					class="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin"
 					in:fly={{ x: -20, duration: 150 }}
 				>
-					{#if toolPermissionsEnabled}
+					<button
+					class="flex gap-2 w-full items-center h-[1.6875rem] px-2 text-[0.8125rem] font-normal cursor-pointer hover:bg-gray-50/40 dark:hover:bg-gray-800/40 rounded-xl"
+					type="button"
+					on:click={() => {
+						showVoiceCloneModal = true;
+						show = false;
+					}}
+				>
+					<svg
+						class="size-3.5 shrink-0"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.5"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path d="M12 19v-7" />
+						<path d="M9 12h6l-3 7z" fill="currentColor" stroke="none" />
+						<rect x="9" y="3" width="6" height="12" rx="3" />
+						<path d="M5 11a7 7 0 0 0 14 0" />
+					</svg>
+
+					<div class="line-clamp-1">{$i18n.t('Clone My Voice')}</div>
+				</button>
+
+				<div class="h-px mx-1 my-1 bg-gray-100 dark:bg-gray-800"></div>
+
+				{#if toolPermissionsEnabled}
 						<button
 							class="flex gap-2 w-full items-center h-[1.6875rem] px-2 text-[0.8125rem] font-normal cursor-pointer hover:bg-gray-50/40 dark:hover:bg-gray-800/40 rounded-xl"
 							on:click={() => {

@@ -56,13 +56,96 @@ from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import strict_match_mime_type
 from open_webui.utils.session_pool import get_session
 from pydantic import BaseModel
+from sqlalchemy import text as sa_text
+
+from open_webui.internal.db import engine as _db_engine
+
+log = logging.getLogger(__name__)
+
+# --- 用户自建音色（私有音色克隆）---
+# 音色实体存放在 cosyvoice 服务（voices.json），本表只做 user_id -> voice_id 归属映射。
+# COSYVOICE_BASE_URL / COSYVOICE_API_KEY 由部署侧（compose env）注入。
+COSYVOICE_BASE_URL = os.getenv('COSYVOICE_BASE_URL', 'http://10.32.1.3:30691').rstrip('/')
+COSYVOICE_API_KEY = os.getenv('COSYVOICE_API_KEY', '')
+MAX_USER_VOICES = 10  # 每人最多自建音色数
+VOICE_CLONE_MAX_SIZE = 15 * 1024 * 1024  # 15MB
+VOICE_NAME_MAX_LEN = 30
+
+_user_voice_ddl = '''
+CREATE TABLE IF NOT EXISTS user_voice (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    voice_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    text TEXT DEFAULT '',
+    created_at INTEGER NOT NULL
+)
+'''
+_user_voice_idx = 'CREATE INDEX IF NOT EXISTS ix_user_voice_user_id ON user_voice (user_id)'
+with _db_engine.begin() as _conn:
+    _conn.execute(sa_text(_user_voice_ddl))
+    _conn.execute(sa_text(_user_voice_idx))
+log.info('user_voice table ready (private voice clone feature)')
+
+
+def _list_user_voices(user_id: str) -> list[dict]:
+    with _db_engine.connect() as conn:
+        rows = conn.execute(
+            sa_text(
+                'SELECT voice_id, name, text, created_at FROM user_voice WHERE user_id = :uid ORDER BY created_at DESC'
+            ),
+            {'uid': user_id},
+        ).fetchall()
+    return [
+        {'id': r[0], 'name': r[1], 'text': r[2] or '', 'created_at': r[3]} for r in rows
+    ]
+
+
+def _count_user_voices(user_id: str) -> int:
+    with _db_engine.connect() as conn:
+        return conn.execute(
+            sa_text('SELECT COUNT(*) FROM user_voice WHERE user_id = :uid'), {'uid': user_id}
+        ).scalar() or 0
+
+
+def _get_user_voice(user_id: str, voice_id: str) -> dict | None:
+    with _db_engine.connect() as conn:
+        row = conn.execute(
+            sa_text(
+                'SELECT voice_id, name, text, created_at FROM user_voice WHERE user_id = :uid AND voice_id = :vid'
+            ),
+            {'uid': user_id, 'vid': voice_id},
+        ).fetchone()
+    if not row:
+        return None
+    return {'id': row[0], 'name': row[1], 'text': row[2] or '', 'created_at': row[3]}
+
+
+def _add_user_voice(user_id: str, voice_id: str, name: str, ref_text: str) -> None:
+    import time as _time
+
+    with _db_engine.begin() as conn:
+        conn.execute(
+            sa_text(
+                'INSERT INTO user_voice (user_id, voice_id, name, text, created_at) VALUES (:uid, :vid, :name, :text, :ts)'
+            ),
+            {'uid': user_id, 'vid': voice_id, 'name': name, 'text': ref_text, 'ts': int(_time.time())},
+        )
+
+
+def _delete_user_voice(user_id: str, voice_id: str) -> bool:
+    with _db_engine.begin() as conn:
+        cur = conn.execute(
+            sa_text('DELETE FROM user_voice WHERE user_id = :uid AND voice_id = :vid'),
+            {'uid': user_id, 'vid': voice_id},
+        )
+        return bool(cur.rowcount)
 
 # pydub needs stdlib audioop (gone in 3.13); keep requires-python capped < 3.13
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from pydub.utils import mediainfo
 
-log = logging.getLogger(__name__)
 router = APIRouter()
 
 # --- Constants ---
@@ -1452,4 +1535,118 @@ async def get_available_voices(request) -> dict:
 
 @router.get('/voices')
 async def get_voices(request: Request, user=Depends(get_verified_user)):
-    return {'voices': [{'id': k, 'name': v} for k, v in (await get_available_voices(request)).items()]}
+    voices = [{'id': k, 'name': v} for k, v in (await get_available_voices(request)).items()]
+    # 合并当前用户的私有自建音色（仅本人可见）；
+    # 同时过滤 cosyvoice 全局列表带出的其他用户私有音色（隔离关键）
+    try:
+        with _db_engine.connect() as conn:
+            private_ids = {
+                r[0]
+                for r in conn.execute(sa_text('SELECT DISTINCT voice_id FROM user_voice')).fetchall()
+            }
+        my_voices = _list_user_voices(user.id)
+        my_map = {v['id']: v['name'] for v in my_voices}
+        hidden = private_ids - set(my_map.keys())
+        voices = [v for v in voices if v['id'] not in hidden]
+        # 本人音色统一加「（我的）」标注（无论是否已出现在公共列表）
+        for v in voices:
+            if v['id'] in my_map:
+                v['name'] = f"{my_map[v['id']]}（我的）"
+        seen = {v['id'] for v in voices}
+        for v in my_voices:
+            if v['id'] not in seen:
+                voices.append({'id': v['id'], 'name': f"{v['name']}（我的）"})
+    except Exception as e:
+        log.error(f'Error merging user voices: {e}')
+    return {'voices': voices}
+
+
+@router.post('/voice/create')
+async def create_user_voice(
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(''),
+    text: str = Form(''),
+    user=Depends(get_verified_user),
+):
+    """录音上传 -> cosyvoice 零样本克隆 -> 建立本人归属映射。"""
+    if not COSYVOICE_API_KEY:
+        raise HTTPException(status_code=503, detail='Voice clone service not configured')
+
+    name = (name or '').strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='请输入音色名称')
+    if len(name) > VOICE_NAME_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f'音色名称过长（最多 {VOICE_NAME_MAX_LEN} 字）')
+
+    if _count_user_voices(user.id) >= MAX_USER_VOICES:
+        raise HTTPException(status_code=400, detail=f'每人最多创建 {MAX_USER_VOICES} 个音色，请先删除旧音色')
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail='录音内容为空')
+    if len(contents) > VOICE_CLONE_MAX_SIZE:
+        raise HTTPException(status_code=400, detail='录音文件过大（上限 15MB）')
+
+    # 转发 cosyvoice 克隆（text 留空则由 cosyvoice 内置 Fun-ASR 自动转写参考文本）
+    try:
+        session = await get_session()
+        data = aiohttp.FormData()
+        data.add_field('audio', contents, filename=file.filename or 'recording.webm',
+                       content_type=file.content_type or 'audio/webm')
+        data.add_field('name', name)
+        if text:
+            data.add_field('text', text)
+        async with session.post(
+            f'{COSYVOICE_BASE_URL}/v1/voices/create',
+            data=data,
+            headers={'Authorization': f'Bearer {COSYVOICE_API_KEY}'},
+        ) as resp:
+            resp.raise_for_status()
+            result = await resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f'Voice clone upstream error: {e}')
+        raise HTTPException(status_code=502, detail='音色克隆服务异常，请稍后重试')
+
+    voice_id = result.get('voice_id')
+    if not voice_id:
+        raise HTTPException(status_code=502, detail='音色克隆返回异常')
+
+    _add_user_voice(user.id, voice_id, name, result.get('text', '') or text or '')
+    log.info(f'User {user.id} created private voice {voice_id} ({name})')
+
+    return {
+        'id': voice_id,
+        'name': name,
+        'text': result.get('text', '') or text or '',
+    }
+
+
+@router.get('/voice/list')
+async def list_user_voices(user=Depends(get_verified_user)):
+    return {'voices': _list_user_voices(user.id)}
+
+
+@router.delete('/voice/{voice_id}')
+async def delete_user_voice(voice_id: str, user=Depends(get_verified_user)):
+    if not _get_user_voice(user.id, voice_id):
+        raise HTTPException(status_code=404, detail='音色不存在或不属于当前用户')
+
+    # 先删 cosyvoice 侧音色实体（失败不阻断：孤儿音色不影响功能，映射删除后本人不可见）
+    delete_ok = False
+    try:
+        if COSYVOICE_API_KEY:
+            session = await get_session()
+            async with session.delete(
+                f'{COSYVOICE_BASE_URL}/v1/voices/{voice_id}',
+                headers={'Authorization': f'Bearer {COSYVOICE_API_KEY}'},
+            ) as resp:
+                delete_ok = resp.status == 200
+    except Exception as e:
+        log.warning(f'Failed to delete voice {voice_id} upstream: {e}')
+
+    _delete_user_voice(user.id, voice_id)
+    log.info(f'User {user.id} deleted private voice {voice_id} (upstream_ok={delete_ok})')
+    return {'success': True, 'upstream_deleted': delete_ok}

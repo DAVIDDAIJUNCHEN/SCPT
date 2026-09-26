@@ -194,3 +194,105 @@ export const getVoices = async (token: string = '') => {
 
 	return res;
 };
+
+// --- 用户自建音色（私有音色克隆）---
+
+export interface UserVoice {
+	id: string;
+	name: string;
+	text: string;
+	created_at: number;
+}
+
+export const createVoiceClone = async (
+	token: string,
+	file: Blob,
+	name: string,
+	text: string = ''
+): Promise<UserVoice> => {
+	let error = null;
+
+	const formData = new FormData();
+	formData.append('file', file, 'recording.webm');
+	formData.append('name', name);
+	if (text) {
+		formData.append('text', text);
+	}
+
+	const res = await fetch(`${AUDIO_API_BASE_URL}/voice/create`, {
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${token}`
+		},
+		body: formData
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getUserVoices = async (token: string): Promise<UserVoice[]> => {
+	let error = null;
+
+	const res = await fetch(`${AUDIO_API_BASE_URL}/voice/list`, {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res.voices ?? [];
+};
+
+export const deleteUserVoice = async (token: string, voiceId: string): Promise<boolean> => {
+	let error = null;
+
+	const res = await fetch(`${AUDIO_API_BASE_URL}/voice/${voiceId}`, {
+		method: 'DELETE',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res?.success ?? false;
+};
