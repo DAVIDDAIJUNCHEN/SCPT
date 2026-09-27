@@ -339,27 +339,31 @@
 					}
 				}
 			} else {
-				// ── Xingyu accelerated TTS pipeline v2 ────────────────────────
-				// Server-side CosyVoice is serial (single MIG 1g.18gb slice)
-				// with a hard fixed per-request cost (~4.3s prefill, cache
-				// hit included) + ~0.27s/char marginal (RTF≈1.0 at scale).
-				// Measured 2026-09-26: 3 chars → 4.3s; 35 chars → 8.8s;
-				// 105 chars → 13.1s. So we:
-				//   1. Speak a MINIMAL first chunk (first sentence capped at
-				//      25 chars) and skip ASR verification on it — first
-				//      audio lands in ~5s instead of ~8s.
-				//   2. Merge remaining sentences into ~120-char chunks so each
-				//      request amortizes the fixed cost.
-				//   3. ASR-verify non-first chunks (~1s): on mismatch halve
-				//      the chunk and regenerate — catches glitches in one
-				//      retry instead of playing broken audio.
-				//   4. Pipelined: chunk N+1 is generated while chunk N plays,
-				//      so steady-state wait ≈ single chunk latency.
-				//   5. pcm streaming is NOT viable on this deployment (first
-				//      audio chunk arrives ~11s, 3-4x worse throughput).
-				const TTS_CHUNK_TARGET_CHARS = 120;
-				const TTS_FIRST_CHUNK_MAX_CHARS = 25;
-				const TTS_VERIFY_MAX_RETRIES = 2;
+			// ── Xingyu accelerated TTS pipeline v3 ────────────────────────
+			// Server-side CosyVoice v4 runs 2 MIG workers behind one
+			// endpoint; per-request cost ≈ 4.3s prefill + ~0.27s/char.
+			// Per-SENTENCE granularity (v3): with 2 lanes synthesizing
+			// concurrently, a 15-30 char sentence takes ~6-9s to synth
+			// vs ~4-7s to play — steady-state pipeline sustains itself.
+			// Merging into ~120-char chunks (v2, single-MIG era) caused
+			// audible stalls: first sentence (~5s audio) finishes while
+			// the next 120-char chunk still needs ~13s, and ASR-verify
+			// failures on long chunks cascaded halve-retries into 30s+
+			// gaps that felt like playback had stopped.
+			//   1. Speak a MINIMAL first chunk (first sentence capped at
+			//      25 chars) and skip ASR verification on it — first
+			//      audio lands in ~5s instead of ~8s.
+			//   2. Every subsequent sentence is its own chunk; only
+			//      fragments shorter than 8 chars merge forward so tiny
+			//      tail pieces don't pay the 4.3s prefill alone.
+			//   3. ASR-verify non-first chunks (~1s): on mismatch halve
+			//      the chunk and regenerate — at sentence scale the halve
+			//      cascade terminates fast.
+			//   4. Dual-lane: sentence N+1 synthesizes while sentence N
+			//      plays, so steady-state wait ≈ 0.
+			const TTS_MIN_MERGE_CHARS = 8;
+			const TTS_FIRST_CHUNK_MAX_CHARS = 25;
+			const TTS_VERIFY_MAX_RETRIES = 2;
 
 				const normalizeForCompare = (s: string) =>
 					s
@@ -396,25 +400,26 @@
 					return [text.slice(0, TTS_FIRST_CHUNK_MAX_CHARS), text.slice(TTS_FIRST_CHUNK_MAX_CHARS)];
 				};
 
-				const buildChunks = (parts: string[]): string[] => {
-					if (!parts.length) return [];
-					const firstParts = splitFirstChunk(parts[0]);
-					const chunks: string[] = [firstParts[0]];
-					const rest = [...firstParts.slice(1), ...parts.slice(1)];
-					let cur = '';
-					for (const p of rest) {
-						if (!cur) {
-							cur = p;
-						} else if ((cur + p).length <= TTS_CHUNK_TARGET_CHARS) {
-							cur += p;
-						} else {
-							chunks.push(cur);
-							cur = p;
-						}
+			const buildChunks = (parts: string[]): string[] => {
+				if (!parts.length) return [];
+				const firstParts = splitFirstChunk(parts[0]);
+				const chunks: string[] = [firstParts[0]];
+				const rest = [...firstParts.slice(1), ...parts.slice(1)];
+				// Per-sentence chunks; merge only tiny fragments (<8 chars)
+				// forward into the next sentence so they don't pay the
+				// ~4.3s prefill alone.
+				let cur = '';
+				for (const p of rest) {
+					if (cur && cur.length < TTS_MIN_MERGE_CHARS) {
+						cur += p;
+					} else {
+						if (cur) chunks.push(cur);
+						cur = p;
 					}
-					if (cur) chunks.push(cur);
-					return chunks;
-				};
+				}
+				if (cur) chunks.push(cur);
+				return chunks;
+			};
 
 			// Split an over-long or corrupted chunk in half (on sentence
 			// boundary if possible, hard midpoint otherwise)
