@@ -18,6 +18,7 @@ import longContext from './long-context.md'
 import models from './models.md'
 import quickstart from './quickstart.md'
 import rateLimits from './rate-limits.md'
+import rerank from './rerank.md'
 import streaming from './streaming.md'
 import vision from './vision.md'
 import workbuddy from './workbuddy.md'
@@ -32,6 +33,7 @@ import longContextEn from './en/long-context.md'
 import modelsEn from './en/models.md'
 import quickstartEn from './en/quickstart.md'
 import rateLimitsEn from './en/rate-limits.md'
+import rerankEn from './en/rerank.md'
 import streamingEn from './en/streaming.md'
 import visionEn from './en/vision.md'
 import workbuddyEn from './en/workbuddy.md'
@@ -219,6 +221,20 @@ const BILINGUAL_ENTRIES: BilingualEntry[] = [
       title: 'Embedding & RAG',
       description: 'The bge-m3 embedding API and RAG integration essentials.',
       raw: embeddingEn,
+    },
+  },
+  {
+    slug: 'rerank',
+    group: 'dev',
+    zh: {
+      title: 'Rerank 重排序',
+      description: 'Qwen3-Reranker-4B 重排序接口与两阶段 RAG 接入要点。',
+      raw: rerank,
+    },
+    en: {
+      title: 'Rerank',
+      description: 'The Qwen3-Reranker-4B rerank API and two-stage RAG essentials.',
+      raw: rerankEn,
     },
   },
   {

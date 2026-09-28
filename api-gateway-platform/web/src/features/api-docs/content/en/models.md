@@ -16,6 +16,7 @@ Platform models are exposed by **group**: registration puts you in the **default
 | **GLM-5.3-Flash** | **1M** | 64K | 0.4<sup>†</sup> | 0.115 | 1.4<sup>†</sup> | Lightweight and fast for casual use. [Streaming example](/docs/streaming#usage-example-tested-working) |
 | **DeepSeek-V4-Flash-0731** | 1M | 64K | 1 | 0.02 | 4 | Previous generation of DeepSeek-V4.1-Flash |
 | bge-m3 (Embedding) | 8K | — | 0.5 | — | — | Text embedding for retrieval/RAG. [Example](/docs/embedding#usage-example-tested-working) |
+| Qwen3-Reranker-4B (Rerank) | 32K | — | 0.6 | — | — | Retrieval reranking, second-stage RAG refinement. [Example](/docs/rerank) |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 8K | 0.75 | 0.75 | 3 | Multimodal image understanding. [Example](/docs/vision) |
 | FLUX.2-klein-4B | — | — | Per image | — | — | Image generation. [Example](/docs/vision) |
 | **Qwen-Image-2.1** | — | — | Per image | — | — | Image generation (Chinese-prompt optimized, 1664 wide). [Example](/docs/vision) |
