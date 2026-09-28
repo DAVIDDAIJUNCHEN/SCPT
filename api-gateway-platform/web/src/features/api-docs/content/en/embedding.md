@@ -23,16 +23,50 @@ Endpoints: `POST /v1/chat/completions` (MinerU) · `POST /v1/embeddings` (bge-m3
 
 The first step of building a RAG knowledge base is parsing PDFs / scans / slide images **into clean Markdown text**, which can then be chunked and embedded. MinerU2.5-2509-1.2B is a dedicated document-parsing model (PDF→Markdown, table restoration, layout analysis).
 
-> **Status disclosure** [verified 2026-09-24]: MinerU integration is still in progress; calling image/document parsing through the API gateway currently **returns unstable results** — not yet recommended for direct API calls in course scenarios. Parsing in the **web knowledge base** (ai-chat.sptc.edu.cn — create a knowledge base and upload documents) is already powered by MinerU and works normally.
+> **Two usage paths, different statuses** [verified 2026-09-28]:
+>
+> | Path | Status | Notes |
+> |---|---|---|
+> | **Web knowledge base** (upload documents at ai-chat.sptc.edu.cn) | ✅ **Verified working** | Parsing is powered by MinerU; the full flow has been tested |
+> | **Direct API call with image input** (`image_url`, example below) | ✅ **Tested working** | Verified through the gateway on 2026-09-28: HTTP 200, extraction correct |
+> | Plain-text chat-style call | ❌ **Not applicable** | MinerU is a document-parsing model, not a chat model; plain-text input produces meaningless repetitive output |
 
-Workarounds while direct API calls are pending:
+**Web (recommended for course scenarios)**: go to [ai-chat.sptc.edu.cn](https://ai-chat.sptc.edu.cn) → create a knowledge base → upload PDFs/images → ask questions once ingestion finishes. Parsing is fully automatic; no code needed.
 
-| Need | Recommended alternative |
-|---|---|
-| Text extraction from images (whiteboard / homework photos) | **Qwen3-VL** ([Vision](/docs/vision) — OCR tested stable) |
-| Reading long PDFs | Copy the text and use **DS-V4.1-Flash** (1M long context) |
+**Direct API example (tested working, 2026-09-28)** — image input is required:
 
-Complete API usage examples will be added here once MinerU integration is finalized; contact the AI Computing Center for progress.
+```python
+from openai import OpenAI
+import base64
+
+client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.cn/v1")
+
+# image → base64 (PDFs must be rendered to images first, or use the web knowledge base)
+b64 = base64.b64encode(open("page.png", "rb").read()).decode()
+
+resp = client.chat.completions.create(
+    model="MinerU2.5-2509-1.2B",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            {"type": "text", "text": "Extract all text content from this image. Output the content in markdown format. Preserve headings, paragraphs, lists and tables. Do not add any commentary."},
+        ],
+    }],
+    max_tokens=4096,
+    temperature=0,
+)
+print(resp.choices[0].message.content)  # Markdown text
+```
+
+Usage notes:
+
+1. **Image input is mandatory** — plain-text calls produce meaningless output (see table above)
+2. **PDFs page by page**: render to images first (e.g. pymupdf at 150 DPI), then call once per page
+3. **temperature=0** for stable parsing results
+4. Suggest a 180s per-page timeout and ≤8 concurrent pages
+
+For other image text-extraction needs (whiteboard / homework photos, no ingestion required), **Qwen3-VL** ([Vision](/docs/vision)) offers more flexible conversational extraction.
 
 ---
 

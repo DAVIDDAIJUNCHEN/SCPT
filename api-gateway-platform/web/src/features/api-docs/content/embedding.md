@@ -23,16 +23,50 @@
 
 RAG 建库的第一步是把 PDF / 扫描件 / 图片讲义**解析成干净的 Markdown 文本**，才能切块向量化。MinerU2.5-2509-1.2B 是文档解析专用模型（PDF→Markdown、表格还原、版面分析）。
 
-> **状态交底**【实测 2026-09-24】：MinerU 正在接入联调中，当前经 API 网关调用图片/文档解析**返回结果不稳定**，暂不建议在课程场景直接调用。**网页端知识库**（ai-chat.sptc.edu.cn 新建知识库上传文档）的解析已由 MinerU 驱动，网页操作可正常使用。
+> **两条使用路径，状态不同**【实测 2026-09-28】：
+>
+> | 路径 | 状态 | 说明 |
+> |---|---|---|
+> | **网页端知识库**（ai-chat.sptc.edu.cn 上传文档建库） | ✅ **已验证可用** | 解析由 MinerU 驱动，全流程实测通过 |
+> | **API 图片输入直调**（`image_url` 传图片，见下方样例） | ✅ **实测通过** | 2026-09-28 经网关实测返回 200，提取内容正确 |
+> | 纯文本对话方式调用 | ❌ **不适用** | MinerU 是文档解析专用模型，不是聊天模型，纯文本输入会输出无意义重复内容 |
 
-当前 API 直连替代方案：
+**网页端（推荐课程场景使用）**：直接在 [ai-chat.sptc.edu.cn](https://ai-chat.sptc.edu.cn) 新建知识库 → 上传 PDF/图片 → 建库完成后即可提问，解析全自动，无需写代码。
 
-| 需求 | 推荐替代 |
-|---|---|
-| 图片文字提取（板书/作业照片） | **Qwen3-VL**（[视觉理解](02-6-多模态视觉理解.md)，OCR 能力实测稳定） |
-| PDF 长文阅读 | 复制文本后用 **DS-V4.1-Flash**（1M 长上下文） |
+**API 直调样例（实测通过，2026-09-28）**——必须带图片输入：
 
-MinerU 联调完成后本节将补充完整调用样例，可联系智算中心了解进度。
+```python
+from openai import OpenAI
+import base64
+
+client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.cn/v1")
+
+# 图片 → base64（PDF 需先转图片，或走网页端知识库）
+b64 = base64.b64encode(open("page.png", "rb").read()).decode()
+
+resp = client.chat.completions.create(
+    model="MinerU2.5-2509-1.2B",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            {"type": "text", "text": "Extract all text content from this image. Output the content in markdown format. Preserve headings, paragraphs, lists and tables. Do not add any commentary."},
+        ],
+    }],
+    max_tokens=4096,
+    temperature=0,
+)
+print(resp.choices[0].message.content)  # Markdown 文本
+```
+
+使用要点：
+
+1. **必须带图片输入**——纯文本调用会得到无意义输出（见上表）
+2. **PDF 逐页处理**：先渲染为图片（如 pymupdf 150 DPI）再逐页调用，每页独立请求
+3. **temperature=0** 保证解析结果稳定
+4. 单页超时建议 180s，多页并发建议 ≤8
+
+其他图片文字提取需求（板书/作业照片、无需入库）可用 **Qwen3-VL**（[视觉理解](02-6-多模态视觉理解.md)），对话式提取更灵活。
 
 ---
 

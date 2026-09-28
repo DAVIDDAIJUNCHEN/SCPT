@@ -73,7 +73,6 @@
 
 | Issue | Status | Workaround |
 |---|---|---|
-| Document parsing (MinerU2.5) via the gateway returns empty content | In integration testing; not for production yet (see [step zero of the RAG guide](/docs/embedding)); web knowledge-base parsing already works | Use Qwen3-VL for image OCR, or DeepSeek-V4.1-Flash for long documents |
 | After a WorkBuddy client upgrade the Mac version needs the gateway certificate reinstalled | Known client behavior (upgrade wipes ca.pem) | Redo Step 2 of the macOS flow in the [WorkBuddy guide](/docs/workbuddy) |
 | The platform occasionally fails to open from off campus | Jitter on the campus-network ↔ cloud-datacenter mapping link; unrelated to the platform itself | Refresh and retry; if it stays down, connect the school VPN and report |
 | No dedicated mobile tutorial yet | Will be added based on feedback | Mobile browsers work fine; the operations are identical to desktop |

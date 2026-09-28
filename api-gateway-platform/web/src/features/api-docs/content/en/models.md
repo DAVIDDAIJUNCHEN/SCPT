@@ -18,7 +18,7 @@ Platform models are exposed by **group**: registration puts you in the **default
 | **Qwen3-Coder-Next-FP8** | 256K | 64K | 1 | — | 4 | Dedicated coding model: generation/debug/refactor/unit tests, native Tool Calls, tailored for agentic coding tools like Cursor/Cline/Aider [added 2026-09-28] |
 | bge-m3 (Embedding) | 8K | — | 0.5 | — | — | Text embedding for retrieval/RAG recall. [Example](/docs/embedding#usage-example-tested-working) |
 | Qwen3-Reranker-4B (Rerank) | 32K | — | 0.6 | — | — | Retrieval reranking, second-stage RAG refinement. [Example](/docs/embedding#2-qwen3-reranker-4b-candidate-refinement-rerank) |
-| MinerU2.5-2509-1.2B (document parsing) | — | — | In progress | — | — | PDF/image → Markdown, step zero of RAG ingestion. [Status & alternatives](/docs/embedding#0-mineru25-document-parsing-for-ingestion-step-zero) |
+| MinerU2.5-2509-1.2B (document parsing) | — | — | Available | — | — | PDF/image → Markdown, step zero of RAG ingestion (image input required). [Example](/docs/embedding#0-mineru25-document-parsing-for-ingestion-step-zero) |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 8K | 0.75 | 0.75 | 3 | Multimodal image understanding. [Example](/docs/vision) |
 | FLUX.2-klein-4B | — | — | Per image | — | — | Image generation. [Example](/docs/vision) |
 | **Qwen-Image-2.1** | — | — | Per image | — | — | Image generation (Chinese-prompt optimized, 1664 wide). [Example](/docs/vision) |
