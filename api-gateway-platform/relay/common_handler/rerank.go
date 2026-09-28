@@ -3,6 +3,7 @@ package common_handler
 import (
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -63,7 +64,53 @@ func RerankHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	} else {
 		err = common.Unmarshal(responseBody, &jinaResp)
 		if err != nil {
-			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			// SGLang /v1/rerank returns a bare JSON array of results
+			// (no "results"/"usage" wrapper). Retry as a raw array before failing.
+			type sglangRerankResult struct {
+				Index    int   `json:"index"`
+				Score    any   `json:"score"`
+				Document any   `json:"document"`
+			}
+			var arrayResp []sglangRerankResult
+			if arrayErr := common.Unmarshal(responseBody, &arrayResp); arrayErr == nil && len(arrayResp) > 0 {
+				results := make([]dto.RerankResponseResult, len(arrayResp))
+				for i, r := range arrayResp {
+					score := 0.0
+					switch s := r.Score.(type) {
+					case float64:
+						score = s
+					case string:
+						if f, parseErr := strconv.ParseFloat(s, 64); parseErr == nil {
+							score = f
+						}
+					}
+					respResult := dto.RerankResponseResult{
+						Index:          r.Index,
+						RelevanceScore: score,
+					}
+					if info.ReturnDocuments {
+						var document any
+						if r.Document == nil {
+							if r.Index >= 0 && r.Index < len(info.Documents) {
+								document = info.Documents[r.Index]
+							}
+						} else {
+							document = r.Document
+						}
+						respResult.Document = document
+					}
+					results[i] = respResult
+				}
+				jinaResp = dto.RerankResponse{
+					Results: results,
+					Usage: dto.Usage{
+						PromptTokens: info.GetEstimatePromptTokens(),
+						TotalTokens:  info.GetEstimatePromptTokens(),
+					},
+				}
+			} else {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
 		}
 		jinaResp.Usage.PromptTokens = jinaResp.Usage.TotalTokens
 	}
