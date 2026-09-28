@@ -15,8 +15,11 @@
 | **Qwen3.8-Flash-Next** | **1M** | 0.8 | 0.1 | 2.7 | Chinese-optimized, thinking process on by default (reasoning-enhanced) |
 | **GLM-5.3-Flash** | **1M** | 0.4‡ | 0.115‡ | 1.4‡ | Cheapest, for everyday light usage |
 | **DeepSeek-V4-Flash-0731** | 1M | 1 | 0.02 | 4 | Previous generation — prefer the newer one |
-| bge-m3 (Embedding) | 8K | 0.5 | — | — | Text embedding, for retrieval / RAG |
+| **Qwen3-Coder-Next-FP8** | 256K | 1 | — | 4 | Dedicated coding: generation/debug/refactor/unit tests, tailored for Cursor/Cline/Aider |
+| bge-m3 (Embedding) | 8K | 0.5 | — | — | Text embedding, retrieval/RAG recall |
+| Qwen3-Reranker-4B (Rerank) | 32K | 0.6 | — | — | Retrieval reranking, second-stage RAG refinement |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 0.75 | — | 3 | Image understanding (captioning, chart reading) |
+| Qwen-Image-2.1 / FLUX.2-klein-4B | — | Per image | — | — | Image generation (the former Chinese-prompt optimized, the latter fastest) |
 | Qwen2-Audio-7B / Qwen3-ASR-1.7B / Fun-CosyVoice3-0.5B | — | 1 | — | 1 | Speech understanding / recognition / synthesis |
 
 ### vip group exclusive
@@ -48,7 +51,7 @@
 | Question | Answer |
 |---|---|
 | How do I get started? | On the campus network open https://ai-platform.sptc.edu.cn and register with a phone number; chat directly at https://ai-chat.sptc.edu.cn |
-| How do I pick a model? | Everyday Q&A: DeepSeek-V4.1-Flash (default); deep reasoning / code: GLM-5.3 (vip required); image understanding: Qwen3-VL; see the [model table](#1.-model-quick-reference) |
+| How do I pick a model? | Everyday Q&A: DeepSeek-V4.1-Flash (default); deep reasoning: GLM-5.3 (vip) or Qwen3.8-Flash-Next; coding: Qwen3-Coder-Next-FP8; image understanding: Qwen3-VL; see the [model table](#1.-model-quick-reference) |
 | Do million-character documents really work? How long is the wait? | Yes — a 974K-character document was tested end-to-end [verified]; ~80K characters returns in ~10 s, a full million characters starts answering in ~6.5 min. This is normal |
 | Why doesn't GLM-5.3 support 1M context? | The model architecture (DSA attention) has heavy VRAM overhead — an industry-wide ceiling, not a platform defect; use the three 1M models for long documents |
 | "Try again later" / queuing? | Concurrency is full at peak hours — retry after 1–2 minutes; **no data loss, no crashes** [load-test verified] |

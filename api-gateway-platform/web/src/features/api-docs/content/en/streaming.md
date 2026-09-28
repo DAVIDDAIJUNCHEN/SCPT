@@ -4,7 +4,7 @@
 
 ## Supported Scope
 
-All text models (4 LLMs + vip-group GLM-5.3) support `"stream": true`.
+All text models (5 LLMs + vip-group GLM-5.3) support `"stream": true`.
 
 ## Usage Example (tested working)
 

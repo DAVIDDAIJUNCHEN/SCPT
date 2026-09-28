@@ -18,7 +18,6 @@ import longContext from './long-context.md'
 import models from './models.md'
 import quickstart from './quickstart.md'
 import rateLimits from './rate-limits.md'
-import rerank from './rerank.md'
 import streaming from './streaming.md'
 import vision from './vision.md'
 import workbuddy from './workbuddy.md'
@@ -33,7 +32,6 @@ import longContextEn from './en/long-context.md'
 import modelsEn from './en/models.md'
 import quickstartEn from './en/quickstart.md'
 import rateLimitsEn from './en/rate-limits.md'
-import rerankEn from './en/rerank.md'
 import streamingEn from './en/streaming.md'
 import visionEn from './en/vision.md'
 import workbuddyEn from './en/workbuddy.md'
@@ -79,7 +77,7 @@ export interface DocGroup {
 }
 
 /**
- * 13 页文档注册表（T8 分册体系 · 中英双语）
+ * 12 页文档注册表（T8 分册体系 · 中英双语 · 2026-09-28 embedding+rerank 合并）
  * 分组顺序即侧边栏顺序；entries 顺序即组内顺序 + 上一页/下一页顺序。
  */
 const BILINGUAL_ENTRIES: BilingualEntry[] = [
@@ -213,28 +211,14 @@ const BILINGUAL_ENTRIES: BilingualEntry[] = [
     slug: 'embedding',
     group: 'dev',
     zh: {
-      title: 'Embedding 与 RAG',
-      description: 'bge-m3 向量化接口与 RAG 接入要点。',
+      title: 'Embedding · Rerank 与 RAG',
+      description: 'bge-m3 向量化 + Qwen3-Reranker 重排序：一条 RAG 检索管线全讲透。',
       raw: embedding,
     },
     en: {
-      title: 'Embedding & RAG',
-      description: 'The bge-m3 embedding API and RAG integration essentials.',
+      title: 'Embedding · Rerank & RAG',
+      description: 'bge-m3 embedding + Qwen3-Reranker rerank — the whole RAG pipeline in one page.',
       raw: embeddingEn,
-    },
-  },
-  {
-    slug: 'rerank',
-    group: 'dev',
-    zh: {
-      title: 'Rerank 重排序',
-      description: 'Qwen3-Reranker-4B 重排序接口与两阶段 RAG 接入要点。',
-      raw: rerank,
-    },
-    en: {
-      title: 'Rerank',
-      description: 'The Qwen3-Reranker-4B rerank API and two-stage RAG essentials.',
-      raw: rerankEn,
     },
   },
   {

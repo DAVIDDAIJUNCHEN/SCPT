@@ -44,7 +44,8 @@ Open https://ai-chat.sptc.edu.cn → log in → pick a model at the top → type
 | What you want to do | Pick this model |
 |---|---|
 | Everyday Q&A, writing, translation (default) | DeepSeek-V4.1-Flash |
-| Stronger reasoning, coding, deep analysis | GLM-5.3 (requires the vip group — contact the AI Computing Center; Qwen3.8-Flash-Next also handles everyday reasoning well) |
+| Stronger reasoning, deep analysis | GLM-5.3 (requires the vip group — contact the AI Computing Center; Qwen3.8-Flash-Next also handles everyday reasoning well) |
+| Coding (generation/debug/refactoring) | Qwen3-Coder-Next-FP8 |
 | Image understanding (photo Q&A, reading charts) | Qwen3-VL |
 | Voice-related features | Use the platform's feature entrances |
 

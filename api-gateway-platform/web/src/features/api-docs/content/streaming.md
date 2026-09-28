@@ -4,7 +4,7 @@
 
 ## 支持范围
 
-全部文本模型（4 款 LLM + vip 分组 GLM-5.3）均支持 `"stream": true`。
+全部文本模型（5 款 LLM + vip 分组 GLM-5.3）均支持 `"stream": true`。
 
 ## 调用样例（实测通过）
 
