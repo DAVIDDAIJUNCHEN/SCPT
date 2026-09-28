@@ -23,7 +23,7 @@ import { useSearchParams } from "react-router-dom";
 import PageShell from "../../../layouts/PageShell";
 import TabBar, { type TabBarItem } from "../../../components/TabLabel/TabBar";
 import StreamSetupGuide from "../../../components/StreamSetupGuide/StreamSetupGuide";
-import { 星语 AgentEmptyMascot } from "../../../components/EmptyState/星语 AgentEmptyMascot";
+import { OctopEmptyMascot } from "../../../components/EmptyState/OctopEmptyMascot";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { userCan } from "../../../utils/permissions";
 import { apiErrorMessage } from "../../../utils/apiError";
@@ -2299,7 +2299,7 @@ export default function ConnectorsPage() {
               className={styles.emptyGuide}
               wide
               plain
-              icon={<星语 AgentEmptyMascot />}
+              icon={<OctopEmptyMascot />}
               title={t("connectors.emptyGuideTitle")}
               description={t("connectors.emptyGuideDesc")}
               steps={[
