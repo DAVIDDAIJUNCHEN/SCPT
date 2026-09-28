@@ -1,0 +1,7294 @@
+"use strict";
+/**
+ * OpenWorkBuddy — 服务器主入口。
+ * 功能：Web 工作台（SSE 流式）、技能系统、MCP 连接器、专家团多智能体、IM 远程指挥（飞书/企业微信/通用 Webhook）。
+ */
+
+const BOOT_T0 = Date.now(); // server.js 从加载到 listen 的耗时，启动慢时先看这行日志
+// Node 太老 / 依赖缺文件：这句必须排在 express 这一批 require 前面。排在后面的话，
+// 缺依赖的人看到的是 `Cannot find module 'express'`——对不写 Node 的人等于没说。
+// 有壳的时候不自己 exit：抛回去让壳把原因画在窗口上（exit 会让那个窗口根本没机会出现）。
+require("./boot-check").enforce({ rootDir: __dirname, packaged: require("./paths").isPackaged(), throwInstead: !!global.__wbBootFail });
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
+const { APP_DIR, DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./paths");
+const migrate = require("./migrate");
+// 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
+// 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
+// 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
+// 放在这儿是因为下面 require 的 tools/skills 一加载就按数据目录算路径了。
+seedDataDir();
+const { mergeBuiltinExperts } = require("./experts-lib");
+const mcpCatalog = require("./mcp-catalog");
+const { createLLM, createEmbedder, anthropicBase } = require("./llm");
+const sessSearch = require("./session-search");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
+const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
+const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
+const canvasRoutes = require("./routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
+const dramaRoutes = require("./routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
+const { createComposeRouter } = require("./routes/compose"); // 一键合成的两条接口
+const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
+const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
+const { previewData } = require("./preview");
+const evolve = require("./evolve");
+const { McpManager } = require("./mcp");
+const { createAgentRuntime } = require("./agent");
+const { createImRouter } = require("./im");
+const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./scheduler");
+const account = require("./account");
+const { createStaticCompress: staticCompress } = require("./static-compress");
+const { createJsonCompress: jsonCompress } = require("./json-compress");
+const { thumbFileAsync } = require("./thumb");
+const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
+const budget = require("./budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
+const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
+const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
+const lanes = require("./lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
+const cliLive = require("./cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
+const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
+const security = require("./security");
+const toolward = require("./toolward");
+const sweep = require("./sweep");
+const modes = require("./modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
+const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
+const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
+const projectMemo = require("./project-memo"); // 工作目录往上到 git 根的 AGENTS.md / CLAUDE.md，命令行也用这一份
+const mediaModels = require("./media-models");
+const mediaHealth = require("./media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
+const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
+const systemOne = require("./systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
+const taskVerdict = require("./task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
+const pushGate = require("./push-gate"); // 推之前那一问：跟上一次真推出去的那条比，有没有新东西
+const jev = require("./jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
+const quota = require("./quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
+const pricing = require("./pricing"); // 按量价目：批量生成前的预估跟记账查的是同一张表
+const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
+const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
+const memory = require("./memory");
+const notify = require("./notify");
+const log = require("./log");
+const metrics = require("./metrics");
+const callout = require("./callout"); // 正文提示条：机器人推送里换成文字标签
+const store = require("./store");
+const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
+const pet = require("./pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
+const { createImSessionStore } = require("./im-store");
+
+// config.json 不入 git（可能含 API Key）；首次运行自动从模板复制
+const CONFIG_PATH = dataPath("config.json");
+if (!fs.existsSync(CONFIG_PATH)) {
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  fs.copyFileSync(appPath("config.example.json"), CONFIG_PATH);
+  console.log("已从 config.example.json 生成 config.json，请填入你的模型 API Key");
+}
+// 这是全机器上唯一一份明文装着所有 API Key 的文件，权限必须是「只有文件主人读得到」。
+// 以前没人管这一位，落地就是 umask 给的 0644——同一台 VPS / 同一台办公电脑上的任何一个
+// 别的账号，一句 cat 就把九把 Key 全拿走了。开机先收一次，把装了半年的老机器一并修好；
+// 之后每次存盘再收一次（见 store.writeJsonAtomic 的 mode）。.bak 跟正本一字不差，一起收。
+store.tighten(CONFIG_PATH, store.SECRET_MODE);
+store.tighten(CONFIG_PATH + ".bak", store.SECRET_MODE);
+// 同一道理的还有另外两本，一起在开机时收一次（新写入的由各自的 writeJsonAtomic 保着）：
+//   users.json —— 所有活着的会话令牌（拿到就是别人的登录态，不要密码、也绕过二次验证）、
+//                 密码哈希和盐、TOTP 密钥、一次性找回码；
+//   orgs.json  —— 还没用完的邀请码（拿到就能自己开号进来，角色是发码的人预置好的）、整本审计流水。
+// 这两本原来都是 umask 给的 0644。列在这里而不是各自模块里：收权限是一次性的开机动作，
+// 散进每次读盘就是每读一条记录多一次 chmod 系统调用。
+// OPENWORKBUDDY_DATA_DIR 照认：account.js / org.js 都按它算目录，这里算得不一样就等于没收
+const ACCOUNT_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
+for (const f of ["users.json", "orgs.json"]) {
+  const p0 = path.join(ACCOUNT_DIR, f);
+  store.tighten(p0, store.SECRET_MODE);
+  store.tighten(p0 + ".bak", store.SECRET_MODE);
+}
+// 再把整个 data/ 目录收成 0700，当作上面那几条的兜底。
+// 逐个文件收权限有个绕不过去的毛病：**这个目录还在长**。今天列全了，下一个功能加一本新账
+// （会话正文、记忆库、IM 消息、审计流水都在里面），忘了带 mode 就又是一个 0644。
+// 目录没有执行位，别的本地账号连 `ls` 都进不来，里头单个文件是什么位都不要紧了。
+// 只收 data/ 不收上一层：开发态下 DATA_DIR 就是仓库根目录（见 paths.js），
+// 把源码目录改成 0700 是件没人预期的事，而真正要护的东西一件都不在那儿。
+// 失败照例吞掉——Windows 上 chmod 基本是空操作，容器挂载卷也可能不让改（见 store.tighten）。
+store.tighten(ACCOUNT_DIR, 0o700);
+// 配置读坏了不能就这么空着起来：那样界面上所有 Key 都变成空的，用户随手一保存就把
+// 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
+// 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
+const CONFIG_DEFAULTS = JSON.parse(fs.readFileSync(appPath("config.example.json"), "utf8"));
+// 模板另拷一份当「文件不存在」的底：readJson 找不到文件时原样把 empty 交回来，不拷的话
+// 下面所有对 config 的改动都会写进 CONFIG_DEFAULTS，后面 mergeDiskEdits 拿模板兜底时兜到的就是活配置
+const rawConfig = store.readJson(CONFIG_PATH, JSON.parse(JSON.stringify(CONFIG_DEFAULTS)));
+// 0.2 之前的老配置压根没有 models 表（只有 provider / openai / anthropic 三块）——要在模板补缺之前认出来
+const legacyNoModels = !Array.isArray(rawConfig.models);
+const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
+// 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
+// "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
+const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
+// 盯住这个文件的改动时间，还有它上一次跟磁盘对齐时的样子。
+// config.json 是明确让人手改的文件——README 里就写着「把 API Key 填进来」。可 saveConfig() 存的是
+// 内存里那整份 config：手改完之后在界面上随便点一下保存，刚粘进去的 Key 就被整份盖掉了，一句提示也没有。
+// 有了这两样，存盘前才问得出那句「这文件在我背后动过没有」（见 saveConfig）。
+let CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
+let CONFIG_BASE = cfgMerge.snapshot(config);
+// 手改写错了当场说出来。不说的话界面上一点反应也没有，
+// 然后去怀疑是不是没保存、要不要重启、这功能是不是坏了——查半天发现是键名少了个字母。
+for (const line of cfgLint.lines(cfgLint.lint(config, CONFIG_DEFAULTS))) console.warn(`[配置] ${line}`);
+
+/**
+ * 只补缺的，不改已有的（顶层键 + 顶层对象里的子键，两层就够）。
+ *
+ * config.json 是明确让用户手改的文件，删掉整个 server / agent 块很常见。以前那种情况下
+ * 启动会抛 “Cannot read properties of undefined (reading 'host')” 或 “...(reading 'max_steps')”——
+ * 一条完全看不出跟配置有关的报错，用户只会以为程序坏了。缺的用模板里的默认值填上就行。
+ * 数组不合并：mcp_servers、models 这些用户清空是有意为之，不能又给他塞回来。
+ */
+function fillDefaults(cur, def) {
+  for (const [k, v] of Object.entries(def)) {
+    if (cur[k] === undefined) { cur[k] = v; continue; }
+    if (v && typeof v === "object" && !Array.isArray(v) && cur[k] && typeof cur[k] === "object" && !Array.isArray(cur[k])) {
+      for (const [k2, v2] of Object.entries(v)) if (cur[k][k2] === undefined) cur[k][k2] = v2;
+    }
+  }
+  return cur;
+}
+
+// 老配置迁移：还没有 models 表的，只把填了 Key 的那家搬成一条模型行。
+// 以前这里会塞五家厂商的模板行——用户看到的就是一排没 Key 的占位渠道，删了下次启动又长回来。
+// models 是空数组的不碰：那是用户自己清空的（或者就是没配），空着才是对的
+if (legacyNoModels) {
+  config.models = chatModels.legacyRows(config);
+  config.active_model = config.models.length ? config.models[0].name : "";
+  saveConfig();
+}
+
+// 四路媒体模型迁移：老的「一路一个模型、Key 抄四份」→ 渠道表 + 模型表。幂等，老用户什么都不用做
+// 对话模型跟着做同一件事：每条自己抄一份地址和 Key → 抽到渠道那一层，一把 Key 底下挂一排模型。
+// 两者共用同一张 config.providers 表，所以媒体那边先跑（它的渠道认领只看地址+Key，不看协议）
+let migrated = mediaModels.normalize(config);
+if (chatModels.normalize(config)) migrated = true;
+// 老版本出厂 config 里那九行没 Key 的厂商模板、以及它们留下的空壳渠道，这一趟收掉。只认名字+地址
+// 跟出厂一模一样、Key 空着、又不是正在用的那条；用户自己起名建的行一条不碰。跑过一遍就没得收了
+// 只跑一次（presets_pruned 章）：之后用户自己清空某条渠道的 Key、或者起了个跟老模板同名的行，都不许再被当成占位收走
+// 判断模型（Jev）混进了对话模型列表（早先的版本、或拉清单时点中了它）：它没有 /chat/completions，
+// 挂着就是每一趟 400，定时任务一条条挂。收掉；正在用的是它，就换回第一条——运行时本来也是这么兜的
+{
+  const jevRows = (config.models || []).filter((m) => m && systemOne.isDecisionModel(m.model));
+  if (jevRows.length) {
+    config.models = config.models.filter((m) => !jevRows.includes(m));
+    if (jevRows.some((m) => m.name === config.active_model)) config.active_model = (config.models[0] || {}).name || "";
+    console.log(`[渠道整理] 判断模型不能当对话模型用，已从模型列表移除：${jevRows.map((m) => m.name).join("、")}`);
+    migrated = true;
+  }
+}
+if (!config.presets_pruned) {
+  const pruned = chatModels.pruneSeededPresets(config);
+  if (pruned.models.length || pruned.channels.length) console.log(`[渠道整理] 收回出厂占位 → 模型行：${pruned.models.join("、") || "无"}；空壳渠道：${pruned.channels.join("、") || "无"}`);
+  config.presets_pruned = true;
+  migrated = true;
+}
+if (migrated) saveConfig();
+
+security.getSecurity(config); // 补齐安全中心默认策略
+config.shortcuts = config.shortcuts || {}; // 快捷键自定义绑定（只存改过的项，默认值在前端定义）
+config.assistant = { ...ASSISTANT_DEFAULT, ...(config.assistant || {}) };
+
+if (config.workspace_dir) {
+  try {
+    setWorkspaceDir(config.workspace_dir);
+  } catch (e) {
+    console.warn("workspace_dir 无效，使用默认工作空间:", e.message);
+  }
+}
+// 开机把当前项目挂载的那块资料库也接回去。少了这一句，重启之后工作目录是对的、
+// 资料库却退回了整个库，agent 在「客户 A」的项目里照样翻得到别家的合同——
+// 而这种错不会报错，只会安静地引用错资料。
+try {
+  const boot = (config.projects || []).find((p) => p && p.name === config.active_project);
+  if (boot && boot.library_dir) setLibraryDir(boot.library_dir);
+} catch {}
+
+// 从老版本升上来的那一下：之前的文件得替人收进新文件夹里整理好。
+// 放在这儿是因为工作目录到这一行才算最终确定（上面刚认完 workspace_dir 和资料库）。
+// 每条迁移只跑一次，记在 data/migrations.json；跑不动就只是打一行日志——
+// 为了整理文件而开不了应用，那是本末倒置
+try {
+  // 「这台机器以前用过没有」——判升级还是全新装全靠它。看的是有没有会话/账号留下来，
+  // 不看 config.json：那玩意儿第一次启动就会从 example 生成一份，永远为真，什么也证明不了
+  const priorUse = (() => {
+    try { if (fs.existsSync(dataPath("data", "users.json"))) return true; } catch {}
+    try { return fs.readdirSync(dataPath("data", "sessions")).some((f) => f.endsWith(".json")); } catch {}
+    return false;
+  })();
+  const notes = migrate.runMigrations(getWorkspaceDir(), dataPath("data", "migrations.json"), {
+    version: String(require("./package.json").version || ""), priorUse,
+  });
+  for (const n of notes) console.log(`[升级整理] ${n.note}`);
+  global.__wbMigrationNotes = notes;   // 界面上给用户看一眼：动过他的文件，得说
+} catch (e) {
+  console.warn("[升级整理] 这次没做成，不影响使用：" + e.message);
+}
+let llmInner = createLLM(config);
+// 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
+memory.setEmbedder(createEmbedder(config));
+// 任务历史检索的向量渠道。这两个变量本该跟下面那一块检索代码放在一起，但接线在这儿就发生了——
+// let 声明在后面的话是暂时性死区，进程会直接起不来（不是搜索不好使，是整个服务起不来）
+let sessEmbedder = null;
+let sessVecRunning = false;
+setSessEmbedder(createEmbedder(config));
+memory.ensureVectors().then((r) => { if (r.computed) console.log(`[记忆向量] 启动补算了 ${r.computed} 条`); }).catch((e) => console.warn("[记忆向量] 启动补算失败:", e.message));
+// 可热替换的 LLM 包装：设置修改后 runtime 无需重建
+const llm = {
+  get provider() { return llmInner.provider; },
+  get model() { return llmInner.model; },
+  chat: (args) => llmInner.chat(args),
+};
+/** 按对话覆盖模型：会话里选过就用会话的，没选跟全局默认。
+ *  选过的模型已被从列表删掉 → 明确报错，绝不悄悄换成别的模型跑 */
+function llmForSession(sess) {
+  const name = sess && sess.model;
+  if (!name) return llm;
+  if (Array.isArray(config.models) && config.models.some((m) => m.name === name)) {
+    return createLLM({ ...config, active_model: name });
+  }
+  return {
+    provider: name,
+    model: name,
+    chat: () => Promise.reject(new Error(`该对话指定的模型「${name}」已不在模型列表里。点输入框右下角的模型按钮重新选一个，或选「跟随全局默认」。`)),
+  };
+}
+// 同一模型连续「整跑失败」计数（成功一次即清零）：连挂说明是模型/渠道本身的问题，光报错用户不知道该干嘛
+const modelFailStreak = new Map();
+
+// 模型健康账本：每次整跑记一笔成败（按模型条目名，滚动只留最近 20 次），选模型时能看到
+// 「这个渠道最近靠不靠谱」，不用踩了才知道。落盘 data/model_health.json，重启不清零
+const HEALTH_FILE = dataPath("data", "model_health.json");
+const modelHealth = store.readJson(HEALTH_FILE, {}) || {};
+function recordModelHealth(name, ok, failMsg) {
+  if (!name) return;
+  const h = (modelHealth[name] = modelHealth[name] || { recent: [] });
+  h.recent.push(ok ? 1 : 0);
+  if (h.recent.length > 20) h.recent = h.recent.slice(-20);
+  if (ok) h.last_ok_t = Date.now();
+  else { h.last_fail_t = Date.now(); h.last_fail = String(failMsg || "").slice(0, 200); }
+  try { store.writeJsonAtomic(HEALTH_FILE, modelHealth); } catch {}
+}
+function healthSummary() {
+  const out = {};
+  for (const [name, h] of Object.entries(modelHealth)) {
+    const recent = Array.isArray(h.recent) ? h.recent : [];
+    let streak = 0;
+    for (let i = recent.length - 1; i >= 0 && !recent[i]; i--) streak++;
+    out[name] = { n: recent.length, ok: recent.filter(Boolean).length, fail_streak: streak, last_fail: h.last_fail || "", last_fail_t: h.last_fail_t || 0 };
+  }
+  return out;
+}
+
+// 专家团：数组引用被 runtime 闭包持有，增删改都就地改这个数组（热生效，无需重启）
+const EXPERTS_FILE = dataPath("experts.json");
+const experts = [];
+const expertTeams = []; // 专家团 = 智能体团队，同样是被 runtime 闭包持有的活引用
+let expertsMeta = store.readJson(EXPERTS_FILE, {}) || {};
+// 打包版升级后，包里新出的内置专家/专家团要补进用户那份（用户改过、删过的不动）；
+// 只靠首次安装时的 copyIfMissing，老用户永远见不到新专家。补了几个写日志留痕。
+if (appPath("experts.json") !== EXPERTS_FILE) {
+  try {
+    const bundled = store.readJson(appPath("experts.json"), null);
+    const hadSeen = Array.isArray(expertsMeta.seen_builtins);
+    // 技能那本「见过」账第一次记也要落盘：不记下来，下次启动又当第一次跑，用户删掉的技能会被补回去
+    const hadSeenSkills = !!(expertsMeta.seen_builtin_skills && typeof expertsMeta.seen_builtin_skills === "object");
+    const r = bundled ? mergeBuiltinExperts(expertsMeta, bundled) : { added: [], addedTeams: [], bound: [] };
+    if (r.added.length || r.addedTeams.length || r.bound.length || (bundled && (!hadSeen || !hadSeenSkills))) {
+      store.writeJsonAtomic(EXPERTS_FILE, expertsMeta, { pretty: true });
+      if (r.added.length || r.addedTeams.length) console.log(`[专家] 升级补入内置专家 ${r.added.length} 位、专家团 ${r.addedTeams.length} 个：${[...r.added, ...r.addedTeams].join("、")}`);
+      if (r.bound.length) console.log(`[专家] 升级给内置专家补绑技能 ${r.bound.length} 个：${r.bound.join("、")}`);
+    }
+  } catch (e) { console.warn("[专家] 合并内置专家失败（不影响启动）:", e.message); }
+}
+experts.push(...(expertsMeta.experts || []));
+expertTeams.push(...(expertsMeta.teams || []));
+function saveExperts() {
+  store.writeJsonAtomic(EXPERTS_FILE, { ...expertsMeta, experts, teams: expertTeams }, { pretty: true });
+}
+const mcpManager = new McpManager();
+let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
+
+// ---------- 会话持久化：内存 + 磁盘（data/sessions/<id>.json） ----------
+// 结构：{ history: 统一格式历史(供LLM), transcript: 界面回放记录, title, updated_at }
+const SESS_DIR = dataPath("data", "sessions");
+const sessions = new Map();
+const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
+// 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
+// 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
+const RUNNING_FILE = dataPath("data", "running.json");
+// git worktree 分身放这儿。放在用户仓库外面：放里面等于让 git 观察自己，清理时手一滑就删到人家代码上
+const WORKTREE_DIR = dataPath("data", "worktrees");
+function persistRunning() {
+  try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch {}
+}
+function sweepInterruptedRuns() {
+  const ids = store.readJson(RUNNING_FILE, []);
+  if (!Array.isArray(ids) || !ids.length) return;
+  let marked = 0;
+  for (const id of ids) {
+    try {
+      const sess = getSession(id);
+      const last = sess.transcript[sess.transcript.length - 1];
+      if (!last || last.type !== "assistant") continue;
+      const evs = last.events || (last.events = []);
+      const tail = evs[evs.length - 1];
+      if (tail && tail.type === "error") continue; // 已有明确收场就别重复盖章
+      evs.push({ type: "error", message: "应用在任务执行中被关闭或重启，这一轮已中断（已完成的进度和文件都还在）。可以对我说「接着上次进度继续」。" });
+      saveSession(id);
+      marked++;
+    } catch {}
+  }
+  try { store.writeJsonAtomic(RUNNING_FILE, []); } catch {}
+  if (marked) console.log(`[恢复] 检测到 ${marked} 个被重启打断的任务，已在会话回放里标注中断`);
+}
+const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
+
+/** 给对话分配成果文件夹（任务_月日_标题），并把「消息发出前就传上来的」附件一起搬进去。
+ *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。*/
+function assignSessionDir(sess, message) {
+  const d = new Date();
+  const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+  // 【任务类型：X】是给模型看的前缀，起标题时早就洗掉了，文件夹名这儿漏了——
+  // 于是真实数据里躺着一个「任务_0826_任务类型数据分析及可视化_3」，
+  // 用户看到的是分类词，真正做的那件事（篮球减肥训练计划）一个字都没进名字。
+  // 素材锚点（【图片 1：IMG_8037.JPG】）是发送时自动补进正文的，不是用户写的字。
+  // 不洗掉就会得到「任务_0921_图片1IMG8037JP」——序号和被砍了一半的扩展名占满 12 个格，
+  // 用户真正问的那句「这是什么」一个字都没进去。
+  const ANCHOR = /【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/gu;
+  const raw = String(sess.title || message);
+  const src = raw.replace(/^\s*【任务类型：[^】]*】\s*/, "").replace(ANCHOR, " ");
+  const clean = (t) => String(t).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12);
+  // 拖张图进来、一个字没写：拿文件名（去掉扩展名）兜底，比清一色的「对话」认得出来
+  const firstName = ((raw.match(/【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/u) || [])[1] || "").replace(/\.[^.]+$/, "");
+  const slug = clean(src) || clean(firstName) || "对话";
+  let dir = `任务_${stamp}_${slug}`;
+  for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
+  assignedDirs.add(dir);
+  sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
+  // 连**哪个根**下的这个文件夹也一起记住。只记相对名的后果就是用户换一次工作目录，
+  // 这条对话的成果全部变成「文件不存在」——文件没丢，是坐标系换了而没人记得旧的那套。
+  sess.root = getWorkspaceDir();
+  rememberRoot(sess.root);
+  const full = path.join(getWorkspaceDir(), dir);
+  try { fs.mkdirSync(full, { recursive: true }); } catch {}
+  for (const n of sess.pending_uploads || []) {
+    try {
+      const from = path.join(getWorkspaceDir(), n), to = path.join(full, n);
+      // 根目录同名的可能是别人的旧文件，只搬确实存在、且目标位置还空着的
+      if (fs.existsSync(from) && fs.statSync(from).isFile() && !fs.existsSync(to)) {
+        fs.renameSync(from, to);
+        // 「这份是用户传的」那笔账记的是路径，搬完得跟着改键，否则这张图换个位置就又变成产出了
+        moveUserInput(n, path.join(dir, n));
+      }
+    } catch {}
+  }
+  sess.pending_uploads = [];
+  return dir;
+}
+
+function sessFile(id) {
+  return path.join(SESS_DIR, id.replace(/[^\w-]/g, "_") + ".json");
+}
+// 每个会话文件「我们最后一次读/写它时」的样子。用来分辨盘上那份是不是被别的进程改过。
+const sessStamp = new Map(); // id -> { mtime, size }
+function sessStat(id) {
+  try { const st = fs.statSync(sessFile(id)); return { mtime: st.mtimeMs, size: st.size }; } catch { return null; }
+}
+/**
+ * 盘上那份比我们手里的新吗。
+ *
+ * 只比 mtime 会漏：原子改名两次可能落在同一毫秒里。加上体积，改了内容基本不可能两项都一样。
+ */
+function sessChangedOnDisk(id) {
+  const now = sessStat(id);
+  const mine = sessStamp.get(id);
+  if (!now || !mine) return false; // 文件没了 / 我们压根没记过，都不算「别人改的」
+  return now.mtime !== mine.mtime || now.size !== mine.size;
+}
+/* ---------- 会话缓存：内存里只留最近用过的那几条 ----------
+ *
+ * sessions 是**缓存**不是账本 —— 真本一直在 data/sessions/<id>.json，内存里这份丢了，
+ * 大不了下次重读一遍（本机实测：最大的一条 1.3MB 重读 7.07ms，中位数那条 0.30ms，用户根本感觉不到）。
+ *
+ * 可它以前只进不出：点开过的每一条会话都原地住到进程退出为止。本机 203 条会话全读进来实测
+ * 堆 +39.6MB、进程 RSS +76MB，而且再也不回落 —— 这正是 metrics 里那条 rss 告警说的
+ * 「如果它不再回落，值得看一眼是不是有超大会话没被回收」。多人服务器上这个数还要乘人头。
+ *
+ * 所以按「最近用过」排队，超预算就从队头往外扔。四道闸门缺一不可，少一道都会悄悄吃掉数据：
+ *   1. 正在跑的不扔（activeRuns）—— 那份对象正被这一轮改着；
+ *   2. 有人长期攥着的不扔（sessHold，定时任务那条路）—— 它的 emit 还在往里写；
+ *   3. 刚碰过的不扔（SESS_CACHE_IDLE_MS）—— 来回切两条大会话不能变成来回读盘；
+ *   4. 内存里那份跟盘上那份必须一字不差才扔 —— 这是兜底的那道。
+ *      举个真会发生的：附件是「先传后发」的，上传接口把文件名记在 sess.pending_uploads 上
+ *      **而且不存盘**（见 /api/upload），等下一条消息发出去才用。这种只活在内存里的字段
+ *      光靠前三道闸门拦不住，第 4 道能：它跟盘上对不上，就不许扔。
+ */
+// 预算定在 8MB 而不是"看着够用就行"：重读一条 1MB 的会话实测 4.5ms、中位数那条 0.3ms，
+// 留着它省下的就是这几毫秒；而多留一份就是实打实几十 MB 常驻，还乘人头。
+// 这笔账两边差着三个数量级，那就往小了定。真正在跑的那些走 activeRuns，本来就不受这道线管。
+const SESS_CACHE_BYTES = 8 * 1024 * 1024;  // 按盘上那份的字节算；堆里大约是它的 1.36 倍（实测）
+const SESS_CACHE_KEEP = 8;                 // 不管多大，最近这几条一定留着
+const SESS_CACHE_IDLE_MS = 60 * 1000;      // 一分钟内碰过的不动，哪怕超预算
+const sessUsedAt = new Map();              // id -> 上次碰它的毫秒数
+const sessHold = new Map();                // id -> 还有几处长期攥着这份内存对象
+
+/** 有人要长期拿着这份对象（不是一次请求内用完就扔），先说一声，别让它被清掉 */
+function holdSession(id) { sessHold.set(id, (sessHold.get(id) || 0) + 1); }
+function releaseSession(id) {
+  const n = (sessHold.get(id) || 0) - 1;
+  if (n > 0) sessHold.set(id, n); else sessHold.delete(id);
+}
+/** 用过一次：挪到队尾。Map 记插入顺序，删了再塞就是一条现成的 LRU 队列 */
+function touchSession(id) {
+  if (!sessions.has(id)) return;   // 不在缓存里就别记：记了这个 Map 自己就成了新的只进不出
+  sessUsedAt.set(id, Date.now());
+  const v = sessions.get(id);
+  sessions.delete(id);
+  sessions.set(id, v);
+}
+/** 内存里这份跟盘上那份一字不差吗。不一样就说明还有没落盘的改动，这条不许清 */
+function sessSynced(id) {
+  const s = sessions.get(id);
+  if (!s) return false;
+  let text = "";
+  try { text = JSON.stringify(s); } catch { return false; }   // 循环引用之类：拿不准就当它脏的
+  const f = sessFile(id);
+  let st = null;
+  try { st = fs.statSync(f); } catch { return false; }        // 盘上压根没有（新会话还没存过）：更不能清
+  if (st.size !== Buffer.byteLength(text)) return false;      // 先比长度，绝大多数不一样的在这儿就刷掉了
+  try { return fs.readFileSync(f, "utf8") === text; } catch { return false; }
+}
+/** 这条会话跟它在内存里的一切痕迹都抹掉（删会话、清定时任务残留都走这儿）。
+ *  四个 Map 是一套的，漏掉任何一个，那个 Map 就变成新的只进不出 */
+function forgetSession(id) {
+  sessions.delete(id);
+  sessStamp.delete(id);
+  sessSaveAt.delete(id);
+  sessUsedAt.delete(id);
+  sessHold.delete(id);
+}
+/** 当前内存里这些会话占了多少字节（按盘上那份算） */
+function sessCacheBytes() {
+  let n = 0;
+  for (const id of sessions.keys()) n += ((sessStamp.get(id) || {}).size) || 0;
+  return n;
+}
+let sessTrimAt = 0;   // 这个时刻之前不再白跑一趟（见下）
+/** 超预算就从「最久没碰」那头往外扔。keepId 是这次要用的那条，永远不许扔它 */
+function trimSessionCache(keepId) {
+  let bytes = sessCacheBytes();
+  if (bytes <= SESS_CACHE_BYTES) return 0;
+  const now = Date.now();
+  // 上一趟一条都没清掉（全在用着、或者全都还没落盘）：歇一会儿再试。
+  // 不歇的话，超着预算的这段时间里每开一条会话都要把整份缓存重扫一遍，
+  // 而那一趟是要逐个读盘比对的——本来是省内存的，反倒成了新的开销。
+  if (now < sessTrimAt) return 0;
+  let gone = 0, looked = 0;
+  for (const id of [...sessions.keys()]) {
+    if (bytes <= SESS_CACHE_BYTES || sessions.size <= SESS_CACHE_KEEP) break;
+    looked++;
+    if (id === keepId || activeRuns.has(id) || sessHold.has(id)) continue;
+    if (now - (sessUsedAt.get(id) || 0) < SESS_CACHE_IDLE_MS) continue;
+    if (!sessSynced(id)) continue;
+    bytes -= ((sessStamp.get(id) || {}).size) || 0;
+    sessions.delete(id);
+    sessStamp.delete(id);     // 跟着一起清，不然这两个 Map 自己变成新的泄漏
+    sessSaveAt.delete(id);
+    sessUsedAt.delete(id);
+    gone++;
+  }
+  // 只有「真挑过、一条都挑不动」才歇（全在用着、或者全都还没落盘）。
+  // 一条都没挑过就歇是个陷阱：缓存刚好卡在保底条数上又超了预算时，这一趟什么都干不了，
+  // 可接下来这一分钟里用户再点开多少条都不会再清——内存在这一分钟里是彻底敞开的。
+  // 本机实测：预算 8MB、保底 8 条、每条 1MB，正好在第 8 条撞上这一格，
+  // 于是翻完 30 条一条都没清掉，30.1MB 全留着，等于这道闸门白装。
+  if (!gone && looked) sessTrimAt = now + SESS_CACHE_IDLE_MS;
+  return gone;
+}
+
+function getSession(id) {
+  /**
+   * 内存里有了也要回头看一眼盘：命令行的 openworkbuddy 写的是同一批文件（data/sessions/<id>.json），
+   * 而 openworkbuddy resume 不给 id 时接的就是「最近动过的那个」，包括桌面上刚开的那条。
+   * 以前这个 Map 一进来就再也不回头，于是「桌面开个头 → 终端 openworkbuddy resume 接着做 → 回桌面再发一句」
+   * 这条路上，桌面用的是几小时前那份内存副本，一存盘就把终端那几轮整段盖掉了——
+   * 用户看到的是「我在终端做的那半截凭空消失了」。
+   *
+   * 正在跑任务的会话不重读：那份内存对象正被这一轮改着，从盘上盖回去等于把自己的进度丢了。
+   */
+  if (sessions.has(id) && !activeRuns.has(id) && sessChangedOnDisk(id)) {
+    console.log(`[会话] ${id} 在别处改过（多半是命令行 openworkbuddy），重新读一遍磁盘，免得把那边的记录覆盖掉`);
+    sessions.delete(id);
+  }
+  if (!sessions.has(id)) {
+    // 会话文件坏了不抛错（不能因为一条对话打不开就让整个工作台起不来），
+    // 但也绝不装作没有过这条对话：store 会先拿 .bak 顶上，实在不行把坏文件改名隔离
+    const data = store.readJson(sessFile(id), { history: [], transcript: [], title: "", updated_at: null });
+    sessions.set(id, data);
+    sessStamp.set(id, sessStat(id));
+    sessUsedAt.set(id, Date.now());
+    trimSessionCache(id);   // 刚读进来的这条排在队尾，清的是队头那些老的
+  } else {
+    touchSession(id);
+  }
+  return sessions.get(id);
+}
+/**
+ * 把会话写回磁盘。
+ *
+ * sess 传不传都行：长期攥着对象的调用方（定时任务录制器）把手里那份直接递进来，
+ * 这样哪怕它已经被缓存清掉了，写盘照样落在对的内容上 —— 而不是悄没声地什么都不做。
+ */
+function saveSession(id, sess) {
+  const s = sess || sessions.get(id);
+  // 内存里没有、调用方也没递一份进来：这不是正常状态，必须留个痕。
+  // 悄悄 return 的话，真出了「跑完一整趟、回放里一片空白」这种事，日志里一个字都没有。
+  if (!s) return void console.warn(`[会话] 要存 ${id}，可内存里没有这份，也没人把对象递进来——这一次写盘跳过了`);
+  if (!s.history) return;
+  touchSession(id);
+  s.updated_at = new Date().toISOString();
+  store.writeJsonAtomic(sessFile(id), s);
+  // 记下自己写完之后的样子，别把自己这次写当成「别人改的」。
+  // 只给还在缓存里的记：清掉的那些记了也没人看，反倒让这个 Map 接着涨
+  if (sessions.has(id)) sessStamp.set(id, sessStat(id));
+}
+/** 跑任务途中顺手存一次盘，最快 5 秒一次。
+ *  跟 saveSession / 缓存清理摆在一块儿：它写的 sessSaveAt 是会话缓存那一套 Map 里的一个，
+ *  拆开放的话，forgetSession 清不到它，而 e2e 切这一整段出去单跑时也会当场少一个名字。 */
+const sessSaveAt = new Map();
+function autosaveSession(id, minGapMs = 5000) {
+  const now = Date.now();
+  if (now - (sessSaveAt.get(id) || 0) < minGapMs) return;
+  sessSaveAt.set(id, now);
+  try {
+    saveSession(id);
+  } catch (e) {
+    console.warn(`[会话] 中途存盘失败（${id}）：${e.message}`);
+  }
+}
+
+/**
+ * 磁盘上的会话清单（给侧栏的任务历史用）。
+ *
+ * 侧栏那份列表一直只活在浏览器 localStorage 里，而对话本体在 data/sessions/。
+ * 于是「换台机器 / 清缓存 / 改用户名 / 换个账号先登进来」任意一件事，列表就空了，
+ * 用户看到的是「我的历史任务全没了」，其实一条都没丢。这里按磁盘给一份权威清单。
+ *
+ * 按文件 mtime 做增量缓存：没变的文件不重读，跑着任务时也不会每次全量读一百个 JSON。
+ * id 取的是文件名（sessFile 会把非 \w 字符换成 _，而 id 本来就是 s_<时间戳>_<随机数>，不会被改写）。
+ */
+const sessMetaCache = new Map(); // 文件名 -> { mtime, row }
+// 上面那个 Map 只在进程活着的时候管用。每次重启后第一次拉侧栏，还得把 data/sessions/ 下
+// 每个 JSON 整个读出来、整个 parse 一遍，只为了取标题和轮数——1500 条会话（20MB）实测 326ms，
+// 而且用得越久越长。这一下正好卡在「点开应用、侧栏还是空的」那段空白上。
+// 所以把 {mtime, row} 落一份到盘上：重启后 mtime 对得上就直接用，对不上才回去读原文件。
+// 判据仍然是 mtime，跟内存那份一模一样，不存在「缓存比文件旧」这种状态。
+// ⚠️ 名字不带 .json，是为了能安心放在 SESS_DIR 里头。扫这个目录的一共四处
+// （这儿、改名时的批量重写、成果清单、cli 的会话列表），四处都是 filter(endsWith(".json"))，
+// 所以一个没后缀的点文件对它们全都不存在——真叫 sessions-index.json 的话，
+// 侧栏第一条就会多出一个叫「sessions-index」的假会话。
+// 路径从 SESS_DIR 推、不用 dataPath()：e2e 把这一整段切出去单跑，注进去的就那几个依赖。
+const SESS_INDEX = path.join(SESS_DIR, ".index");
+let sessIndexLoaded = false;
+let sessIndexDirty = false;
+let sessIndexTimer = null;
+function loadSessIndex() {
+  if (sessIndexLoaded) return;
+  sessIndexLoaded = true;
+  const raw = store.readJson(SESS_INDEX, null);
+  if (!raw || raw.v !== 1 || !raw.rows) return;
+  for (const [name, hit] of Object.entries(raw.rows)) {
+    // 只认形状对的：这文件坏了顶多是白读一次盘，绝不能让侧栏拿着半个 row 去渲染。
+    // row 为 null 是**有效**结论（「这个文件不进侧栏」），跟「少写了 row 这个字段」不是一回事，
+    // 所以判的是「有没有 row 这个键」，不是「row 真不真」——见下面 saveSessIndex 那段。
+    if (!hit || typeof hit.mtime !== "number" || !("row" in hit)) continue;
+    if (hit.row !== null && !(hit.row && hit.row.id)) continue;
+    sessMetaCache.set(name, hit);
+  }
+}
+function saveSessIndex() {
+  if (!sessIndexDirty || sessIndexTimer) return;
+  // 攒 2 秒再写。攒的不是「一次列表里的几十条」（一次列表只调一次这儿），
+  // 是「侧栏在轮询」：网页 + 手机 + 第二个标签页，几秒一趟，每趟都重写 37KB 没意义。
+  sessIndexTimer = setTimeout(() => {
+    sessIndexTimer = null;
+    sessIndexDirty = false;
+    const rows = {};
+    // ⚠️ row 为 null 的也要写进去。它的意思是「这个文件我看过了，不进侧栏」——
+    // 空壳会话、写坏的 JSON 都落在这一类。漏掉它们的话，恰恰是这批「读了也没用」的文件
+    // 每次重启都要被完整读一遍，而这正是这份索引要省掉的开销。
+    for (const [name, hit] of sessMetaCache) if (hit && "row" in hit) rows[name] = hit;
+    try { store.writeJsonAtomic(SESS_INDEX, { v: 1, rows }, { backup: false }); } catch {}
+  }, 2000);
+  if (sessIndexTimer.unref) sessIndexTimer.unref(); // 测试里起完就关的进程，别被这个定时器吊住
+}
+function listSessionsOnDisk() {
+  loadSessIndex();
+  let names = [];
+  try { names = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return []; }
+  const rows = [];
+  const seen = new Set();
+  for (const n of names) {
+    const id = n.slice(0, -5);
+    seen.add(n);
+    const live = sessions.get(id); // 内存里有就用内存的：刚写过的盘没必要再读一遍
+    if (!live) {
+      let mtime = 0;
+      try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+      const hit = sessMetaCache.get(n);
+      if (hit && hit.mtime === mtime) { if (hit.row) rows.push(hit.row); continue; }
+      const data = store.readJson(path.join(SESS_DIR, n), null);
+      const row = sessionRow(id, data);
+      sessMetaCache.set(n, { mtime, row });
+      sessIndexDirty = true;
+      if (row) rows.push(row);
+      continue;
+    }
+    const row = sessionRow(id, live);
+    if (row) rows.push(row);
+  }
+  for (const k of sessMetaCache.keys()) if (!seen.has(k)) { sessMetaCache.delete(k); sessIndexDirty = true; } // 删掉的会话别赖在缓存里
+  rows.sort((a, b) => b.at - a.at);
+  saveSessIndex();
+  return rows;
+}
+function sessionRow(id, s) {
+  // 一句话都没说过的空壳不进侧栏：点进去还是空的，只会让人以为「历史又乱了」
+  if (!s || !Array.isArray(s.transcript) || !s.transcript.length) return null;
+  // 定时任务跑出来的那段会话也不进侧栏：一天几十条 cron 会把真正的对话整个挤下去。
+  // 它们有自己的正经去处——自动化 → 运行记录，那边每条记录都挂着「看执行过程」直接开这一段。
+  if (s.kind === "schedule") return null;
+  return {
+    id,
+    title: s.title || "未命名任务",
+    user: s.user || "",
+    project: s.project || "",
+    at: Date.parse(s.updated_at || "") || 0,
+    turns: s.transcript.length,
+    // 侧栏按标签分栏。这儿只如实报「这条会话当初记的是哪条线」，没记过就不报——
+    // 老会话该归到哪条线要看**读它的这个人**现在配的是什么引擎，那是前端拿 /api/lanes 算的事；
+    // 在这儿按服务器配置替他填死，多用户下就会把别人的引擎口径安到他头上。
+    lane: lanes.normalize(s.lane) || undefined,
+  };
+}
+/**
+ * 侧栏只列「我自己的」，故意比 sessionAllowed 更窄：
+ * 后者管的是「能不能打开」（管理员拿到同组织的链接可以打开），
+ * 这里管的是「侧栏该不该出现」——把同事的任务铺进管理员的侧栏是另一种事故。
+ * 没开账号体系（req.user 为空）本来就是一个人用；没记归属的老会话归管理员（见 legacySessionOwner），
+ * 不再当公共的——那一条正是「新建的号一打开，侧栏里全是别人的对话」的出处。
+ * 这里的 row 是磁盘清单里的一行，不会是空壳，所以直接按 legacySessionOwner 兜底。
+ */
+function ownSession(user, row) {
+  if (!user) return true;
+  const owner = (row && row.user) || legacySessionOwner();
+  return !owner || owner === user.username;
+}
+
+// 任务跑一半崩了 / 用户直接退出 App，这一轮的过程就全没了——中途也存，最多每 5 秒一次。
+// 存的是同一份对象，落盘又是原子改名，跟收尾时那次 saveSession 不会打架。
+// IM 会话跟网页会话分开存（data/im-sessions/<键>.json），重启不丢上下文
+const imSessions = createImSessionStore({ dir: dataPath("data", "im-sessions") });
+// 助理页的上下文以前全服务器共用一个键（local_assist），现在一人一段。老库里那一段就这么晾着的话，
+// 升级完第一句话它就「突然失忆」——那段话本来就是管理员跟它说的，认到管理员名下即可
+try {
+  const boss = account.defaultUser();
+  const bossKey = boss ? "local_" + prefs.keyOf(boss) : "";
+  if (bossKey && imSessions.has("local_assist") && !imSessions.has(bossKey)) {
+    imSessions.set(bossKey, imSessions.get("local_assist"));
+    imSessions.clear((k) => k === "local_assist");
+    console.log("[IM会话] 助理页上下文已按账号拆开，原来那段归到管理员名下");
+  }
+} catch (e) {
+  console.warn("[IM会话] 助理页上下文迁移失败（不影响启动）:", e.message);
+}
+
+/** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件），顺便中途存盘 */
+// ---------- Goal 目标模式 ----------
+// 拆验收标准、对着标准验收这套逻辑搬到了 goal.js，网页端和 `openworkbuddy` 命令行共用同一份。
+// 搬家的直接原因：这段代码原本只长在下面那个 /api/chat 里，于是 Goal 就只对网页存在——
+// 命令行的模式表是手抄的三个，goal 没抄进去，`/mode goal` 敲得进去却按 craft 跑。
+// 这里只留「动脑那句话问谁」（goalThink），因为它要看登录用户配的是哪个引擎。
+/**
+ * 目标验收那一步借判断模型（Jev）。
+ *
+ * 走跟 /api/decide 同一道额度闸：它一道题两万分之一美金，贵不起来，可它是**在循环里**跑的——
+ * 自动补跑几轮、每轮几条标准，一晚上能问出很多道。限的是失控的量，不是钱。
+ * 没配渠道 / 被闸拦了都返回 ok:false，goal.js 会安静地退回对话模型那条老路。
+ */
+const decideForGoal = (args) => jev.askMetered(config, args, { meta: "目标验收" });
+const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir, decide: decideForGoal });
+const GOAL_MAX_ROUNDS = goalKit.MAX_ROUNDS;
+
+/**
+ * 把一次调用（或 agent 返回的一整轮）的用量并进本次任务的总账。
+ *
+ * 以前这件事在五个地方各手写一遍 `total.prompt += …; total.completion += …`，于是
+ * llm.js 好不容易统一读出来的 cached 在这一层被五处同时丢掉——账本记的 cached 恒为 0，
+ * 「有没有在反复全价重买同一段上下文」这个问题看不见，扣积分也没法给缓存打折。
+ * 收成一个函数，以后 usage 再多一个字段只改这一处，不会有第六处漏掉。
+ *
+ * calls：llm.chat() 一次就是一次；agent 返回的 usage 自带 calls（里面是好多次），照抄。
+ */
+function addUsage(total, u) {
+  if (!u) return;
+  total.prompt += u.prompt || 0;
+  total.completion += u.completion || 0;
+  total.cached = (total.cached || 0) + (u.cached || 0);
+  total.calls += u.calls != null ? u.calls : 1;
+  total.elapsed_ms = (total.elapsed_ms || 0) + (u.elapsed_ms || 0);
+}
+
+/**
+ * Goal 模式的「动脑」通道：拆验收标准、对着标准判分，这两句该问谁。
+ *
+ * 本机引擎（Claude Code / Codex）在跑时，就借那个 CLI 问——用户切过去图的就是不花 API 的钱，
+ * 这两步却偷偷走 API：没配 Key 的人于是永远拆不出标准也验不了收，目标卡卡在 0/N 不动，
+ * 从用户那边看就是「Goal 模式没做」。同一份订阅已经付过钱了，问它就是了。
+ */
+async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
+  const my = prefs.agentCfg(config); // 引擎是按账号存的，得看这一趟任务是谁发起的
+  const id = my.engine || "builtin";
+  if (id !== "builtin" && engines.get(id)) {
+    return await engines.ask({ id, opts: (my.engine_options || {})[id] || {}, system, prompt, timeoutMs });
+  }
+  const r = await sessLLM.chat({
+    system,
+    history: [{ role: "user", content: prompt }],
+    tools: [],
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  addUsage(total, r.usage);
+  return r.text;
+}
+
+/**
+ * 把 goalThink 包成 goal.js 要的那个 think(\{system,prompt,timeoutMs\}) —— 用量记在这一趟任务的总账上。
+ * 拆出去之后这一层就是全部的粘合剂：goal.js 不认识 sessLLM、不认识引擎、也不记账。
+ */
+const goalThinkFor = (sessLLM, total) => (a) => goalThink(sessLLM, { ...a, total });
+
+/**
+ * 把任务事件翻译成桌面宠物的表情。只认深度 0 的事件——专家子代理的动静太密，
+ * 宠物跟着抽风反而看不出主线在干什么。纯 node 模式下 global.__openworkbuddyPet 不存在，整个是空操作。
+ */
+function petSay(ev) {
+  const P = global.__openworkbuddyPet;
+  if (!P) return;
+  try {
+    switch (ev.type) {
+      case "ask_user": P.alertAsk(ev.question); break;             // 跳 + 通知 + Dock 弹，最高一档
+      case "ask_answer": P.clearAsk(true); break;
+      case "tool_use": P.setState("working", "正在用 " + (ev.name || "工具")); break;
+      case "expert_start": P.setState("working", `${ev.expert || "专家"} 接手了：${String(ev.task || "").slice(0, 40)}`); break;
+      case "sleep": P.setState("sleep", ev.note); break;
+      case "failover": P.setState("working", ev.note); break;
+      case "limit": P.setState("error", ev.note); break;
+      case "error": P.setState("error", String(ev.message || "任务出错了").slice(0, 80)); break;
+      default: break;
+    }
+  } catch {}
+}
+
+/**
+ * @param opts.pet 要不要让桌面宠物跟着这趟任务动表情。定时任务传 false：
+ *   它是背着人跑的，让宠物替一条 cron 手舞足蹈会盖掉用户手头正在看的那件事。
+ */
+function recordingEmit(send, events, sessionId, { pet = true } = {}) {
+  return (ev) => {
+    send(ev);
+    if (pet && !(ev.depth > 0)) petSay(ev);
+    if (ev.type === "text") {
+      if (ev.depth > 0) return;
+      const last = events[events.length - 1];
+      if (last && last.type === "text") last.delta += ev.delta;
+      else events.push({ type: "text", delta: ev.delta });
+    } else if (ev.type === "files") {
+      // 产出卡片得能活过一次重开：历史回放全靠这条事件重建。以前它不在存盘清单里，
+      // 于是任务当场看得见成果卡，退出再进来那片卡就凭空消失了。
+      // 但整份清单最多 500 条、每批工具跑完就来一次，原样存会把会话文件撑爆——
+      // 只留这一批真正变更的那几条（回放时 renderFiles 被 isReplaying 挡住，用不到全量）
+      const chg = ev.changed || [];
+      // partial 是给回放用的实话：存下来的这份 files 已经被裁成「这一批变更」了，不是全量清单。
+      // 前端拿不到全量就不能判定谁没了——早先没这个标记，回放时每来一批就把上一批的产出
+      // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
+      // 第 4 层往下、挤出最新 500 条的产出不在 files 里，在 turn_files 里（两份不重名）：并起来再裁，不然回放时那几张卡画不出来
+      const pool = (ev.files || []).concat(ev.turn_files || []);
+      if (chg.length) events.push({ type: "files", changed: chg, files: pool.filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "worktree", "credits", "sources", "ask_user", "ask_answer", "milestones", "todos", "context", "trace"].includes(ev.type)) {
+      // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
+      if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
+      events.push(ev);
+      // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
+      if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
+    }
+  };
+}
+
+const app = express();
+// 大小写敏感路由。Express 默认是 false，于是 POST /API/settings 会命中 /api/settings 的
+// 处理器，而 account.js 的 authGuard 和 admin.js 的门禁表都是用 startsWith 按**原样**路径
+// 判的——把首字母改成大写就既不用登录、也绕开整张写表。判据那两处也一并小写化了（两头都堵，
+// 只堵一头都会留下半扇门）。全仓路由注册和前端请求本来就全小写，打开这个开关不改变任何现有行为。
+app.set("case sensitive routing", true);
+app.use(express.json({ limit: "60mb" }));
+
+/**
+ * 几条响应头。本来这东西跑在本机没人惦记，但只要往 VPS 上一放就是公网服务了。
+ *
+ * - no-referrer：配对码是从 ?pair= 进来的。带 Referer 的话，这一页上任何一个外链
+ *   （AI 生成的网页里随便一个 <a>）都会把整条地址、连着那串码一起送到对面站点去。
+ * - nosniff：/api/files 那条路会把用户自己的文件原样吐出来。不关嗅探的话，
+ *   一个存成 .txt 的 html 会被浏览器当页面执行，那就是同源下的 XSS。
+ * - SAMEORIGIN：别人用 iframe 套住这一页骗点击（点的是「删除」，他看见的是「领奖」）。
+ * - base-uri/form-action：真出了 XSS 时，这两条能拦住最顺手的那两种偷法。
+ *
+ * 没上完整 CSP 是故意的：预览 AI 生成的网页用的是 blob: iframe，而 blob: 会继承
+ * 这一页的 CSP。加上 script-src/connect-src，生成的网页里引个图表库就白屏了——
+ * 那是主线功能。iframe 那边已经用 sandbox 隔成独立源，先靠它。
+ */
+app.use((req, res, next) => {
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Content-Security-Policy", "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'");
+  next();
+});
+/**
+ * 静态文本先压再发，摆在 express.static 前面。
+ *
+ * 首屏那 1.9 MB（HTML + 八个 app-0*.js + i18n 词典 + JointJS + Dagre）全是文本，
+ * 压完只剩三成。本机上差别看不出来，走隧道或者手机流量上来的人差十几秒。
+ * vendor 那两个不在 public 底下，得单独把前缀指过去——它们俩加起来 558 KB，
+ * 恰恰是首屏里最大的一块，漏了等于白做。
+ */
+app.use(staticCompress([
+  { prefix: "/", dir: appPath("public") },
+  { prefix: "/vendor/joint/", dir: appPath("node_modules/@joint/core/dist") },
+  { prefix: "/vendor/dagre/", dir: appPath("node_modules/@dagrejs/dagre/dist") },
+]));
+/**
+ * 动态 JSON 也压。上面那层只碰磁盘文件，而这台服务器上最大的一个响应恰恰是动态的：
+ * GET /api/session/:id 实测 936 KB（brotli 后 189 KB），用户每切一次任务就下一遍。
+ * 只包 res.json，SSE 走的是 res.write，结构上够不着——理由写在 json-compress.js 开头。
+ */
+app.use(jsonCompress());
+app.use(express.static(appPath("public")));
+// JointJS 是短剧画布的开源底座。它从 node_modules 原样提供给前端，
+// 不复制、不改写 vendor 源码；这样开发态、桌面包和离线模式使用的是同一份 MPL-2.0 文件。
+app.get("/vendor/joint/joint.min.js", (_req, res) => {
+  res.sendFile(appPath("node_modules/@joint/core/dist/joint.min.js"));
+});
+app.get("/vendor/joint/LICENSE", (_req, res) => {
+  res.sendFile(appPath("node_modules/@joint/core/LICENSE"));
+});
+// Dagre（MIT）只负责按真实有向边计算节点层级和紧凑坐标，JointJS 继续负责渲染与交互。
+app.get("/vendor/dagre/dagre.min.js", (_req, res) => {
+  res.sendFile(appPath("node_modules/@dagrejs/dagre/dist/dagre.min.js"));
+});
+app.get("/vendor/dagre/LICENSE", (_req, res) => {
+  res.sendFile(appPath("node_modules/@dagrejs/dagre/LICENSE"));
+});
+/**
+ * 「这个端口上应答的是谁」——唯一一个不需要登录的接口。
+ *
+ * 两个地方指着它，问的是同一件事「3800 上应答的是不是我自己」：
+ *   1）`openworkbuddy doctor`：端口被占着，占的是 OpenWorkBuddy 自己（那叫「已经开着」），
+ *      还是别的程序（那才要去处理）。不分的话，每个正常使用中的用户跑一次体检都会看到
+ *      一条红色告警，看两次就再也不信这个工具了。
+ *   2）桌面壳的 listenWithFallback：少了它，壳只能把窗口指给任何一个会应答的服务，
+ *      用户看到的是个陌生页面。
+ *
+ * 只回应用名和版本号——登录页上本来就写着这两样，不多泄露任何东西。
+ * 免登录有两把锁，各自独立：这一行在 authGuard **前面**，account.js 的 PUBLIC_API 里也列着它
+ * （那段注释在 account.js 里写着）。拆掉任意一把都还能应答，两把一起没了才会回 401——
+ * 那时候壳把自己人当成陌生人，转头换个口又起一台。
+ *
+ * 只许注册一次。原先这个文件里有一模一样的第二处，在 authGuard 后面；Express 只派给先注册的
+ * 那个，那份从来没被走到过。真正的危险是有人清理时留后删前——接口悄悄挪到闸后头，当时看着还好
+ * （PUBLIC_API 兜着），等哪天有人顺手精简那个 Set，doctor 和壳就一起瞎掉。test/remote.js 盯着这两件事。
+ */
+app.get("/api/ping", (_req, res) => {
+  res.json({ app: "openworkbuddy", version: require("./package.json").version });
+});
+// /api/auth/* /api/usage /api/credits/*
+app.use(
+  account.createRouter({
+    // 账号改了登录名，历史会话的归属得跟着走，不然那些任务就成了没主的（列表里直接消失）。
+    // 内存和磁盘两头都要改：只改盘上的，下一次 saveSession 会拿内存里的旧名字盖回去。
+    onRename: (from, to) => {
+      for (const s of sessions.values()) if (s && s.user === from) s.user = to;
+      let files = 0;
+      for (const f of fs.existsSync(SESS_DIR) ? fs.readdirSync(SESS_DIR) : []) {
+        if (!f.endsWith(".json")) continue;
+        const p = path.join(SESS_DIR, f);
+        const s = store.readJson(p, null);
+        if (s && s.user === from) {
+          s.user = to;
+          store.writeJsonAtomic(p, s);
+          files++;
+        }
+      }
+      const mems = memory.renameScope(from, to); // 记忆也认登录名，不搬就成了孤儿
+      console.log(`[账号] 登录名 ${from} → ${to}，${files} 条会话、${mems} 条记忆的归属已迁移`);
+    },
+  })
+);
+/**
+ * 企业加装包。
+ *
+ * 开源版**只留口子，不留实现**。SSO / 目录同步、审计外送 SIEM、离线许可证、高可用、
+ * 白标这几样归商业授权，将来住在私有仓库 openworkbuddy-enterprise 里，以一个 npm 包装上来。
+ * 线是怎么划的见 docs/开源与商业版边界.md。
+ *
+ * 为什么包还不存在就先把口子留出来：没有口子，将来接企业版只能去改主干，
+ * 那意味着**每次都要两边同步 diff**；有了口子，企业版永远是加法——
+ * 装了就多几条路由，没装就当它不存在。
+ *
+ * 这里刻意**不做**三件事（做了这就成了「阉割版」，那是开源项目最招人烦的东西）：
+ *   · 不因为没装而画灰按钮、弹「升级解锁」、写「此功能需企业版」；
+ *   · 不因为没装而少给任何一样现在有的能力；
+ *   · 不探测、不上报「这台装没装」。
+ * 没装的唯一表现就是：这几行什么也没干。
+ */
+const enterprise = (() => {
+  let entry = null;
+  try {
+    entry = require.resolve("@openworkbuddy/enterprise");
+  } catch {
+    return null; // 没装。这是**正常状态**不是错误，一个字都不该往日志里写
+  }
+  try {
+    return require(entry);
+  } catch (e) {
+    // 装了却加载不起来是真事故（版本对不上、依赖缺了）。必须吵出来，
+    // 否则客户拿到的是一台「企业功能静悄悄失踪」的服务器，这种最难查。
+    // 先 resolve 探、再 require 载，就是为了把这一档和「没装」彻底分开：
+    // 光看 MODULE_NOT_FOUND 分不开——企业包自己缺个依赖，报的也是这个码。
+    console.error("[enterprise] 加装包装上了，但加载失败：", (e && e.stack) || e);
+    return null;
+  }
+})();
+// deps 是**传**进去的不是让它 require 的，跟下面 createAdminRouter 一个形状——
+// 企业包不去猜开源版的目录结构，我们内部怎么重构都不会把它碰散。
+const relay = require("./relay");
+// 中转站那条路自己的防连打闸：60 次撞门就歇一会儿。跟登录那把分开计数，
+// 不然一个刷 Key 的脚本会把正常同事的登录一起锁死。
+const relayLimiter = account.createLimiter();
+
+const entDeps = { org, account, security, config, admin };
+/**
+ * 第一个口子：**认证之前**。
+ *
+ * 这一档是给 SSO 回调用的（SAML 的 ACS、OIDC 的 redirect_uri、以及离线许可证校验）。
+ * 这些请求按定义就是**还没登录**的那一个——身份正是它们要带回来的东西。
+ * 挂在 authGuard 后面的话，IdP 打回来的那一跳会被自己人挡在门外，SSO 根本走不通。
+ *
+ * 所以这里是**窄门**，不是后门：企业包该只把回调这类路由放进来，别的一律走下面那个。
+ * 名字分成两个就是为了让这件事在调用处一眼看得见——`mount` 是安全的默认，
+ * 想要免登录得**显式**写 `mountPublic`，手滑写不出这种口子。
+ */
+if (enterprise && typeof enterprise.mountPublic === "function") {
+  enterprise.mountPublic(app, entDeps);
+}
+/**
+ * 第二个口子：**API 中转站**，也在认证之前。
+ *
+ * 它的身份不是 cookie，是 Authorization 头里那把我们自己发的虚拟 Key
+ * （owb-sk-…，见 vkeys.js）。挂在 authGuard 后面的话，每个请求都会被「未登录」挡掉，
+ * 而业务方那边用的是 openai 官方 SDK——它根本没有 cookie 这个概念。
+ *
+ * 这不是一个敞开的口子：relay.js 里第一件事就是验 Key，验不过一律 401，
+ * 而且带着自己的防连打闸（跟登录用的是同一个 createLimiter）。
+ * 路径前缀是 /v1/，跟整个 /api/ 不重叠，不会误放行任何一条内部接口。
+ */
+app.use(relay.createRouter({
+  config: () => config,
+  orgSettings: (id) => org.settingsOf(org.getOrg(id)),
+  user: account.billingUser,
+  clientIp: account.clientIp,
+  limiter: relayLimiter,
+}));
+
+app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
+
+// 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
+app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, libraryRootOf: (u) => libraryRootOf(u) }));
+app.use(admin.platformGuard);
+app.use(admin.redactGuard);
+const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
+/**
+ * 界面靠它决定「服务器级的那些控件画不画」。画了却一点就 403，比不画更气人——
+ * 用户看到的是一颗明明能点的按钮点了没反应，只能自己去猜是不是坏了。
+ */
+const isPlatformOwner = (req) => admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user);
+/**
+ * 「能不能从网页/手机操控终端里正在跑的任务」。两个条件都要满足：
+ *   ① 你得是这台机器的主人（原来就有的那道闸，租户看不见别人电脑里在跑什么）
+ *   ② 组织后台把 remote_control 打开了（**默认关**，见 org.js）
+ * 分开两道是因为它们防的不是一件事：①防的是别人，②防的是「我自己没想开着这个口子」。
+ */
+const canRemoteControl = (req) => isPlatformOwner(req) && account.remoteAllowed("remote_control", req && req.user);
+/** 拒绝的理由分清楚：是「你不是主人」还是「这台机器把远程操控关了」。混成一句话，用户不知道该去哪儿改 */
+const cliOffReason = (req, verb) => isPlatformOwner(req)
+  ? `这台机器关掉了「允许远程操控终端任务」，去 企业管理后台 → 客户端安全 打开`
+  : `终端里的任务只有这台机器的主人${verb}`;
+
+// 企业管理后台 /api/admin/*：自带 adminGuard（管理员+审计员可看，只有管理员能改）
+app.use(
+  admin.createAdminRouter({
+    // 付费 API 那一页要判「这一路配没配 Key」。传函数而不是传 config 本身：
+    // config 是活的（设置页存一次就整体替换），传引用会让后台一直看着一份旧快照
+    readConfig: () => config,
+    // 中转站那一页要改价目表（config.prices）。跟 im.js 一个形状：存盘这件事只有 server 会做，
+    // admin.js 不去猜 config.json 在哪、也不重复实现一遍原子写
+    saveConfig: () => saveConfig(),
+    // 「这个组织的成果目录占了多大」——直接数当前请求这条链上的根，跨租户不会串
+    orgUsage: () => {
+      const fs2 = outputFiles();
+      const list = Array.isArray(fs2) ? fs2 : fs2.files || [];
+      return { files: list.length, bytes: list.reduce((n, f) => n + (f.size || 0), 0) };
+    },
+    /**
+     * 办离职时把这个人正在跑的任务掐断，返回掐了几个。
+     *
+     * 为什么非得掐：停用只挡住**下一次**请求。已经跑起来的那一趟在自己的循环里，
+     * 手上攥着工具权限，还在读文件、还在调模型、还在往他的通知渠道推结果——
+     * 一趟深度任务能跑十几分钟，足够他走到楼下了。
+     */
+    stopRunsOf: (username) => {
+      let n = 0;
+      for (const [sid, run] of activeRuns) {
+        const sess = sessions.get(sid);
+        if (!sess || sess.user !== username) continue;
+        try { run.ctrl.abort(); n++; } catch {}
+      }
+      return n;
+    },
+  })
+);
+
+/**
+ * 第二个口子：**认证之后**，也过完了租户隔离和凭证脱敏那几道。
+ * 企业包绝大部分东西（审计外送、白标设置、目录同步的管理面）都该走这儿——
+ * 进到这里的请求，req.user 已经有了，租户的根也已经绑好了。
+ *
+ * mount 故意**不**包 try：要不要「加载失败就别让服务起来」（比如 SSO 没挂上就不该
+ * 悄悄退回密码登录）是企业包自己的判断——它 throw 就是 fail-closed，不 throw 就照常起。
+ * 开源版不替它做这个决定，也就不该把它的 throw 吃掉。
+ */
+if (enterprise && typeof enterprise.mount === "function") {
+  enterprise.mount(app, entDeps);
+}
+
+
+
+/**
+ * 会话归属。会话文件是按 id 存的，接口只要拿到 id 就给内容——同一台服务器上的另一个账号
+ * 猜中/拿到一个 id 就能读走整段对话（含产出文件名、模型原文）。这里补上归属判定：
+ * 本人一定能看；管理员只能看**本组织**的；老会话没记 user 的按公共处理（不然升级上来全打不开）。
+ */
+/**
+ * 没记归属的那些老会话算谁的。
+ *
+ * 以前一律按「公共」处理，本意是别让升级上来的历史消失。可账号体系上来之后，「公共」
+ * 的实际意思是：**每注册一个新账号，他一进来就看见前面所有人的任务历史**——刚建的 demo 号
+ * 打开侧栏，里头是管理员那几十条对话，标题、产出文件名、点开就是全文。
+ *
+ * 跟助理页上下文那次（local_assist，见下面那段迁移）是同一个判断：没记归属 = 账号体系之前
+ * 留下的，那会儿这台机器上就一个人在用，认到管理员名下即可。历史一条不丢，也不铺给别人。
+ *
+ * 不去改盘上的文件（那是 1500 个 JSON 的批量重写，写坏一个就是一段对话没了），只在读的时候
+ * 认这一笔。管理员是谁会变（改名、删号），所以每 30 秒回头问一次账号表。
+ */
+let legacyOwner = { at: 0, name: "" };
+function legacySessionOwner() {
+  const now = Date.now();
+  if (now - legacyOwner.at < 30000) return legacyOwner.name;
+  let name = "";
+  try { const boss = account.defaultUser(); name = boss ? boss.username : ""; } catch {}
+  legacyOwner = { at: now, name };
+  return name;
+}
+/**
+ * 一条会话（内存里的那份对象）现在算谁的。
+ *
+ * 空壳不算谁的：前端是先自己生成 id、再发第一句话，中间这一下 getSession 会凭空造一份空的出来。
+ * 把空壳认到管理员名下的话，别的账号连自己刚开的那条新对话都打不开（403）。
+ */
+function sessionOwner(s) {
+  if (!s) return "";
+  if (s.user) return s.user;
+  const 有内容 = (s.transcript && s.transcript.length) || (s.history && s.history.length);
+  return 有内容 ? legacySessionOwner() : "";
+}
+function sessionAllowed(user, s) {
+  if (!user || !s) return true;
+  const owner = sessionOwner(s);
+  if (!owner || owner === user.username) return true;
+  if (!account.canAdmin(user)) return false;
+  const o = account._internals.loadUsers().users.find((u) => u.username === owner);
+  return !o || org.orgIdOf(o) === org.orgIdOf(user);
+}
+function guardSession(req, res) {
+  const s = getSession(req.params.id);
+  if (sessionAllowed(req.user, s)) return s;
+  res.status(403).json({ error: "这条对话不属于你" });
+  return null;
+}
+/**
+ * 正在跑的那个任务，这次请求的人碰不碰得到。
+ *
+ * 插队 / 回答 / 停止 / 续流这四条走的是 body.sessionId 或自己的 :id，绕开了 guardSession，
+ * 以前一个字都没查归属：知道一个会话 id，就能往别人正在跑的任务里塞一句话、替他回答
+ * agent 弹出来的问题、把他的任务掐掉，或者把他的实时输出整段读走。会话 id 是
+ * s_<时间戳>_<随机数>，但它会出现在链接、日志、截图里，不是秘密，更不该当权限用。
+ * 判据跟 guardSession 同一条（sessionAllowed）：本人放行，管理员限同组织，没记归属的老会话照旧。
+ */
+function guardRun(req, res, id) {
+  if (sessionAllowed(req.user, getSession(id))) return true;
+  res.status(403).json({ ok: false, error: "这条对话不属于你" });
+  return false;
+}
+
+let runtime; // MCP 启动后创建
+
+app.get("/api/info", (_req, res) => {
+  res.json({
+    app: "openworkbuddy",
+    version: require("./package.json").version,
+    provider: llm.provider,
+    model: llm.model,
+    skills: runtime ? runtime.getSkills().map((s) => s.name) : [],
+    experts: experts.map((e) => e.name),
+    mcp_tools: mcpManager.toolDefs().length,
+    agent_plugins_spec: require("./plugins").SPEC_VERSION,
+  });
+});
+
+// 版本 / 更新检查。查的是 GitHub Releases，最快 6 小时一次（force=1 强查）。
+// 界面上「有没有新版」和「你这种装法怎么升」是一起给的——只报版本号等于没说。
+const updater = require("./updater");
+app.get("/api/update", async (req, res) => {
+  res.json(await updater.checkUpdate({ force: req.query.force === "1" }));
+});
+
+app.get("/api/files", (_req, res) => res.json(outputFiles()));
+
+// 资料库「工作区」那一栏：一次列一层，像访达那样一层层点进去。/api/files 是「最近动过的 500 个、
+// 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 lib/ws-browse.js 开头）。
+// 根跟 /api/files 是同一个：getWorkspaceDir() 已经被 tenantScope 绑到这个人所属组织、当前项目的工作区上。
+// dir 里的 ..、绝对路径、链接一律 400；文件夹已经没了回 404，前端据此退回根。
+const wsBrowse = require("./lib/ws-browse");
+app.get("/api/files/tree", (req, res) => {
+  try {
+    const root = getWorkspaceDir();
+    const out = wsBrowse.listDir(root, req.query.dir, { appDataDir: dataPath("data"), offset: req.query.offset });
+    res.json({ ...out, root: workspaceKeyOf(root) });
+  } catch (e) {
+    res.status((e && e.status) || 500).json({ error: (e && e.message) || "读不了这个文件夹" });
+  }
+});
+
+// 画布 / 短剧分镜表 / 一键合成三组路由在 routes/ 下，合成的任务队列在 lib/compose-jobs.js。
+// 挂在这个位置不挪：登录、租户根、平台权限、脱敏这几道闸都在前面，过完了 getWorkspaceDir 才认得出是谁的工作区。
+// 三份之间互相要用的几样（素材定位、读分镜表、等时钟走过版本号）也在这儿递过去，路由文件不回头 require server.js
+app.use(canvasRoutes.createCanvasRouter({
+  getWorkspaceDir, outputFiles, safePath, rootedPath, canvasList, canvasReadState, canvasWriteState, canvasNormalizeState, canvasSafeName,
+  readDramaJson: dramaRoutes.readDramaJson,
+}));
+app.use(createComposeRouter({
+  jobs: createComposeJobs({
+    getWorkspaceDir, outputFiles, safePath, shellPath, canvasReadState, canvasWriteState,
+    assetBase: canvasRoutes.assetBase, canvasAssetLocator: canvasRoutes.canvasAssetLocator,
+    canvasAssetNear: canvasRoutes.canvasAssetNear, canvasTickPast: canvasRoutes.canvasTickPast,
+  }),
+}));
+app.use(dramaRoutes.createDramaRouter({
+  getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady,
+  canvasAssetNear: canvasRoutes.canvasAssetNear,
+}));
+
+// 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
+app.get("/api/assistant", (_req, res) => res.json(config.assistant));
+
+// ---------- 应用内设置（模型 + IM），保存到 config.json 并热生效 ----------
+/**
+ * 下拉框的数据源之一：精选模型目录。
+ *
+ * 为什么不把目录硬编在前端：目录会过期，而前端是缓存在浏览器里的，用户可能几个月都拿着旧的那份。
+ * 放服务端，跟着版本走，升级一次就全对上了。
+ */
+app.get("/api/model-catalog", (req, res) => {
+  // brand_hints 跟着一起下发：前端要在**保存之前**就认出「这个型号是别家的」，
+  // 认的规矩必须和服务端是同一份，否则前端放行、后端自愈，用户看到的就是「我选了 A，存完变成 B」
+  res.json({
+    kinds: mediaModels.PROVIDER_KINDS, catalog: mediaModels.CATALOG, caps: mediaModels.CAPS, cap_cn: mediaModels.CAP_CN,
+    brand_hints: mediaModels.BRAND_HINTS,
+  });
+});
+
+// 从渠道现拉一次模型清单，10 分钟内不重复拉（换渠道来回点几下不该把人家接口打一遍）
+const modelListCache = new Map();
+/**
+ * 活列表：拿渠道自己的 /models 接口问「你这儿都有啥」。
+ *
+ * 精选目录只放确认跑得通的那几款，各家发新版比我们发版快得多；活列表补的就是这一段。
+ * 拉不到不算错（很多国产渠道压根没有这个接口），前端照样有目录和手填两条路可走。
+ */
+app.post("/api/provider-models", async (req, res) => {
+  // 出网请求 + 带着 Key，只有平台管理员能发起；成员那边界面本来也不画这个按钮
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "渠道归平台管理员配", platform_only: true });
+  try {
+    const b = req.body || {};
+    const known = (config.providers || []).find((p) => p.id === b.id);
+    const base = String(b.base_url || (known || {}).base_url || "").trim().replace(/\/+$/, "");
+    // 掩码原样传回来时用库里那把真的：用户没重填 Key 就想看看列表，是很正常的操作
+    const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
+    const key = !rawKey || /^\*+$/.test(rawKey) ? String((known || {}).api_key || "") : rawKey;
+    if (!/^https?:\/\//i.test(base)) return res.json({ ok: false, why: "接口地址得是 http(s) 开头的完整地址", models: [] });
+    const hit = modelListCache.get(base);
+    if (hit && Date.now() - hit.at < 600000) return res.json({ ok: true, cached: true, models: hit.models });
+    const r = await fetch(`${base}/models`, {
+      headers: key ? { Authorization: `Bearer ${key}` } : {},
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return res.json({ ok: false, why: `渠道没给列表（HTTP ${r.status}）`, models: [] });
+    const j = await r.json().catch(() => ({}));
+    const raw = Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [];
+    // 渠道自己报了模态就用它报的（sure=true），没报才按名字猜。前端拿 sure 决定
+    // 敢不敢把一条拦在「看图」那一组外面——猜出来的不敢，人家自己说的敢
+    const models = raw
+      .map((m) => (typeof m === "string" ? { id: m } : m || {}))
+      .map((m) => ({ id: String(m.id || m.name || ""), ...mediaModels.capOfModel(m) }))
+      .filter((m) => m.id && !systemOne.isDecisionModel(m.id)) // 判断模型不会写字，摆进下拉只会被点中然后每趟 400
+      .map((m) => (m.sure ? { id: m.id, cap: m.cap, sure: true } : { id: m.id, cap: m.cap }))
+      .slice(0, 600);
+    // 空清单不进缓存。它几乎不是稳定状态：Ollama 刚起来还没 pull 过东西、网关那头还在初始化，
+    // 都会先回一个空的 data。缓住它，用户照着提示去 ollama pull 完回来点「重新问一次」，
+    // 十分钟内拿到的还是那份空的——提示教他做的事做完了，界面上却没有任何变化
+    if (models.length) modelListCache.set(base, { at: Date.now(), models });
+    res.json({ ok: true, models });
+  } catch (e) {
+    // 超时、DNS 挂了、返回的不是 JSON——都算「这家没有列表」，不是错误页
+    res.json({ ok: false, why: String(e.message || e).slice(0, 200), models: [] });
+  }
+});
+
+/**
+ * 渠道测活：拿这条渠道真发一次「ping」，把上游的回答翻成人话。
+ *
+ * 为什么非有不可：界面上一把 Key 填进去就显示「已配置」，可「填了」和「能用」是两回事——
+ * 余额扣光了、Key 是别家的、模型名在这家不存在，界面全都看不出来，非要等某个任务跑到一半才炸。
+ * probeModel 早就把 401/402/404/429 翻成了人话，只是一直只有开箱向导在用；这里把它摆到渠道卡上。
+ *
+ * 拿哪个模型去 ping：优先用调用方点名的 → 这条渠道下面的第一个对话模型 → 精选目录里这个 kind 的第一条。
+ * 一个都没有就直说「先加个模型」，而不是拿 gpt-3.5 之类瞎猜一个去打——猜错了报的 404 会让人以为 Key 坏了。
+ */
+app.post("/api/provider-test", async (req, res) => {
+  // 出网请求 + 带着 Key，跟 /api/provider-models 同一条规矩：只有平台管理员能发起
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
+  const b = req.body || {};
+  const known = (config.providers || []).find((p) => p.id === b.id) || {};
+  const kind = String(b.kind || known.kind || "").trim();
+  const base = String(b.base_url == null ? known.base_url || "" : b.base_url).trim();
+  // 掩码原样传回来时用库里那把真的：界面上 Key 框平时是空的（只显示末四位），
+  // 没重填就点「测一下」是最常见的一次点击，这时候不该测成「Key 为空」
+  const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
+  const key = !rawKey || /^\*+$/.test(rawKey) ? String(known.api_key || "") : rawKey;
+  const local = kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(base);
+  if (!key && !local) return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
+  // 判断模型（Jev）没有 /chat/completions 这条路，拿它去 ping 必然 400。
+  // 它有自己的测活：真问一道题，把答案也带回来——「通了」和「答得对不对」一次看完
+  if ((mediaModels.PROVIDER_KINDS.find((k) => k.kind === kind) || {}).decide_only) {
+    const t = Date.now();
+    const r = await jev.selftest({ providers: [{ id: known.id || "tmp", kind, base_url: base, api_key: key }] }, { timeoutMs: 20000 });
+    return res.json({
+      ok: !!r.ok, ms: Date.now() - t, model: r.model || "",
+      error: r.ok ? "" : r.error || "没答上来",
+      answers: r.ok ? r.answers.map((a) => systemOne.lineOf(a)) : [],
+    });
+  }
+  if (kind !== "anthropic" && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
+  const mine = (config.models || []).filter((m) => m.channel === known.id);
+  const model = String(b.model || "").trim()
+    || (mine[0] || {}).model
+    || ((mediaModels.catalogFor("chat", kind) || [])[0] || {}).id;
+  if (!model) {
+    // 专门挂生图 / 生视频的渠道底下本来就一个对话模型都没有。以前这儿直接甩一句
+    // 「还没有对话模型」，等于告诉人「你这条渠道没法测」——可它明明配好了、也在用。
+    // 这种渠道改走不花钱的清单测活：Key 认不认、模型名在不在，一样能测出来
+    const media = (config.media_models || []).filter((m) => m.provider === known.id);
+    if (media.length) {
+      const t = Date.now();
+      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === media[0].id) || {};
+      const capCn = mediaModels.CAP_CN[media[0].cap] || media[0].cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || base, api_key: hit.api_key || key, model: media[0].model, capCn });
+      return res.json({ ok: !r.error, ms: Date.now() - t, model: media[0].model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+    }
+    return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
+  }
+  const t0 = Date.now();
+  const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
+  res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
+});
+
+/**
+ * 生图 / 生视频 / 配音 / 转写这四路的测活：**不真生成**。
+ *
+ * 为什么不像对话那样真跑一次：生一次视频的钱够 ping 一千次，生一张图也不便宜。
+ * 一颗写着「测一下」的按钮，不该在人没预期的时候扣一笔——尤其它常常要连点好几次
+ * （改个模型名再测、换条渠道再测）。所以这儿只验两件不花钱的事：
+ *   ① 这把 Key 上游认不认（拿模型清单就知道，401/403 立刻现形）
+ *   ② 配的那个模型名在这家的清单里有没有（「模型不存在」是排第二常见的坑）
+ * 验不到的那件必须说出来，不许拿「✓ 通了」糊过去：余额够不够、这个模型让不让你调，
+ * 只有真生成一次才知道。含糊其辞的绿勾比红叉更坑人——人会拿它当「已经能用」。
+ */
+async function probeMediaModel({ base_url, api_key, model, capCn }) {
+  const base = String(base_url || "").trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) return { error: "这条渠道的接口地址不是 http(s) 开头的完整地址" };
+  let r;
+  try {
+    r = await fetch(`${base}/models`, {
+      headers: api_key ? { Authorization: `Bearer ${api_key}` } : {},
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/timeout|abort/i.test(msg)) return { error: "连不上（15 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道" };
+    return { error: "连不上：" + msg.slice(0, 160) };
+  }
+  if (r.status === 401 || r.status === 403) return { error: `这个 Key 上游不认（HTTP ${r.status}），检查有没有复制全、是不是这家服务商的 Key` };
+  if (r.status === 429) return { error: "被限流了（429），等一会儿再试" };
+  // 给不出清单不等于坏了：不少专做生图/生视频的接口根本没有 /models 这条路。
+  // 这种情况老老实实说「只验到这儿」，不编一个绿勾出来
+  if (!r.ok) return { partial: true, note: `这条渠道不给模型清单（HTTP ${r.status}），只验到「地址是通的」。Key 对不对、${capCn}「${model}」在不在，得真生成一次才知道` };
+  const j = await r.json().catch(() => null);
+  const raw = (j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [])) || [];
+  const ids = raw.map((m) => (typeof m === "string" ? m : String((m || {}).id || (m || {}).name || ""))).filter(Boolean);
+  if (!ids.length) return { partial: true, note: `Key 这一关过了（清单接口没拒绝我们），但这条渠道一个模型都没列出来，没法核对${capCn}「${model}」这个名字` };
+  if (!ids.includes(model)) {
+    return { error: `Key 是好的，但这条渠道列出来的 ${ids.length} 个模型里没有「${model}」。去 设置 → 模型 把它改成清单里的名字（在模型下拉框里挑，别手打）` };
+  }
+  return { note: `Key 认了，「${model}」在这条渠道的清单里（一共 ${ids.length} 个）。这一步不花钱所以没真生成——余额够不够，得生成一次才知道` };
+}
+
+/**
+ * 一行一测：设置 → 模型 里每一行模型后面那颗「测」。
+ *
+ * 跟渠道那颗「测一下」的分工：渠道那颗问的是「这条线通不通」，这颗问的是「**这一行**能不能用」。
+ * 一条渠道下面挂五个模型，通的是渠道、挂的却可能有三个模型名是错的——
+ * 只有渠道级测活的话，那三个要等任务跑到一半才炸。
+ */
+app.post("/api/model-test", async (req, res) => {
+  // 出网请求 + 带着 Key，跟 /api/provider-test 同一条规矩
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
+  const t0 = Date.now();
+  try {
+    const b = req.body || {};
+    const isMedia = b.scope === "media";
+    const list = isMedia ? config.media_models || [] : config.models || [];
+    const m = list[Number(b.index)];
+    if (!m) return res.json({ ok: false, error: "这一行已经不在了（多半是刚删过或者别处改了配置），刷新一下再试" });
+    const chanId = isMedia ? m.provider : m.channel;
+    const p = (config.providers || []).find((x) => x.id === chanId);
+    if (!p) return res.json({ ok: false, error: chanId ? "这一行挂的渠道已经被删了，编辑它重新挑一条" : "这一行没挂渠道，编辑它挑一条渠道再测" });
+    const local = p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(p.base_url || "");
+    if (!p.api_key && !local) return res.json({ ok: false, error: `渠道「${p.name}」还没填 Key，先去下面那张渠道卡里填上` });
+    if (isMedia) {
+      // 走 resolve 而不是直接读 p.base_url：生图那几路的地址跟对话不一定是同一个前缀，
+      // 换算规则只有 media-models 那一份，这儿抄一遍迟早跟真跑的时候对不上
+      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === m.id) || {};
+      const capCn = mediaModels.CAP_CN[m.cap] || m.cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn });
+      return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+    }
+    const why = await probeModel({ provider: mediaModels.protoOfKind(p.kind), base_url: p.base_url, api_key: p.api_key, model: m.model });
+    res.json({
+      ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
+      note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
+    });
+  } catch (e) {
+    res.json({ ok: false, ms: Date.now() - t0, error: String((e && e.message) || e).slice(0, 200) });
+  }
+});
+
+/**
+ * 判断模型（Jev）：一段状态 + 几道有类型的题 → 几个代码能直接用的值。
+ *
+ * 为什么它不在 /api/chat 那条路上：那条路是「拿文字」，这条是「拿主意」。
+ * Jev 不会写字，它返回的是选中的选项、一个分数、或者一个 0~1 的概率，外加一个确定度。
+ * 混进对话接口只会让两边的返回都得多带一个「这次其实是另一种东西」的标记。
+ *
+ * GET 只说「现在能不能用、走的哪条路」，**不带 Key**——这一条给设置页和 doctor 看。
+ */
+app.get("/api/decide", (req, res) => {
+  res.json({
+    ...jev.status(config),
+    kinds: systemOne.KINDS, kind_cn: systemOne.KIND_CN,
+    routes: systemOne.ROUTE_IDS.map((id) => ({ ...systemOne.ROUTES[id] })),
+    max_state: systemOne.MAX_STATE, max_questions: systemOne.MAX_QUESTIONS, sure_min: systemOne.SURE_MIN,
+  });
+});
+
+/**
+ * 真问一趟。
+ *
+ * 额度按**题数**算，不按请求数：一次请求里塞 30 道题和塞 1 道题，上游收的钱差 30 倍，
+ * 按请求记的话「一天 800 次」这道闸拦不住任何东西——一次请求就能把一天的量跑完。
+ */
+app.post("/api/decide", async (req, res) => {
+  const b = req.body || {};
+  const { questions, errs } = systemOne.normalizeQuestions(b.questions);
+  if (errs.length) return res.status(400).json({ ok: false, error: errs.join("；") });
+  // 材料也在这儿查，不留到 jev.ask 里边——不然「既没材料又没配渠道」的那一趟会先被说成
+  // 「去配渠道」，人配完回来还是同一个 400。请求本身不对，跟配没配渠道没关系
+  const stateText = typeof b.state === "string" ? b.state.trim() : b.state;
+  if (!stateText || (typeof stateText === "object" && !Object.keys(stateText).length)) {
+    return res.status(400).json({ ok: false, error: "没给它要判断的东西（state）——问题问得再清楚，没有材料它也判断不了" });
+  }
+  const out = await jev.askMetered(config, { state: b.state, questions, model: b.model, timeoutMs: Number(b.timeout_ms) || 0 }, { meta: Object.keys(questions).join("、") });
+  if (!out.ok) {
+    if (out.quota) {
+      security.audit("额度拦截", "判断模型：" + out.error, "拦截");
+      return res.status(429).json({ ok: false, error: out.error, quota: true });
+    }
+    // 「没配」这一类必须带上 how：界面上就这一句话，只说「还没有能用的渠道」等于没说
+    return res.status(out.notReady ? 503 : out.badRequest ? 400 : 502)
+      .json({ ok: false, error: out.error + (out.how ? "。" + out.how : ""), ms: out.ms || 0, not_ready: !!out.notReady });
+  }
+  res.json({
+    ...out,
+    lines: out.answers.map((a) => systemOne.lineOf(a)),
+    cost: systemOne.costOf(out.usage),
+    cost_text: systemOne.costText(out.usage),
+  });
+});
+
+/** 一键测活：拿一段固定材料真问三道题。设置页那个「测一下」和命令行的 `openworkbuddy jev` 走的是同一条 */
+app.post("/api/decide/selftest", async (req, res) => {
+  const g = quota.gate("decide", { n: 3, provider: (jev.status(config) || {}).route || "" });
+  if (!g.ok) return res.status(429).json({ ok: false, error: g.why, quota: true });
+  const out = await jev.selftest(config);
+  if (!out.ok) { quota.undo(g.hold); return res.status(502).json({ ok: false, error: out.error }); }
+  quota.record("decide", { n: 3, provider: out.route || "", model: out.model || "", meta: "测活", hold: g.hold });
+  res.json({ ...out, lines: out.answers.map((a) => systemOne.lineOf(a)), cost_text: systemOne.costText(out.usage) });
+});
+
+/**
+ * 四路媒体的老扁平配置（tools.js 读的那份）发给界面之前，按身份把 Key 掩掉。
+ * 掩成一串星号而不是空串：空串会被界面读成「还没配」，于是有人会去重填一遍——
+ * 而他根本没有改这台服务器 Key 的权限，白填一次还要吃一个 403。
+ */
+function maskMedia(media, owner) {
+  const out = {};
+  for (const cap of mediaModels.CAPS) {
+    const c = { base_url: "", api_key: "", model: "", ...(cap === "tts" ? { voice: "" } : {}), ...((media || {})[cap] || {}) };
+    out[cap] = { ...c, api_key: owner ? c.api_key || "" : (c.api_key ? "********" : ""), has_key: !!c.api_key };
+  }
+  return out;
+}
+
+// 升级整理做了什么。动过用户的文件就必须让他知道，而且要说清搬到哪儿了、原件还在。
+// 界面看过一次就记下 id，不再打扰；这里不存「看过没有」，那是每台机器自己的事
+app.get("/api/migrations", (_req, res) => res.json({ notes: global.__wbMigrationNotes || [] }));
+
+app.get("/api/settings", (req, res) => {
+  // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
+  const myAgent = prefs.agentCfg(config);
+  const myPet = prefs.petCfg(config);
+  const myModel = prefs.modelCfg(config);
+  res.json({
+    workspace_dir: getWorkspaceDir(),
+    // Key 从不发原文，谁来问都一样：回一串八颗星（= 「没改」的暗号）+ has_key（配没配）。
+    // 平台管理员多拿一个 key_hint（sk-…4f2a）用来认「我装的是哪一把」；普通成员连这截也没有——
+    // 那是整台服务器的账单凭证，他既改不了也不该拿到手。
+    // 管理员也一样掩：八颗星是「原样传回来 = 没改」的约定暗号（POST 那边认这个正则），
+    // 界面真正显示的是 key_hint 那一小截
+    models: (config.models || []).map((m) => ({
+      ...m,
+      api_key: m.api_key ? "********" : "",
+      key_hint: isPlatformOwner(req) ? keyHint(m.api_key) : "",
+      has_key: !!m.api_key,
+    })),
+    active_model: config.active_model,
+    model_health: healthSummary(),
+    // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
+    platform_owner: isPlatformOwner(req),
+    model_follow_last: myModel.model_follow_last,
+    last_picked_model: myModel.last_picked_model,
+    assist_model: myModel.assist_model,
+    agent: {
+      max_steps: config.agent.max_steps,
+      tool_timeout_ms: config.agent.tool_timeout_ms,
+      max_runtime_ms: config.agent.max_runtime_ms || 1800000,
+      auto_continue_rounds: config.agent.auto_continue_rounds || 0,
+      gen_parallel_max: config.agent.gen_parallel_max || 2,
+      llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
+      max_context_chars: config.agent.max_context_chars || 0, // 0 = 没设，按模型窗口算（agent.js contextBudgetChars）
+      max_tokens_budget: config.agent.max_tokens_budget || 0,
+      second_opinion: !!config.agent.second_opinion,
+      push_gate: !!config.agent.push_gate,
+      continue_gate: !!config.agent.continue_gate,
+      memory_gate: !!config.agent.memory_gate,
+      ask_gate: !!config.agent.ask_gate,
+      skill_gate: !!config.agent.skill_gate,
+      // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
+      judge_ready: jev.status(config).ready,
+      failover_model: config.agent.failover_model || "",
+      thinking: thinking.norm(myAgent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
+      engine: myAgent.engine || "builtin",
+      // 前端那个模型选择器要靠它说实话：走本机 CLI 的时候，API 模型列表整个不生效
+      engine_label: (engines.list().find((e) => e.id === (myAgent.engine || "builtin")) || {}).label || "",
+      engine_options: myAgent.engine_options || {},
+    },
+    pet: {
+      enabled: myPet.enabled === true, // 默认没有宠物：得用户在对话里开口要，或来这儿手动打开
+      character: myPet.character || "cat",
+      scale: myPet.scale || pet.DEFAULT_SCALE,
+      opacity: myPet.opacity || 1,
+      notify: myPet.notify !== false,
+      notify_done: myPet.notifyDone !== false,
+      wander: myPet.wander === true,
+      sprite: myPet.sprite || "",
+      has_photo: !!petPhotoPath(),
+      // 本机装了哪些精灵图宠物（~/.codex/pets、~/.petdex/pets、data/pets）。
+      // 扫的是文件头不是整张图，几毫秒的事，跟设置一起返回省一次往返。
+      sprites: petSprites.scanPets().map((x) => ({ id: x.id, name: x.displayName, source: x.source, ok: x.ok, why: x.why })),
+      available: !!global.__openworkbuddyPet, // 纯 node 模式没有桌面窗口，前端要如实说明
+    },
+    persona: config.persona || "",
+    assistant: config.assistant,
+    search: {
+      provider: (config.search || {}).provider || "",
+      jina_key: (config.search || {}).jina_key || (config.search || {}).api_key || "",
+      tavily_key: (config.search || {}).tavily_key || "",
+      brave_key: (config.search || {}).brave_key || "",
+      bocha_key: (config.search || {}).bocha_key || "",
+      zhipu_key: (config.search || {}).zhipu_key || "",
+      qiniu_key: (config.search || {}).qiniu_key || "",
+      serper_key: (config.search || {}).serper_key || "",
+      custom_key: (config.search || {}).custom_key || "",
+      custom_url: (config.search || {}).custom_url || "",
+      custom_query_field: (config.search || {}).custom_query_field || "",
+    },
+    im: {
+      feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "", group_reply_mode: "mention" },
+      qq: (config.im || {}).qq || { app_id: "", app_secret: "" },
+      wecom_app: (config.im || {}).wecom_app || { corp_id: "", agent_id: "", secret: "", token: "", aes_key: "" },
+      wechat_mp: (config.im || {}).wechat_mp || { app_id: "", app_secret: "", token: "", aes_key: "" },
+      smtp: (config.im || {}).smtp || { host: "", port: "", user: "", pass: "", from: "", allow_to: "" },
+      // iLink 的 bot_token 是扫码换来的长期凭证，不回给前端（前端只需要知道连没连上，状态走 /im/status）
+      wechat_ilink: { bot_id: ((config.im || {}).wechat_ilink || {}).ilink_bot_id || "" },
+      wecom_bot_webhook: (config.im || {}).wecom_bot_webhook || "",
+      dingtalk_webhook: (config.im || {}).dingtalk_webhook || "",
+      dingtalk_secret: (config.im || {}).dingtalk_secret || "",
+      webhook_secret: (config.im || {}).webhook_secret || "",
+      session_idle_hours: +(config.im || {}).session_idle_hours || 0,
+    },
+    media: maskMedia(config.media, isPlatformOwner(req)),
+    // 渠道表：一把 Key 一行，图/视频/语音/视觉都引用它。普通成员看得见有哪些渠道，但看不到 Key——
+    // 那是整台服务器的账单凭证，他既改不了也不该拿到手
+    providers: (config.providers || []).map((p) => ({
+      id: p.id, name: p.name, kind: p.kind, base_url: p.base_url,
+      api_key: p.api_key ? "********" : "",
+      key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
+      has_key: !!p.api_key,
+    })),
+    media_models: config.media_models || [],
+    security: config.security,
+    shortcuts: prefs.shortcutsCfg(config),
+    // 执行追踪。私钥跟别的 Key 一个待遇：只有平台管理员看得见原文，其余人拿到八个星号。
+    // stats 是**实打实的上报账本**（发出去多少、丢了多少、上一次为什么失败）——
+    // 没有它，"开了但一条都没到" 和 "开了且正常" 在界面上长得一模一样
+    langfuse: {
+      enabled: !!(config.langfuse || {}).enabled,
+      host: (config.langfuse || {}).host || "https://cloud.langfuse.com",
+      public_key: (config.langfuse || {}).public_key || "",
+      secret_key: isPlatformOwner(req)
+        ? (config.langfuse || {}).secret_key || ""
+        : ((config.langfuse || {}).secret_key ? "********" : ""),
+      has_secret: !!(config.langfuse || {}).secret_key,
+      stats: tracing.getTracer(config).stats(),
+    },
+  });
+});
+
+/**
+ * 个人偏好落盘：底层引擎、思考档、上次选的模型、宠物开关、全局快捷键。
+ *
+ * 校验一条都不能省。这些值不是摆设——引擎名写错会让任务在启动那一刻就炸，思考档写错
+ * 会让「我明明关了思考」和账单对不上。所以宁可当场 400，也绝不悄悄退回默认值。
+ * 抛出去的错由 /api/settings 那层的 try/catch 变成 400，跟全局设置的错误路径同一条。
+ */
+/**
+ * 这次的「个人偏好」该落哪儿。
+ *
+ * false（落 config.json）：个人桌面版——屏幕前就一个人，config 就是他的偏好；而且 Electron 壳
+ *   在任何人登录之前就要靠 config.pet / config.shortcuts 把宠物和快捷键装起来，写别处等于重启后消失。
+ *   平台管理员同理：他设的那份是这台机器的默认，定时任务和 IM 消息没有「当前登录的人」，只能读 config。
+ * true（落 data/prefs/<账号>.json）：多人服务器上的其他人，谁也不覆盖谁。
+ */
+function ownPrefs(req) {
+  return !(admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user));
+}
+
+function savePersonalPrefs(user, personal) {
+  const out = {};
+  if (personal.agent) {
+    const a = {};
+    if (personal.agent.engine !== undefined) {
+      const id = String(personal.agent.engine || "builtin").trim() || "builtin";
+      if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
+      a.engine = id;
+    }
+    if (personal.agent.thinking !== undefined) {
+      const lv = String(personal.agent.thinking || "").trim().toLowerCase();
+      if (!thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+      a.thinking = lv;
+    }
+    if (personal.agent.engine_options && typeof personal.agent.engine_options === "object") {
+      const eo = {};
+      for (const [id, v] of Object.entries(personal.agent.engine_options)) {
+        if (engines.get(id) === undefined) continue; // 前端可能带上已经不存在的引擎，忽略即可，不值得整单失败
+        const cur = {};
+        if (v.model !== undefined) cur.model = String(v.model || "").trim();
+        if (v.thinking !== undefined) {
+          const lv = String(v.thinking || "").trim().toLowerCase();
+          if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+          cur.thinking = lv; // 空串 = 这个引擎跟随全局档位
+        }
+        if (Object.keys(cur).length) eo[id] = cur;
+      }
+      if (Object.keys(eo).length) a.engine_options = eo;
+    }
+    if (Object.keys(a).length) out.agent = a;
+  }
+  if (typeof personal.model_follow_last === "boolean") out.model_follow_last = personal.model_follow_last;
+  if (personal.last_picked_model !== undefined) {
+    const n = String(personal.last_picked_model || "").trim();
+    if (n && !(config.models || []).some((m) => m.name === n)) throw new Error(`模型「${n}」不在模型列表里`);
+    out.last_picked_model = n;
+  }
+  if (personal.pet && typeof personal.pet === "object") {
+    const q = {};
+    for (const k of ["enabled", "notify", "notifyDone", "wander"]) if (typeof personal.pet[k] === "boolean") q[k] = personal.pet[k];
+    if (personal.pet.sprite !== undefined) {
+      const sp = String(personal.pet.sprite || "").slice(0, 80);
+      if (sp && !petSprites.findPet(sp)) throw new Error("没找到这只精灵图宠物（或它的图集不合规）：" + sp);
+      q.sprite = sp;
+    }
+    if (personal.pet.character !== undefined) {
+      const c = personal.pet.character === "photo" ? "photo" : personal.pet.character === "sprite" ? "sprite" : "cat";
+      const sp = q.sprite !== undefined ? q.sprite : (prefs.read(user).pet || {}).sprite || "";
+      if (c === "sprite" && !sp) throw new Error("先选一只精灵图宠物，再切到这个形象");
+      q.character = c;
+    }
+    if (personal.pet.scale !== undefined) q.scale = Math.max(0.6, Math.min(2, Number(personal.pet.scale) || pet.DEFAULT_SCALE));
+    if (personal.pet.opacity !== undefined) q.opacity = Math.max(0.25, Math.min(1, Number(personal.pet.opacity) || 1));
+    if (Object.keys(q).length) out.pet = q;
+  }
+  if (personal.shortcuts && typeof personal.shortcuts === "object") {
+    const sc = {};
+    for (const [k, v] of Object.entries(personal.shortcuts)) if (typeof v === "string" && v.length < 60) sc[k] = v;
+    out.shortcuts = sc;
+  }
+  if (!Object.keys(out).length) return null;
+  return prefs.write(user, out);
+}
+
+app.post("/api/settings", (req, res) => {
+  try {
+    let b = req.body || {};
+    /**
+     * 个人偏好分流。
+     *
+     * 谁写 config.json：个人桌面版（屏幕前就一个人，config 就是他的偏好；而且 Electron 壳在
+     * 任何人登录之前就要靠 config.pet / config.shortcuts 把宠物和快捷键装起来），
+     * 以及多人服务器上的平台管理员（他设的那份是这台机器的默认——定时任务和 IM 消息没有
+     * 「当前登录的人」，只能读 config）。
+     * 其余人写各自的 data/prefs/<账号>.json，谁也不覆盖谁。
+     */
+    if (ownPrefs(req)) {
+      const { personal, rest } = prefs.split(b);
+      const saved = Object.keys(personal).length ? savePersonalPrefs(req.user, personal) : null;
+      b = rest;
+      // 整单都是个人项：config 一个字节都不用动，也别白跑一次 saveConfig
+      if (!Object.keys(b).length) return res.json({ ok: true, personal: true, saved: !!saved });
+      // 走到这儿说明单子里还剩服务器级的项（模型渠道、API Key、安全档位、IM、工作目录……），
+      // 而能走进这个 if 的人按定义就不是平台管理员。界面本来就不给他画这些输入框，
+      // 但接口不能只靠界面守——不然一条 curl 就能把整台机器的 Key 换掉。
+      return res.status(403).json({
+        error: `这些是整台服务器一份的设置，归平台管理员改：${Object.keys(b).join("、")}`,
+        platform_only: true,
+      });
+    }
+    if (Array.isArray(b.models)) {
+      const old = new Map((config.models || []).map((m) => [m.name, m]));
+      for (const m of b.models) {
+        if (!m.name || !m.model) throw new Error("每个模型需要 name 和 model 字段");
+        // 判断模型（Jev）挂到对话模型列表里：下拉按渠道种类挡住了，可模型名是个自由输入框，
+        // 手打一个照收——存得下、选得中，可它没有 /chat/completions，每一趟都是 400。
+        // 不在存的时候拦，人要等到真发一句话才知道，而那时候收到的是上游的 400，
+        // 根本看不出是「挂错了地方」。拦住也得指路，否则就成了第二种摸不着头脑。
+        if (systemOne.isDecisionModel(m.model)) {
+          throw new Error(`「${m.model}」是判断模型（Jev），它不产文字、没有 /chat/completions，挂在对话模型列表里每一趟都是 400。它走自己那条路：命令行 openworkbuddy jev、接口 /api/decide，或在渠道里加一条「TypeSafe Jev」再点那颗「测一下」`);
+        }
+        m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
+        delete m.has_key;  // 读接口给界面加的，不进配置文件
+        delete m.key_hint; // 同上：Key 的末四位只是给人看的，落盘就成了第二份 Key 副本
+        // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
+        if (/^\*+$/.test(String(m.api_key == null ? "" : m.api_key).trim())) {
+          m.api_key = String((old.get(m.name) || {}).api_key || "");
+        }
+      }
+      config.models = b.models;
+    }
+    if (b.active_model !== undefined) {
+      if (!config.models.some((m) => m.name === b.active_model)) throw new Error("active_model 不在模型列表中");
+      config.active_model = b.active_model;
+    }
+    if (typeof b.model_follow_last === "boolean") config.model_follow_last = b.model_follow_last;
+    // 内网模式。这是整台机器的网络事实，不是谁的偏好，所以走服务器级这一支（prefs.split
+    // 的个人项是白名单，认不出的键一律算服务器级，非管理员改会拿到 403）。
+    // 它只负责「据实相告」：把连不上的连接器标出来、GitHub 装技能当场拒掉，
+    // 不动任何已经配好的东西——万一判断错了，用户自己关掉就全恢复。
+    if (typeof b.intranet === "boolean") config.intranet = b.intranet;
+    if (b.agent) {
+      if (b.agent.max_steps) config.agent.max_steps = Math.max(1, Math.min(100, +b.agent.max_steps));
+      if (b.agent.tool_timeout_ms) config.agent.tool_timeout_ms = Math.max(5000, +b.agent.tool_timeout_ms);
+      if (b.agent.max_runtime_ms) config.agent.max_runtime_ms = Math.max(60000, +b.agent.max_runtime_ms);
+      if (b.agent.auto_continue_rounds !== undefined) config.agent.auto_continue_rounds = Math.max(0, Math.min(20, Math.round(+b.agent.auto_continue_rounds) || 0));
+      // 上限 4：这一档每条都花钱，给得太大等于把「手滑并发十条视频」变成一次点击的事
+      if (b.agent.gen_parallel_max !== undefined) config.agent.gen_parallel_max = Math.max(1, Math.min(4, Math.round(+b.agent.gen_parallel_max) || 2));
+      if (b.agent.llm_timeout_ms) config.agent.llm_timeout_ms = Math.max(30000, +b.agent.llm_timeout_ms);
+      // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
+      if ("max_context_chars" in b.agent) {
+        const v = +b.agent.max_context_chars;
+        if (v > 0) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, v));
+        else delete config.agent.max_context_chars; // 清空 = 回到按模型窗口算
+      }
+      if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
+      // 定时任务跑绿之后再让判断模型看一眼。默认关，因为它每条绿都要花一道题的钱
+      if (b.agent.second_opinion !== undefined) config.agent.second_opinion = !!b.agent.second_opinion;
+      // 没变化就不推。默认关：它少响一声铃，而「少响的那一声」用户看不见，得他自己点头
+      if (b.agent.push_gate !== undefined) config.agent.push_gate = !!b.agent.push_gate;
+      if (b.agent.continue_gate !== undefined) config.agent.continue_gate = !!b.agent.continue_gate;
+      // 往长期记忆里写之前先判一句。默认关：它拒错一条，用户只会觉得「说过的事它又忘了」
+      if (b.agent.memory_gate !== undefined) config.agent.memory_gate = !!b.agent.memory_gate;
+      if (b.agent.ask_gate !== undefined) config.agent.ask_gate = !!b.agent.ask_gate;
+      if (b.agent.skill_gate !== undefined) config.agent.skill_gate = !!b.agent.skill_gate;
+      if (b.agent.thinking !== undefined) {
+        const lv = String(b.agent.thinking || "").trim().toLowerCase();
+        // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨
+        if (!thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+        config.agent.thinking = lv;
+      }
+      if (b.agent.failover_model !== undefined) {
+        const fm = String(b.agent.failover_model || "").trim();
+        if (fm && !config.models.some((m) => m.name === fm)) throw new Error("备用渠道不在模型列表中");
+        config.agent.failover_model = fm; // 空串 = 关闭自动换道（默认）
+      }
+      if (b.agent.engine !== undefined) {
+        const id = String(b.agent.engine || "builtin").trim() || "builtin";
+        // 写错名字当场拒绝。悄悄退回内置 = 用户以为在用免费的本机订阅，账单却在涨
+        if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
+        config.agent.engine = id;
+      }
+      if (b.agent.engine_options && typeof b.agent.engine_options === "object") {
+        config.agent.engine_options = config.agent.engine_options || {};
+        for (const [id, v] of Object.entries(b.agent.engine_options)) {
+          if (engines.get(id) === undefined) continue;
+          if (!v || typeof v !== "object") continue;
+          const cur = (config.agent.engine_options[id] = config.agent.engine_options[id] || {});
+          for (const k of ["model", "bin", "permissionMode", "sandbox"]) if (v[k] !== undefined) cur[k] = String(v[k] || "").trim();
+          if (v.thinking !== undefined) {
+            const lv = String(v.thinking || "").trim().toLowerCase();
+            if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+            cur.thinking = lv; // 空串 = 这个引擎跟随全局档位
+          }
+          if (v.network !== undefined) cur.network = !!v.network;
+          if (Array.isArray(v.extraArgs)) cur.extraArgs = v.extraArgs.map((x) => String(x)).slice(0, 20);
+        }
+      }
+    }
+    if (b.pet) {
+      const cur = config.pet || {};
+      // 精灵图那两个字段先验后写：这个 handler 一路在往 config 上直接赋值，
+      // 半路 return 400 会留下「内存里改了、盘上没存」的半拉状态。所以校验全部前置。
+      const nextSprite = b.pet.sprite !== undefined ? String(b.pet.sprite || "").slice(0, 80) : cur.sprite || "";
+      const nextChar = b.pet.character === undefined ? cur.character || "cat"
+        : b.pet.character === "photo" ? "photo" : b.pet.character === "sprite" ? "sprite" : "cat";
+      // 存一个扫不到的 id 进去，结果是宠物窗口悄悄回落成内置猫，
+      // 用户体感是「换了但没生效」——不如当场拒了，把原因说清楚。
+      if (nextSprite && !petSprites.findPet(nextSprite)) return res.status(400).json({ error: "没找到这只精灵图宠物（或它的图集不合规）：" + nextSprite });
+      if (nextChar === "sprite" && !nextSprite) return res.status(400).json({ error: "先选一只精灵图宠物，再切到这个形象" });
+
+      config.pet = cur;
+      if (typeof b.pet.enabled === "boolean") config.pet.enabled = b.pet.enabled;
+      if (typeof b.pet.notify === "boolean") config.pet.notify = b.pet.notify;
+      if (typeof b.pet.notifyDone === "boolean") config.pet.notifyDone = b.pet.notifyDone;
+      if (typeof b.pet.wander === "boolean") config.pet.wander = b.pet.wander;
+      config.pet.sprite = nextSprite;
+      config.pet.character = nextChar;
+      if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || pet.DEFAULT_SCALE));
+      if (b.pet.opacity !== undefined) config.pet.opacity = Math.max(0.25, Math.min(1, Number(b.pet.opacity) || 1));
+      if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+    }
+    if (b.evolve) {
+      config.evolve = config.evolve || {};
+      // 默认关：每晚要调一次模型，是花钱的事，得你自己点开
+      if (typeof b.evolve.auto === "boolean") config.evolve.auto = b.evolve.auto;
+      if (b.evolve.hour !== undefined) config.evolve.hour = Math.max(0, Math.min(23, Math.round(+b.evolve.hour) || 0));
+      if (b.evolve.days !== undefined) config.evolve.days = Math.max(1, Math.min(365, Math.round(+b.evolve.days) || 14));
+    }
+    if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
+    if (b.assistant) {
+      if (b.assistant.name !== undefined) {
+        const n = String(b.assistant.name).replace(/\s+/g, " ").trim();
+        if (n.length > 24) throw new Error("助理名字最多 24 个字");
+        config.assistant.name = n || ASSISTANT_DEFAULT.name; // 清空就退回默认，别让它变成没名字的空气
+      }
+      // 头像的校验规则和用户头像完全一样（emoji 或 ≤256KB 的 data URI），共用一处免得两边规则跑偏
+      if (b.assistant.avatar !== undefined) config.assistant.avatar = account._internals.normalizeAvatar(b.assistant.avatar) || ASSISTANT_DEFAULT.avatar;
+    }
+    if (b.search) {
+      config.search = config.search || {};
+      // 先存 Key，再校验 provider。顺序反过来踩过一次大的：
+      // 选了一家这个进程还不认的服务商（程序更新了但没重开，内存里还是老名单），
+      // provider 那一句先 throw，整个保存被回滚——人刚一个一个敲进去的七八把 Key 一起没了，
+      // 而界面只说了句「provider 只认这几家」，谁也想不到自己的 Key 被顺手丢了。
+      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "custom_key", "custom_url", "custom_query_field"]) {
+        if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
+      }
+      if (b.search.provider !== undefined) {
+        // 这张名单跟 tools.js 的 SEARCH_PROVIDERS 是同一份；加一家要两边一起加，
+        // 只加一边的后果是：设置里存得下，真搜的时候那家不存在，整条接力从第二家才开始
+        const 支持的 = Object.keys(SEARCH_PROVIDERS);
+        if (b.search.provider !== "" && !支持的.includes(b.search.provider)) {
+          saveConfig(); // Key 已经写进 config 了，先落盘再报错——别让人白填一遍
+          throw new Error(
+            `正在跑的这个程序还不认「${b.search.provider}」这一家（它认的是：${支持的.join(" / ")}）。` +
+            "多半是程序升级前就一直开着，退出重开一次就好。你刚填的 Key 已经存下来了，不用重填。"
+          );
+        }
+        config.search.provider = b.search.provider;
+      }
+    }
+    if (b.workspace_dir !== undefined && b.workspace_dir !== getDefaultWorkspaceDir()) {
+      config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+      // 输入框旁的快速切换是临时的（新任务会切回项目目录）；设置中心改路径才算改默认，同步进当前项目
+      if (b.workspace_permanent === true) {
+        ensureProjects();
+        const ap = config.projects.find((p) => p.name === config.active_project);
+        if (ap) ap.dir = config.workspace_dir;
+      }
+    }
+    config.im = config.im || {};
+    if (b.im) {
+      const clear = new Set(Array.isArray(b.im.clear) ? b.im.clear.map(String) : []);
+      if (b.im.feishu) {
+        const feishu = config.im.feishu = config.im.feishu || {};
+        imAssign(feishu, b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"], clear, "feishu.");
+        if (b.im.feishu.group_reply_mode !== undefined) {
+          feishu.group_reply_mode = b.im.feishu.group_reply_mode === "all" ? "all" : "mention";
+        }
+      }
+      if (b.im.qq) imAssign(config.im.qq = config.im.qq || {}, b.im.qq, ["app_id", "app_secret"], clear, "qq.");
+      if (b.im.wecom_app) imAssign(config.im.wecom_app = config.im.wecom_app || {}, b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"], clear, "wecom_app.");
+      if (b.im.wechat_mp) imAssign(config.im.wechat_mp = config.im.wechat_mp || {}, b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"], clear, "wechat_mp.");
+      if (b.im.smtp) {
+        const sm = (config.im.smtp = config.im.smtp || {});
+        // 凭证走「空不覆盖」那条老规矩：半张表单点一下保存，不该把已经存好的密码抹掉
+        imAssign(sm, b.im.smtp, ["host", "user", "pass"], clear, "smtp.");
+        // 端口 / 发件人 / 收件人白名单不是凭证，是用户随时会改的设置，清空就得真清空。
+        // 白名单尤其不能沿用老规矩——填了是硬闸，用户在界面上删干净了却删不掉，闸门就卡死在旧名单上了
+        for (const k of ["port", "from", "allow_to"]) {
+          if (b.im.smtp[k] !== undefined) sm[k] = String(b.im.smtp[k]).trim();
+        }
+      }
+      imAssign(config.im, b.im, ["wecom_bot_webhook", "dingtalk_webhook", "dingtalk_secret", "webhook_secret"], clear, "");
+      if (b.im.session_idle_hours !== undefined) config.im.session_idle_hours = Math.max(0, Math.min(720, +b.im.session_idle_hours || 0));
+    }
+    if (b.media) {
+      config.media = config.media || {};
+      for (const kind of mediaModels.CAPS) { // 单一真源：加一路能力只改 media-models.js 的 CAPS
+        if (b.media[kind]) {
+          const c = (config.media[kind] = config.media[kind] || {});
+          for (const k of ["base_url", "api_key", "model", "voice"]) {
+            if (b.media[kind][k] === undefined) continue;
+            const v = String(b.media[kind][k]).trim();
+            // 掩码原样存回来 = 用户没动这一栏，保留库里那把真的
+            if (k === "api_key" && /^\*+$/.test(v)) continue;
+            c[k] = v;
+          }
+        }
+      }
+    }
+    if (Array.isArray(b.providers)) {
+      const old = new Map((config.providers || []).map((p) => [p.id, p]));
+      config.providers = b.providers.map((p) => {
+        const prev = old.get(p.id) || {};
+        // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
+        const key = String(p.api_key == null ? prev.api_key || "" : p.api_key).trim();
+        return {
+          id: String(p.id || "").trim(),
+          name: String(p.name || "").trim(),
+          kind: String(p.kind || "").trim(),
+          base_url: String(p.base_url || "").trim(),
+          api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
+        };
+      });
+      auditKeyChanges(req, old, config.providers);
+    }
+    if (Array.isArray(b.media_models)) {
+      for (const m of b.media_models) {
+        if (!String(m.model || "").trim()) throw new Error("每个模型都得填模型名");
+        if (!mediaModels.CAPS.includes(m.cap)) throw new Error("不认识这一路能力：" + m.cap);
+      }
+      // protocol 也得留住。它是手改 config.json 的人才会用的那道口子：一台 new-api 网关
+      // 后面挂着好几家上游，地址和 Key 只有一份，只能逐条说「这个型号后面是万相」。
+      // 这里不白名单它的话，下次在设置页点一下保存就被抹掉了，人还找不出是哪一步弄丢的。
+      config.media_models = b.media_models.map((m) => ({
+        id: String(m.id || "").trim(), cap: m.cap,
+        name: String(m.name || "").trim(), provider: String(m.provider || "").trim(),
+        model: String(m.model || "").trim(), voice: String(m.voice || "").trim(),
+        protocol: String(m.protocol || "").trim(),
+        default: !!m.default,
+      }));
+    }
+    // 两张表任何一张动过，就重算 id、补默认项、把「默认那条」压平回 config.media，
+    // 这样 tools.js 那边永远读到一份现成的扁平配置，不用关心多模型这套
+    if (b.media || b.providers || b.media_models) {
+      mediaModels.normalize(config);
+      // 渠道配置动过 = 用户已经去处理那条断掉的路了（换了 Key、换了型号、换了家）。
+      // 熔断记录这时必须清空，否则他改完还得干等半小时，然后来问「我都改好了怎么还不动」。
+      mediaHealth.reset();
+    }
+    // 渠道改了 Key，挂在它底下的对话模型要跟着换——压平这一步就是干这个的
+    if (b.models || b.providers) chatModels.normalize(config);
+    if (b.security) {
+      const sec = security.getSecurity(config);
+      for (const k of ["gateway", "delete_protect", "cmd_risk_gate", "runtime_node", "runtime_python"]) {
+        if (typeof b.security[k] === "boolean") sec[k] = b.security[k];
+      }
+      for (const k of ["batch_delete_threshold", "approval_timeout_s"]) {
+        if (b.security[k] !== undefined) sec[k] = Math.max(1, +b.security[k] || security.DEFAULTS[k]);
+      }
+      for (const k of ["file_whitelist", "file_blacklist", "cmd_allow", "cmd_ask", "url_whitelist", "url_blacklist"]) {
+        if (Array.isArray(b.security[k])) sec[k] = b.security[k].map((s) => String(s)).filter((s) => s.trim()).slice(0, 100);
+      }
+      // 外挂的第二把尺子：auto / advisory / off 三挡，别的值一律当没填过（默认 auto）
+      if (b.security.toolward !== undefined) {
+        const m = String(b.security.toolward || "").toLowerCase();
+        sec.toolward = ["auto", "advisory", "off"].includes(m) ? m : security.DEFAULTS.toolward;
+      }
+      // 指死一个可执行文件的路径。这是条会被执行的路径，长度掐住，别让它变成往配置里塞东西的口子
+      if (b.security.toolward_bin !== undefined) sec.toolward_bin = String(b.security.toolward_bin || "").trim().slice(0, 500);
+    }
+    if (b.langfuse && typeof b.langfuse === "object") {
+      const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });
+      if (b.langfuse.host !== undefined) {
+        const h = String(b.langfuse.host || "").trim().replace(/\/+$/, "");
+        // 地址写错是这一块最常见的坑（漏 https://、把浏览器地址栏里带路径的整条粘进来）。
+        // 不在这儿拦的话，上报会一直静默失败，用户只会看到"开着，但一条都没有"
+        if (h && !/^https?:\/\/[^\s]+$/.test(h)) throw new Error("Langfuse 地址得是 http:// 或 https:// 开头的网址");
+        cur.host = h || "https://cloud.langfuse.com";
+      }
+      if (b.langfuse.public_key !== undefined) cur.public_key = String(b.langfuse.public_key || "").trim();
+      if (b.langfuse.secret_key !== undefined) {
+        const k = String(b.langfuse.secret_key || "").trim();
+        cur.secret_key = /^\*+$/.test(k) ? cur.secret_key || "" : k; // 掩码原样存回来 = 没改
+      }
+      if (b.langfuse.enabled !== undefined) {
+        const on = !!b.langfuse.enabled;
+        // 开着却没钥匙，等于以为在记其实一条都没发。这种"看起来成了"的状态最坑人，当场拦掉
+        if (on && !(cur.public_key && cur.secret_key)) throw new Error("要开执行追踪，公钥和私钥都得填（在 Langfuse 项目设置里生成一对）");
+        cur.enabled = on;
+      }
+    }
+    if (b.shortcuts && typeof b.shortcuts === "object") {
+      config.shortcuts = {};
+      for (const [k, v] of Object.entries(b.shortcuts)) {
+        if (typeof v === "string" && v.length < 60) config.shortcuts[k] = v;
+      }
+      if (global.__wbRegisterShortcuts) global.__wbRegisterShortcuts(config.shortcuts); // 桌面版重注册全局快捷键
+    }
+    llmInner = createLLM(config); // 模型热切换
+    memory.setEmbedder(createEmbedder(config));
+    setSessEmbedder(createEmbedder(config));
+    memory.ensureVectors().catch(() => {});
+    saveConfig();
+    if (b.im && b.im.feishu && imBridge) {
+      imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message)); // 飞书配置变更后重建长连接
+    }
+    if (b.im && b.im.qq && imBridge) {
+      imBridge.startQQ(true).catch((e) => console.warn("[QQ] 长连接重启失败:", e.message));
+    }
+    res.json({ ok: true, provider: llm.provider, model: llm.model });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/**
+ * 执行追踪连通性自检。
+ *
+ * 为什么要有这颗按钮：这一块的失败全是静默的——地址少个字母、Key 是另一个项目的、
+ * 自建实例的端口没开，任务照跑不误，只是 trace 永远是空的。等用户想起来去点链接，
+ * 已经过去好几天了。所以在设置页当场发一条真的上去，成不成立刻说，顺带把那条探针的链接给他。
+ * 没存的草稿值也能测（body 里带什么就用什么），不然只能"先存了再看结果"。
+ */
+app.post("/api/trace/test", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "执行追踪是整台服务器一份的设置，归平台管理员改", platform_only: true });
+  const b = req.body || {};
+  const cur = config.langfuse || {};
+  const sk = String(b.secret_key == null ? "" : b.secret_key).trim();
+  const out = await tracing.getTracer(config).probe({
+    host: b.host !== undefined ? b.host : cur.host,
+    public_key: b.public_key !== undefined ? String(b.public_key || "").trim() : cur.public_key,
+    // 界面上私钥那格给非管理员是掩码；管理员拿到的是原文。原样传回来（或压根没动）都按"用已存的那把"
+    secret_key: !sk || /^\*+$/.test(sk) ? cur.secret_key || "" : sk,
+  });
+  res.json(out);
+});
+
+// 本地 Trace：默认记录在当前 workspace/.openworkbuddy/traces.jsonl，不依赖 Langfuse。
+// Langfuse 只是可选的外部副本，用户可以先用本地追踪排查任务，再决定是否外发。
+// 这三条一律锁平台管理员。一本账里记的是**整台服务器**上跑过的每趟任务：提示词原文、
+// 工具参数、文件路径、最终回复，全都在里面，而且不带账号维度——多人服务器上放开给成员看，
+// 等于把同事的对话内容原样端出去。界面上这一页也只对平台管理员显示（PLATFORM_ONLY_VIEWS）。
+const traceOwnerOnly = (req, res) => {
+  if (isPlatformOwner(req)) return false;
+  res.status(403).json({ error: "执行记录是整台服务器一份的，归平台管理员看", platform_only: true, traces: [] });
+  return true;
+};
+app.get("/api/traces", (req, res) => {
+  if (traceOwnerOnly(req, res)) return;
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+    res.json({ traces: tracing.getTracer(config).localTraces({ limit }) });
+  } catch (e) { res.status(500).json({ error: e.message, traces: [] }); }
+});
+app.get("/api/traces/:id", (req, res) => {
+  if (traceOwnerOnly(req, res)) return;
+  try {
+    const trace = tracing.getTracer(config).localTraces({ traceId: String(req.params.id || "") });
+    if (!trace) return res.status(404).json({ error: "找不到这条 Trace" });
+    res.json({ trace });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/traces", (req, res) => {
+  if (traceOwnerOnly(req, res)) return;
+  try { tracing.getTracer(config).clearLocalTraces(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------- 系统日志 / 指标 / 告警 ----------
+// 跟 Trace 一样锁平台管理员，理由也一样：这几本账都是**整台机器一份**的。
+// 日志里带着别人的登录名、会话 id、报错原文；指标里带着别人的 token 花销和任务量。
+// 多人共用一台服务器时，放开给成员看等于把同事干了什么摊开。
+const opsOwnerOnly = (req, res) => {
+  if (isPlatformOwner(req)) return false;
+  res.status(403).json({ error: "系统日志和运行指标是整台机器一份的，归平台管理员看", platform_only: true, rows: [] });
+  return true;
+};
+app.get("/api/ops/logs", (req, res) => {
+  if (opsOwnerOnly(req, res)) return;
+  try {
+    res.json({
+      days: log.days(),
+      rows: log.tail({ day: String(req.query.day || ""), level: String(req.query.level || ""), q: String(req.query.q || ""), limit: Math.min(1000, +req.query.limit || 200) }),
+    });
+  } catch (e) { res.status(500).json({ error: e.message, rows: [] }); }
+});
+app.get("/api/ops/metrics", (req, res) => {
+  if (opsOwnerOnly(req, res)) return;
+  try {
+    const rows = metrics.read({ from: String(req.query.from || ""), to: String(req.query.to || ""), limit: Math.min(5000, +req.query.limit || 720) });
+    // 「现在」也给一份：刚重启完还没到一分钟时，图上总得有个东西，不然像坏了
+    res.json({ rows, alerts: metrics._internals.loadState(), rules: metrics._internals.RULES.length });
+  } catch (e) { res.status(500).json({ error: e.message, rows: [] }); }
+});
+/**
+ * Prometheus 抓取口。**故意跟别的接口一样锁在平台管理员后面**——
+ * 这套东西是打包成桌面应用发出去的，多开一个不要认证的端口出去，
+ * 等于在用户机器上开了个谁都能读的运行数据口子。要接 Prometheus 的人
+ * 在 scrape_configs 里带上 openworkbuddy_token 这个 cookie 就行（部署文档里写了怎么配）。
+ */
+app.get("/api/ops/metrics.prom", (req, res) => {
+  if (opsOwnerOnly(req, res)) return;
+  const rows = metrics.read({ limit: 1 });
+  const m = rows[rows.length - 1] || {};
+  const out = [];
+  const put = (k, v, help) => {
+    if (typeof v !== "number" || !isFinite(v)) return;
+    out.push(`# HELP openworkbuddy_${k} ${help}`, `# TYPE openworkbuddy_${k} gauge`, `openworkbuddy_${k} ${v}`);
+  };
+  put("tasks", m.tasks, "tasks finished in the last snapshot window");
+  put("tasks_failed", m.tasks_failed, "tasks that ended with an error");
+  put("task_fail_rate", m.task_fail_rate, "failed / total in the window");
+  put("task_p95_ms", m.task_p95_ms, "95th percentile wall-clock task duration");
+  put("tokens", m.tokens, "prompt + completion tokens in the window");
+  put("disk_free_pct", m.disk_free_pct, "free space on the data volume");
+  put("rss_mb", m.rss_mb, "resident memory of the server process");
+  for (const [name, n] of Object.entries(m.channel_fail_streak || {})) {
+    out.push(`openworkbuddy_channel_fail_streak{channel="${String(name).replace(/["\\]/g, "")}"} ${n}`);
+  }
+  res.type("text/plain; version=0.0.4").send(out.join("\n") + "\n");
+});
+
+// ---------- 首次开箱引导：没有 API Key 时，什么都干不了，得先把这一步走完 ----------
+// 只回布尔值，绝不把 key 原文吐给前端（设置页要改 key 走 /api/settings）
+function isLocalModel(m) {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(m.base_url || "");
+}
+function hasKey(m) {
+  return isLocalModel(m) || !!String(m.api_key || "").trim();
+}
+
+/**
+ * 换 Key 要留痕。
+ *
+ * 审计流水里躺着「谁充了值」「谁改了成员角色」「谁重置了密码」，唯独没有「谁换了那把
+ * 全组织都在用的 Key」——而这恰恰是最值得留痕的一条：多管理员的组织里，任何一个管理员
+ * 都能把渠道悄悄指到自己的账号、或者指到一个会把对话原文全存下来的中转，事后翻遍后台
+ * 一个字都查不到。企业客户做合规的时候，这一条是必问项。
+ *
+ * 只记「哪条渠道、从哪把换成哪把」，两头都是 keyHint（前三位…末四位）——
+ * 审计表是管理员和审计员都看得到的，把明文 Key 写进去等于给它开了第二个出口。
+ */
+function auditKeyChanges(req, before, after) {
+  if (!req || !req.user) return; // 个人桌面版没有账号这回事，也就没有「谁改的」可记
+  const changed = [];
+  for (const p of after) {
+    const prev = before.get(p.id);
+    const oldKey = String((prev || {}).api_key || "");
+    const newKey = String(p.api_key || "");
+    if (oldKey === newKey) continue;
+    const name = p.name || p.id;
+    if (!oldKey) changed.push(`${name}：首次填入 ${keyHint(newKey)}`);
+    else if (!newKey) changed.push(`${name}：清空（原 ${keyHint(oldKey)}）`);
+    else changed.push(`${name}：${keyHint(oldKey)} → ${keyHint(newKey)}`);
+  }
+  if (!changed.length) return;
+  try {
+    org.audit({
+      org: org.orgIdOf(req.user), actor: req.user.username,
+      action: "更换模型 Key", target: "渠道", detail: changed.join("；"),
+    });
+  } catch {} // 审计写不进去也不能把「存设置」整个失败掉
+}
+
+/**
+ * Key 的「认得出是哪一把」凭据：前三位 + 末四位，中间省略。
+ *
+ * 成熟产品（OpenAI / Stripe / Vercel 后台）一律是这个做法：Key 写进去就再也读不出来，
+ * 界面上只留末四位。我们以前是平台管理员每打开一次设置页，九把明文 Key 就往浏览器里送一趟——
+ * 页面上任何一处 XSS 都能整包端走。现在管理员那边也只给这一小截：
+ * 「我装的是哪一把」还看得出来，「这把还能不能用」交给渠道卡上的「测一下」。
+ */
+function keyHint(k) {
+  const v = String(k || "").trim();
+  if (!v) return "";
+  return v.length <= 8 ? "•".repeat(v.length) : v.slice(0, 3) + "…" + v.slice(-4);
+}
+
+/** 发一条最小的真实请求验活。返回 null = 通过，返回字符串 = 人话版失败原因。
+ *  刻意不走 createLLM：它会把工具 schema 一起发过去，这里只想知道"这个 key 认不认"。 */
+async function probeModel(m) {
+  const anthropic = m.provider === "anthropic";
+  // Claude 那条渠道的地址算法只有一份（llm.js 的 anthropicBase），验活和真跑必须打同一个地址：
+  // 否则填了中转的人验活验的是中转、跑起来打的是官方，绿勾骗人
+  const url = anthropic
+    ? anthropicBase(m.base_url).messagesUrl
+    : (m.base_url || "https://api.openai.com/v1").replace(/\/$/, "") + "/chat/completions";
+  const headers = anthropic
+    ? { "Content-Type": "application/json", "x-api-key": m.api_key || "", "anthropic-version": "2023-06-01" }
+    : { "Content-Type": "application/json", Authorization: `Bearer ${m.api_key || "ollama"}` };
+  const body = anthropic
+    ? { model: m.model, max_tokens: 8, messages: [{ role: "user", content: "ping" }] }
+    : { model: m.model, max_tokens: 8, stream: false, messages: [{ role: "user", content: "ping" }] };
+  try {
+    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
+    if (r.ok) return null;
+    const txt = (await r.text()).slice(0, 300);
+    if (r.status === 401 || r.status === 403) return "这个 Key 上游不认（HTTP " + r.status + "），检查有没有复制全、是不是这家服务商的 Key";
+    if (r.status === 402) return "Key 有效但余额不足 / 未开通付费，去服务商控制台充值后再试";
+    if (r.status === 404) return `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字`;
+    if (r.status === 429) return "被限流了（429），等一会儿再试，或换个渠道";
+    return `上游返回 HTTP ${r.status}：${txt}`;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/timeout|abort/i.test(msg)) return "连不上（30 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道";
+    return "连不上：" + msg.slice(0, 200);
+  }
+}
+
+/**
+ * 首次开箱向导要的一张「体检表」：每项能力配没配、配的是什么，一次性给全。
+ *
+ * 为什么不让前端各拉各的接口再拼：向导弹在登录后第一屏，多拉五个接口就是多五次转圈；
+ * 而且「大脑到底算不算接上了」只有服务端知道——走本机 Claude Code / Codex 时根本不需要 API Key，
+ * 前端只看 has_key 会把已经能用的人拦在门口。
+ *
+ * seen = 用户走完（或明确跳过）过一次向导。没走完的每次打开都弹，走完的只在「设置 → 关于」里能再打开。
+ */
+app.get("/api/onboarding", async (req, res) => {
+  const models = (config.models || []).map((m) => ({
+    name: m.name,
+    model: m.model,
+    base_url: m.base_url || "",
+    local: isLocalModel(m),
+    has_key: hasKey(m),
+  }));
+  const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
+  const myAgent = prefs.agentCfg(config);
+  const engineId = myAgent.engine || "builtin";
+  const brainViaEngine = engineId !== "builtin" && engines.get(engineId) !== undefined;
+  const brainOk = brainViaEngine || !!(active && hasKey(active));
+  const seen = !!((config.onboarding || {}).done_at);
+
+  // 本机 CLI 探测要跑 which + --version，只在向导真要渲染的时候做，老用户每次开机别白等。
+  // 开机那一趟（maybeOnboard）只是拿来判断"要不要弹"，不带 probe；真弹出来时会再拉一次带 probe 的。
+  let found = [];
+  if (req.query.probe === "1") {
+    try { found = await engines.detectAll(myAgent.engine_options || {}); } catch {}
+  }
+  const media = config.media || {};
+  const mediaOk = (kind) => { const c = media[kind] || {}; return !!(c.base_url && c.api_key); };
+  const im = config.im || {};
+  const pair = (o, ...ks) => !!(o && ks.every((k) => String(o[k] || "").trim()));
+  const imConfigured = [
+    pair(im.feishu, "app_id", "app_secret"),
+    pair(im.qq, "app_id", "app_secret"),
+    pair(im.wecom_app, "corp_id", "secret", "agent_id"),
+    pair(im.wechat_mp, "app_id", "app_secret"),
+    pair(im.wechat_ilink, "bot_token", "ilink_bot_id"),
+    !!String(im.wecom_bot_webhook || "").trim(),
+    !!String(im.dingtalk_webhook || "").trim(),
+  ].filter(Boolean).length;
+  // 「自动」也要报得出实际会用哪家：报成写死的一家，体检页说「已配」而真跑的是另一家
+  const sc = config.search || {};
+  const sp = (sc.provider || "").toLowerCase()
+    || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(sc, p, searchProviderKey(sc, p))) || "bocha";
+  res.json({
+    // 大脑没接上 = 一句话都发不出去，必须弹引导。接上了就不再自动弹了：
+    // 用户在第一步填完 Key 就跳过是最常见的一条路，以前那种"没走完就再弹一次"每次开机都要拦他一遍。
+    needs_setup: !brainOk,
+    seen,
+    // 向导最后一步写的是服务器级设置（工作目录 + done_at），只有平台管理员落得了盘。
+    // 成员那边压根不该弹：弹了他一步步认真填完，最后一颗「开始使用」必然 403，退都退不出去。
+    can_finish: isPlatformOwner(req),
+    brain: {
+      ok: brainOk,
+      via: brainViaEngine ? "engine" : "api",
+      name: brainViaEngine ? engineId : (active ? active.name : ""),
+      model: brainViaEngine ? ((config.agent.engine_options || {})[engineId] || {}).model || "" : (active ? active.model : ""),
+    },
+    active_model: config.active_model,
+    workspace_dir: getWorkspaceDir(),
+    models,
+    // 向导的「服务商」清单从目录来，不再靠 config 里那排没 Key 的模板行撑场面
+    templates: chatModels.templates(),
+    any_key: models.some((m) => m.has_key && !m.local),
+    engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
+    engine: engineId,
+    search: { provider: sp, has_key: !!searchProviderKey(config.search || {}, sp) },
+    media: Object.fromEntries(mediaModels.CAPS.map((c) => [c, mediaOk(c)])),
+    im: { configured: imConfigured },
+  });
+});
+
+// 填 key → 真发一条最小请求验活 → 通过才落盘。不验就存等于把坑留到用户第一次提问时才炸
+app.post("/api/onboarding", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const key = String(b.api_key || "").trim();
+    // 按厂商模板新起一条：先算好、验活、验过了才落进 config——验不过的 Key 不该留下一个半成品渠道
+    if (b.kind) {
+      const plan = chatModels.planTemplate(config, b.kind, b.model_id);
+      if (!plan) throw new Error("没有这家服务商：" + b.kind);
+      if (systemOne.isDecisionModel(plan.row.model)) throw new Error(`「${plan.row.model}」是判断模型（Jev），不能当对话模型用`);
+      if (!key && !plan.t.local) throw new Error("API Key 不能为空");
+      if (b.skip_test !== true) {
+        const bad = await probeModel({ ...plan.row, api_key: key || (plan.prov ? plan.prov.api_key : "") });
+        if (bad) return res.json({ ok: false, error: bad });
+      }
+      const row = chatModels.commitTemplate(config, plan, key);
+      chatModels.normalize(config);
+      config.active_model = row.name;
+      if (b.workspace_dir) {
+        config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+        ensureProjects();
+        const ap = config.projects.find((p) => p.name === config.active_project);
+        if (ap) ap.dir = config.workspace_dir;
+      }
+      llmInner = createLLM(config);
+      memory.setEmbedder(createEmbedder(config));
+      setSessEmbedder(createEmbedder(config));
+      memory.ensureVectors().catch(() => {});
+      saveConfig();
+      return res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
+    }
+    const entry = (config.models || []).find((m) => m.name === b.model);
+    if (!entry) throw new Error("没有这个模型：" + b.model);
+    if (!key && !isLocalModel(entry)) throw new Error("API Key 不能为空");
+    // 本机那条（Ollama）的型号是向导现问出来的：他电脑上装了什么只有他知道，
+    // 库里那条多半还写着出厂模板里的 qwen3:14b。点名了就照他说的来。
+    // 先只当作「这一趟拿它去验」，验过了才真写进 config——验不过还把人家原来能用的
+    // 型号改掉，等于一次失败的尝试把他本来跑得好好的配置弄坏了。
+    const wantModel = String(b.model_id || "").trim() || entry.model;
+    if (systemOne.isDecisionModel(wantModel)) throw new Error(`「${wantModel}」是判断模型（Jev），不能当对话模型用`);
+
+    if (b.skip_test !== true) {
+      const bad = await probeModel({ ...entry, model: wantModel, api_key: key || entry.api_key });
+      if (bad) return res.json({ ok: false, error: bad });
+    }
+    entry.model = wantModel;
+
+    if (key) {
+      // Key 归渠道那一层管（config.providers），不是模型条目。写在条目上看着像成了，
+      // 下一次规整会把渠道的空 Key 压平回来，把它抹掉——
+      // 于是首页明明填过 Key，后台设置还说没设置。
+      const prov = (config.providers || []).find((p) => p.id === entry.channel);
+      if (prov) prov.api_key = key;
+      else entry.api_key = key; // 还没挂渠道的条目：先写着，紧接着的规整会照它认出或建出渠道
+    }
+    // 规整一趟：认渠道、并掉重复的空壳行、再把渠道的地址和 Key 压平回模型条目。
+    // 不跑这一趟，下面 createLLM 读到的还是旧的扁平字段，这一趟对话照样 401
+    chatModels.normalize(config);
+    config.active_model = entry.name;
+    if (b.workspace_dir) {
+      config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+      ensureProjects();
+      const ap = config.projects.find((p) => p.name === config.active_project);
+      if (ap) ap.dir = config.workspace_dir;
+    }
+    llmInner = createLLM(config);
+    memory.setEmbedder(createEmbedder(config));
+    setSessEmbedder(createEmbedder(config));
+    memory.ensureVectors().catch(() => {});
+    saveConfig();
+    res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// 向导走完 / 明确跳过：记一笔，下次开机不再弹。大脑没接上时不许记——记了等于把一个什么都干不了的界面留给用户
+app.post("/api/onboarding/done", (req, res) => {
+  try {
+    const b = req.body || {};
+    const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
+    const engineId = prefs.agentCfg(config).engine || "builtin";
+    const brainOk = (engineId !== "builtin" && engines.get(engineId) !== undefined) || !!(active && hasKey(active));
+    if (!brainOk) return res.status(400).json({ ok: false, error: "还没接上任何大模型，先把第一步走完" });
+    if (b.workspace_dir) {
+      config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+      ensureProjects();
+      const ap = config.projects.find((p) => p.name === config.active_project);
+      if (ap) ap.dir = config.workspace_dir;
+    }
+    const skipped = Array.isArray(b.skipped) ? b.skipped.map((x) => String(x).slice(0, 20)).slice(0, 10) : [];
+    config.onboarding = { done_at: Date.now(), skipped };
+    saveConfig();
+    res.json({ ok: true, workspace_dir: getWorkspaceDir(), skipped });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// 直连所配搜索服务商测活（不走 DDG 回退，测的就是这家 key 能不能用）
+app.get("/api/search/test", async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const cfg = config.search || {};
+    // ?provider=bocha 指名测某一家（设置页每一行后面那颗「测」按的就是这个）。
+    // 不指名就跟真搜的时候走同一个挑法：首选，没首选就从上往下第一个配好了的。
+    // 这里另外写死一家的话，测试按的是 A、实际搜的是 B，测出来的「可用」不算数
+    const asked = String(req.query.provider || "").trim().toLowerCase();
+    if (asked && !SEARCH_PROVIDERS[asked]) {
+      return res.json({ ok: false, error: `没有「${asked}」这家；这个版本认的是：${Object.keys(SEARCH_PROVIDERS).join(" / ")}` });
+    }
+    const provider = asked || (cfg.provider || "").toLowerCase()
+      || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(cfg, p, searchProviderKey(cfg, p))) || "";
+    if (!provider) return res.json({ ok: false, error: "一家都还没配：先填一个服务商的 Key" });
+    const fn = SEARCH_PROVIDERS[provider];
+    const key = searchProviderKey(cfg, provider);
+    if (!searchProviderReady(cfg, provider, key)) {
+      return res.json({ ok: false, provider, error: provider === "custom" ? "自定义搜索还没填接口地址" : "这家还没填 API Key" });
+    }
+    const items = await fn(key, "OpenAI", 3, cfg);
+    // 「0 条」单独说清楚：Key 是好的、接口也通了，就是这一趟没结果。
+    // 跟「Key 坏了」混成一句话的话，人会跑去重新申请一把本来好好的 Key
+    if (!items.length) return res.json({ ok: false, provider, ms: Date.now() - t0, error: "接口通了，但这次一条结果都没回。Key 应该是好的，多半是对方这趟没搜到" });
+    res.json({ ok: true, provider, ms: Date.now() - t0, n: items.length, sample: (items[0].title || items[0].url || "").slice(0, 60) });
+  } catch (e) {
+    res.json({ ok: false, provider: String(req.query.provider || "").trim().toLowerCase() || undefined, ms: Date.now() - t0, error: e.message });
+  }
+});
+
+// ---------- 安全中心：审计 / 审批 / 系统授权 ----------
+app.get("/api/security/audit", (req, res) => res.json(security.auditList(Math.min(1000, +req.query.limit || 100))));
+app.post("/api/security/audit/clear", (_req, res) => {
+  security.auditClear();
+  res.json({ ok: true });
+});
+app.get("/api/security/audit/export", (_req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
+  res.send(security.auditExport());
+});
+/**
+ * 审批看得见谁的、批得动谁的。
+ *
+ * 返回 undefined = 不限定（平台管理员，以及双击打开的桌面版——那儿屏幕前就一个人）。
+ * 返回登录名 = 只限定他自己那条：审批卡片上写的是别人任务要跑的整条命令，路径、域名、
+ * 脚本片段都在里面，多人共用一台服务器时那是别人的东西。
+ */
+const approvalScope = (req) =>
+  admin.isSoloDesktop() || admin.platformAdmin(req.user) ? undefined : (req.user && req.user.username) || "";
+app.get("/api/security/approvals", (req, res) => {
+  const scopeTo = approvalScope(req);
+  res.json({
+    items: security.listApprovals(scopeTo),
+    mode: security.permissionMode(config.security),
+    session_allow: security.listSessionAllow(),
+    // 界面照这个决定要不要画「一直允许」那颗按钮：会 403 的按钮不该摆在那儿
+    can_always: scopeTo === undefined,
+    // 服务器此刻的钟：界面按 deadline - now 算还剩多久，两边的钟差多少都不影响倒计时
+    now: Date.now(),
+  });
+});
+/**
+ * 批准/拒绝一条审批。scope：once 只这一次 / session 本次运行期间同类不再问 / always 永久写进放行名单。
+ * always 要落盘——「一直允许」点完重启又来问，等于没这个按钮；落盘的规则在安全中心看得见、删得掉。
+ *
+ * 三档里只有 always 是「改这台服务器」：它把规则写进 config 的永久放行名单，对所有人生效。
+ * 所以非平台管理员的 always 降一档按 session 处理，而不是回 403——他那个任务正挂着等这个回答，
+ * 403 换来的是任务干等到超时。降了要在返回里说清楚，界面照实说，不许悄悄换个档还报「已永久放行」。
+ */
+app.post("/api/security/approvals/:id", (req, res) => {
+  const body = req.body || {};
+  const scopeTo = approvalScope(req);
+  let { scope, downgraded } = security.effectiveScope(body.scope, scopeTo !== undefined);
+  const r = security.resolveApproval(req.params.id, !!body.allow, scope, scopeTo);
+  if (!r.ok) {
+    return res
+      .status(r.forbidden ? 403 : 409)
+      .json({ ...r, error: r.error || "这条审批已经结束了（等超时了，或者别处已经点过）" });
+  }
+  // danger:/write:/code: 这几类 cmd_allow 管不到（闸里只认本会话），写进去重启后照样问，
+  // 按钮说的「重启也生效」就成了假话。降成本会话，照实说
+  let reason = "";
+  if (scope === "always" && r.ruleKey && !security.isPersistableRule(r.ruleKey)) {
+    scope = "session";
+    downgraded = true;
+    reason = "高危命令、写文件、跑代码只能本次运行期间放行，不进永久名单";
+  }
+  if (r.ok && body.allow && scope === "always" && r.ruleKey) {
+    const sec = security.getSecurity(config);
+    const list = Array.isArray(sec.cmd_allow) ? sec.cmd_allow : [];
+    if (!list.includes(r.ruleKey)) {
+      // 另起一份再写：没配过名单时这就是 DEFAULTS 里那个数组，原地 push 会连默认值一起改掉
+      sec.cmd_allow = [...list, r.ruleKey];
+      saveConfig();
+    }
+  }
+  res.json({ ...r, scope, downgraded, ...(reason ? { reason } : {}) });
+});
+// 执行模式表。界面上那个下拉不再自己写四行 HTML，从这儿取——
+// 「网页四个、命令行三个」就是抄出来的：goal 是后加的，抄到第三份就漏了。
+// 这里没有任何机密，也不按人区分，所以不设门禁：没登录的首屏也得画得出模式菜单。
+// plan：Plan 跑完那两颗按钮的字和「开干」时真正发出去的那句（跟终端 /mode 单子同一份，见 modes.js）
+app.get("/api/modes", (_req, res) => res.json({ modes: modes.EXEC_MODES, default: modes.DEFAULT_MODE, plan: modes.PLAN_HANDOFF }));
+
+/**
+ * 哪条媒体渠道正被熔断闸停着。
+ *
+ * 熔断本身在后台默默生效就行，但「为什么它不给我看图了」必须有地方能看见——
+ * 否则用户只会觉得功能坏了，而真相是我们替他拦下了一条撞不通的路。
+ * 设置 → 模型 页顶上那条黄条读的就是这个。
+ */
+app.get("/api/media-health", (_req, res) => res.json({ paused: mediaHealth.list() }));
+app.post("/api/media-health/reset", (req, res) => {
+  mediaHealth.reset(String((req.body || {}).cap || "") || undefined);
+  res.json({ ok: true, paused: mediaHealth.list() });
+});
+app.get("/api/security/modes", (req, res) =>
+  // can_switch：档位是整台服务器一份（决定 agent 动手前问不问），普通成员改不了。
+  // 界面拿它决定那个 🛡️ 菜单画成可点的还是只读的——不然点下去只有一句「切换失败」。
+  res.json({ modes: security.PERMISSION_MODES, current: security.permissionMode(config.security), can_switch: isPlatformOwner(req) })
+);
+app.post("/api/security/mode", (req, res) => {
+  // 自守一道，别只靠门禁表。这个开关一改，全站的 agent 动手前问不问就变了——
+  // 「只有一层前缀表把门」的东西，表上出一点差错就是整台机器的审批被人关掉。
+  // 上面那条 GET 已经回了 can_switch: isPlatformOwner(req)，判据用同一个，不会出现「界面说能改、后端不让」。
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "权限档位是整台服务器一份的，归平台管理员管", platform_only: true });
+  const mode = String((req.body || {}).mode || "");
+  if (!security.PERMISSION_MODES[mode]) return res.status(400).json({ error: "未知的权限档位" });
+  security.getSecurity(config).permission_mode = mode; // 走 getSecurity 补默认值，别把别的字段挤掉
+  saveConfig();
+  security.audit("权限档位", `切换到「${security.PERMISSION_MODES[mode].label}」`, "放行");
+  res.json({ ok: true, mode });
+});
+/**
+ * 外挂的第二把尺子现在在不在。界面拿它决定那张卡片怎么画——
+ * 没装就别摆一排看着能用、实际没生效的开关，直接给一行安装命令和那句授权说明。
+ * 只回「有没有、哪个版本、在哪」，不回扫描结果：这个接口是给设置页用的，不该顺手跑一趟扫描。
+ */
+app.get("/api/security/toolward", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项是整台服务器一份的，归平台管理员管", platform_only: true });
+  try {
+    res.json(toolward.status(config));
+  } catch (e) {
+    // 探测本身出错也得给界面一个能画的形状，别让设置页因为一个可选组件白屏
+    res.json({ mode: "auto", on: false, bin: "", version: "", why: String(e.message || e), install: toolward.INSTALL_HINT, licence: toolward.LICENCE_NOTE });
+  }
+});
+app.post("/api/security/session-allow/clear", (_req, res) => {
+  security.clearSessionAllow();
+  res.json({ ok: true });
+});
+app.get("/api/security/system", (_req, res) => {
+  res.json({
+    platform: process.platform,
+    desktop: !!process.versions.electron,
+    fulldisk: security.checkFullDisk(),
+    accessibility: security.checkAccessibility(),
+    automation: "unchecked", // 主动探测会触发系统弹窗，改为用户点「检测/授权」时才查
+  });
+});
+app.post("/api/security/system/check-automation", async (_req, res) => {
+  res.json({ automation: await security.checkAutomation() });
+});
+app.post("/api/security/system/open", (req, res) => {
+  res.json({ ok: security.openPrefPane((req.body || {}).pane) });
+});
+// 桌面版窗口全屏切换（Web 版由前端 requestFullscreen 兜底）
+app.post("/api/app/fullscreen", (_req, res) => {
+  if (global.__wbWin) {
+    try {
+      global.__wbWin.setFullScreen(!global.__wbWin.isFullScreen());
+      return res.json({ ok: true });
+    } catch {}
+  }
+  res.json({ ok: false });
+});
+
+// 检查更新只有一条路：updater.js 的 GET /api/update（查 GitHub Releases，按安装方式给该做什么）。
+// 以前这里还有一个在服务端跑 git 的检查更新接口——装机版根本没有 .git，
+// 点一次报一次「未配置更新源」，等于一颗永远点不动的按钮，删了。
+
+// ---------- MCP 连接器管理 ----------
+// 底层引擎：探测本机装没装 Claude Code / Codex。只跑 --version，不消耗任何额度
+app.get("/api/engines", async (req, res) => {
+  try {
+    // ?force=1 = 用户点了「重新检测本机」（刚装完 CLI，必须当场看见）；平时吃缓存，别每开一次设置页就起一堆子进程
+    const myAgent = prefs.agentCfg(config); // 「当前用的是哪个引擎」是按账号的，别把别人选的报给他
+    const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
+    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 两条工作线：侧栏那两个标签各自是什么、此刻有没有活儿在跑。
+ *
+ * 工作线分的是**干哪种活儿、在哪儿干**（办公 / 工程），不是「用哪个模型」。
+ * 底层引擎（内置循环 / 本机 Claude Code / Codex）是用户在设置里挑一次、两条线共用的另一件事——
+ * 早先版本把它俩绑在一起，结果「切个标签」能把别人配好的引擎一起换掉。
+ *
+ * 工程线连的是**这台机器上的 `openworkbuddy` 命令行**：终端里起的任务会自己挂到 data/cli-live/ 下，
+ * 这里如实报「现在有几趟在跑」。前端不许自己猜这件事——命令行是不是还活着要看心跳和 pid，
+ * 只有服务端摸得到。
+ */
+app.get("/api/lanes", (req, res) => {
+  try {
+    let cli = [];
+    // 终端属于这台机器的主人。租户账号看见别人电脑里正在跑什么，是越权
+    if (canRemoteControl(req)) { try { cli = cliLive.list(); } catch {} }
+    const liveCount = cli.filter((r) => r.live).length;
+    res.json({
+      lanes: lanes.LANES.map((l) => ({ id: l.id, name: l.name, short: l.short, hint: l.hint, detail: l.detail })),
+      current: lanes.DEFAULT_LANE,
+      // 工程线上此刻从终端起的活儿：有几趟在跑、都是什么
+      cliLive: cli,
+      cliRunning: liveCount,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 终端里正在跑的那几趟活儿。
+ *
+ * 跟 /api/chat/running 是两本账：那本是这个服务进程自己跑的（内存里），这本是**别的进程**
+ * （`openworkbuddy` 命令行）跑的，只能从盘上那个目录读。手机上打开「工程」标签看到的就是这一份。
+ */
+app.get("/api/cli/live", (req, res) => {
+  // allowed:false 前端本来就认（画成一句「这里看不到」而不是空列表），所以关掉开关不会白屏
+  if (!canRemoteControl(req)) return res.json({ rows: [], allowed: false, remote_off: !account.remoteAllowed("remote_control", req.user) });
+  try {
+    res.json({ rows: cliLive.list(), allowed: true, staleMs: cliLive.STALE_MS });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 跟一趟终端里的活儿：先补上已经发生的，再接着直播。
+ *
+ * 口径跟 /api/chat/stream 一样（from = 已经看过几个事件），前端一套代码两边都能用。
+ * 直播靠轮询文件尾部——fs.watch 在 macOS/Linux/容器里的行为各不相同，几百毫秒一次的
+ * 读尾部比它可靠得多，而且读的是增量，不是整个文件。
+ */
+app.get("/api/cli/stream/:id", (req, res) => {
+  if (!canRemoteControl(req)) return res.status(403).json({ error: cliOffReason(req, "看得到") });
+  const sid = String(req.params.id || "");
+  const meta = cliLive.get(sid);
+  if (!meta) return res.status(404).json({ error: "终端里没有这趟活儿（可能已经跑完很久了）" });
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.on("error", () => {});
+  const from = Math.max(0, parseInt(req.query.from, 10) || 0);
+  const send = (ev) => { try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {} };
+  let pos = 0;
+  try {
+    const first = cliLive.read(sid, { fromLine: from });
+    first.events.forEach(send);
+    pos = first.pos;
+  } catch {}
+  let closed = false;
+  req.on("close", () => { closed = true; clearInterval(timer); });
+  const timer = setInterval(() => {
+    if (closed) return;
+    try {
+      const more = cliLive.read(sid, { fromByte: pos });
+      if (more.reset) { pos = 0; return; } // 命令行开了新的一轮，下一拍从头补
+      more.events.forEach(send);
+      pos = more.pos;
+      const now = cliLive.get(sid);
+      if (!now || !now.live) {
+        // 跑完了（或者被强杀了）：如实说一声再收摊，别让手机上那个圈一直转
+        send({ type: "cli_end", ok: !!(now && now.endedAt && !now.error), error: (now && now.error) || (now && now.died ? "命令行进程没了（可能是终端被关掉了）" : null) });
+        clearInterval(timer);
+        try { res.end(); } catch {}
+      }
+    } catch {}
+  }, 400);
+});
+
+/**
+ * 往终端里那趟活儿插一句话。
+ *
+ * 写进 data/cli-live/<id>.in，命令行在两步之间读走。写不进去就如实报错——
+ * 界面上显示「已发送」而其实没送到，比直接说送不到糟得多。
+ */
+app.post("/api/cli/interject", (req, res) => {
+  if (!canRemoteControl(req)) return res.status(403).json({ ok: false, error: cliOffReason(req, "插得上话") });
+  const { sessionId, message } = req.body || {};
+  const text = String(message || "").trim();
+  if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
+  const row = cliLive.get(String(sessionId || ""));
+  if (!row) return res.status(404).json({ ok: false, error: "终端里没有这趟活儿" });
+  if (!row.live) return res.status(409).json({ ok: false, error: "这趟已经跑完了，插话没人接" });
+  if (!cliLive.interject(row.id, text)) return res.status(500).json({ ok: false, error: "写不进去（磁盘满了或者目录没权限）" });
+  res.json({ ok: true });
+});
+
+/**
+ * 终端里那趟活儿此刻卡在等什么（一道选择题，或者一条要批准的命令）。
+ *
+ * 这条口子是给手机用的。终端里等回答是「卡住不动直到超时」，而超时对审批来说等于**拒绝**：
+ * 人去楼下拿了杯咖啡，回来只看见「用户没批准，我跳过了」——他从来没被问到过。
+ */
+app.get("/api/cli/pending", (req, res) => {
+  if (!canRemoteControl(req)) return res.json({ rows: [], allowed: false, remote_off: !account.remoteAllowed("remote_control", req.user) });
+  const sid = String(req.query.sessionId || "").trim();
+  try {
+    const ids = sid ? [sid] : cliLive.list({ prune: false }).filter((r) => r.live).map((r) => r.id);
+    const rows = [];
+    for (const id of ids) for (const a of cliLive.pending(id)) rows.push({ ...a, sessionId: id });
+    // now 同审批列表：手机和电脑的钟对不齐，倒计时按服务器的钟校正
+    res.json({ rows, allowed: true, now: Date.now() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 在手机上把那道题答了。
+ *
+ * 不在这儿判答案对不对：终端那边 cli-ask 本来就有一套「敲一半算选了哪条」的解析，
+ * 手机上答的走同一份，省得两边对同一句话给出两种理解。
+ */
+app.post("/api/cli/answer", (req, res) => {
+  if (!canRemoteControl(req)) return res.status(403).json({ ok: false, error: cliOffReason(req, "答得了") });
+  const { sessionId, askId, value } = req.body || {};
+  const id = String(askId || "").trim();
+  if (!id) return res.status(400).json({ ok: false, error: "不知道在答哪道题" });
+  const row = cliLive.get(String(sessionId || ""));
+  if (!row) return res.status(404).json({ ok: false, error: "终端里没有这趟活儿" });
+  if (!row.live) return res.status(409).json({ ok: false, error: "这趟已经跑完了，答案没人接" });
+  // 已经不等了（终端那边先答了，或者超时了）就说清楚，别让界面显示「已提交」而其实没人收
+  if (!cliLive.pending(row.id).some((a) => a.id === id)) {
+    return res.status(409).json({ ok: false, error: "这道题已经答过了，或者等超时了" });
+  }
+  if (!cliLive.answer(row.id, id, value)) return res.status(500).json({ ok: false, error: "写不进去（磁盘满了或者目录没权限）" });
+  res.json({ ok: true });
+});
+
+/**
+ * 思考模式：每一档到底会发什么，如实报给设置页。
+ *
+ * 为什么不让前端自己写死一张表：各家的参数名一年能改两回，而「这一档对你选的这个模型
+ * 到底生不生效」只有服务端知道（要看 provider、base_url、模型名，走本机 CLI 时还要看
+ * 那个 CLI 认不认这个选项）。写死在前端 = 界面上写着"已关闭"、实际一个参数都没发出去。
+ *
+ * 所以这里把 5 个档位逐个算一遍，supported=false 的连同原因一起给出去，界面照抄。
+ */
+app.get("/api/thinking", async (req, res) => {
+  try {
+    const myAgent = prefs.agentCfg(config);
+    const engineId = myAgent.engine || "builtin";
+    const entry = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0] || {};
+    // 本机 CLI 的能力探测（claude 对不认识的选项是静默忽略的，非探不可），探不动就当没有
+    let caps = {};
+    if (engineId !== "builtin") {
+      try {
+        const found = await engines.detectAll(myAgent.engine_options || {});
+        caps = (found.find((e) => e.id === engineId) || {}).caps || {};
+      } catch {}
+    }
+    const levels = thinking.LEVELS.map((lv) => {
+      const api = thinking.planFor(entry, lv);
+      const eng = engineId === "builtin" ? null : thinking.planForEngine(engineId, lv, caps);
+      const active = eng || api;
+      return { level: lv, label: thinking.LEVEL_LABEL[lv], supported: active.supported, note: active.note };
+    });
+    res.json({
+      current: thinking.norm(myAgent.thinking),
+      via: engineId === "builtin" ? "api" : "engine",
+      target: engineId === "builtin" ? (entry.name || "") : engineId,
+      levels,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 一键连接：真的连一次，不是看看文件在不在。
+ *
+ * 设置页上「已装 ✓」和「装了但没登录」长得一模一样——用户点了切换，然后每个任务都在
+ * 原地报错。这个接口花几十个 token 真跑一句话过去，把「能用 / 没登录 / 限流 / 装坏了」
+ * 分开告诉用户，并且给出下一步该干什么。跑在系统临时目录里，不往工作区留东西。
+ */
+app.post("/api/engines/test", async (req, res) => {
+  const id = String((req.body && req.body.id) || "").trim();
+  if (!id || id === "builtin") return res.status(400).json({ error: "内置引擎不用测，它走的是你配的 API Key" });
+  try {
+    // 用户可能刚在输入框里改了路径/模型还没保存，先用他正在填的那份测
+    const saved = (prefs.agentCfg(config).engine_options || {})[id] || {};
+    const patch = (req.body && req.body.options) || {};
+    const opts = { ...saved };
+    // bin 是「起哪个可执行文件」——在多人服务器上等于任意命令执行。只有平台管理员能指定，
+    // 其他人一律用已保存的那份（他们本来也改不了它）
+    const fields = ownPrefs(req) ? ["model"] : ["bin", "model"];
+    for (const k of fields) if (patch[k] !== undefined) opts[k] = String(patch[k] || "").trim();
+    for (const k of Object.keys(opts)) if (!opts[k]) delete opts[k];
+    res.json(await engines.testConnect(id, opts));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 预设目录：常用 MCP 服务器一键接入；顺带告诉前端本机找没找到 npx / uvx
+app.get("/api/mcp/catalog", (_req, res) => {
+  const configured = new Set((config.mcp_servers || []).map((s) => s.name));
+  // 把已经在内存里的 config 递进去：内网开关就在里面，别让每次请求都去读一遍盘
+  const cat = mcpCatalog.catalog({ cfg: config });
+  res.json({ ...cat, items: cat.items.map((it) => ({ ...it, configured: configured.has(it.name) })) });
+});
+
+app.get("/api/mcp", (req, res) => {
+  const view = (s, plugin) => {
+    const client = mcpManager.clients.get(s.name);
+    const failure = mcpManager.failures.find((f) => f.name === s.name);
+    return {
+      name: s.name,
+      command: s.command || "",
+      args: s.args || [],
+      // 环境变量里基本都是 API Key，和请求头一样只回键名，不回值
+      env_keys: Object.keys(s.env || {}),
+      url: s.url || "",
+      // 请求头里常有 token，界面上只说有几个，不回传值
+      header_keys: Object.keys(s.headers || {}),
+      transport: s.transport || (s.command ? "stdio" : "streamable-http"),
+      plugin, // 插件带来的：界面上只读，不许当成 config 里的条目存回去
+      // 关掉的那几台：既没连上也没失败，界面要能分清「连不上」和「我自己关的」——
+      // 少了这一个字段，用户关掉一台之后看到的是一张灰卡片，跟连接失败长得一模一样
+      enabled: !mcpManager.disabled.has(s.name),
+      error: failure ? failure.error : "",
+      // 「授权没了」和「连不上」在界面上是两件事：前者要用户现在就去换 Key，后者多半过会儿自己就好。
+      // 判据就是 mcp.js 里 whyFailed 翻出来的那句话——401/403 那条固定带着「（401）Key／令牌」。
+      auth_bad: failure ? /（401）|（403）|Key／令牌/.test(failure.error || "") : false,
+      connected: !!client,
+      tools: client ? client.tools.map((t) => ({ name: t.name, description: (t.description || "").slice(0, 200) })) : [],
+    };
+  };
+  // config.json 里配的 + 插件 mcp.json 里声明的，一起列出来，
+  // 否则「已注入 N 个工具」的 N 里有一半找不到对应的卡片，用户以为是幻觉。
+  let fromPlugins = [];
+  try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让连接器页打不开 */ }
+  const servers = (config.mcp_servers || []).map((s) => view(s, ""))
+    .concat(fromPlugins.map((s) => view(s, s.plugin)));
+  res.json({ servers, total_tools: mcpManager.toolDefs().length, can_toggle: isPlatformOwner(req) });
+});
+
+/**
+ * 单台连接器的开关。
+ *
+ * 为什么不复用 POST /api/mcp：那条是「把整张表存回去」。GET 出去的时候 env / headers 的值
+ * 被抹成了键名（里头是 API Key），前端手上根本没有完整的表；为了点一下开关而整表回存，
+ * 等于每次都拿一份缺了密钥的副本去覆盖真的那份——现在靠 prevByName 兜着，但那是兜底，不该当主路走。
+ * 何况插件带来的连接器压根不在 config.mcp_servers 里，整表回存对它们无从下手。
+ *
+ * 关掉 = 停掉进程 + 从工具表里摘掉。摘掉这一步才是重点：留着定义，模型会先想一个用它的方案、
+ * 调一次、吃一条「连不上」、再重想——白烧一轮。这和 toolList 里对 run_shell 的处理是同一个道理。
+ */
+app.post("/api/mcp/toggle", async (req, res) => {
+  // 连接器是整台机器一份的：一个人关掉，所有人的任务都少一批工具。跟权限档位同一个判据。
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "连接器是整台机器一份的，开关归平台管理员", platform_only: true });
+  try {
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) throw new Error("要说明开关哪一台连接器");
+    let fromPlugins = [];
+    try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让开关点不动 */ }
+    const all = [...(config.mcp_servers || []), ...fromPlugins];
+    const cfg = all.find((x) => x.name === name);
+    if (!cfg) throw new Error(`没有这台连接器：${name}`);
+    const on = (req.body || {}).enabled !== false;
+
+    const off = new Set(config.mcp_disabled || []);
+    if (on) off.delete(name); else off.add(name);
+    // 只留还存在的名字：连接器删掉之后，它的名字不该在这张表里长住
+    config.mcp_disabled = [...off].filter((n) => all.some((x) => x.name === n));
+    saveConfig();
+    mcpManager.setDisabled(config.mcp_disabled);
+
+    if (on) await mcpManager.startAll([cfg]); // 只起这一台，别把别人的连接踢了重连
+    else mcpManager.stop([name]);
+    res.json({ ok: true, name, enabled: on, connected: mcpManager.clients.has(name), total_tools: mcpManager.toolDefs().length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/**
+ * 这一刻模型手上到底有哪些工具。
+ *
+ * 以前这个问题在界面上无解——
+ * 工具表是 agent.js 的 toolList() 按「组织关没关命令行、有没有渲染器、配没配发信通道、
+ * 连上了几台连接器」当场算出来的，界面上一份都没有。于是「它到底能不能发邮件」
+ * 只能靠问它一次、等它答「没配」来确认。
+ *
+ * 所以这里不另抄一份清单，直接调 runtime.toolList()——摆出来的就是模型看见的那一份，
+ * 不会漂。抄一份的下场在 modes 那儿已经演过一遍了（三份手抄，goal 只抄进两份）。
+ */
+app.get("/api/tools", (req, res) => {
+  if (!runtime) return res.json({ tools: [], groups: [], total: 0 });
+  const mode = String(req.query.mode || "craft");
+  let defs = [];
+  try { defs = runtime.toolList(0, mode) || []; } catch (e) { return res.status(500).json({ error: e.message }); }
+  const tools = defs.map((t) => {
+    const m = String(t.name).match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/);
+    return {
+      name: t.name,
+      // 连接器工具的描述前面带着 `[MCP:服务器] `，那是给模型认来源的，界面上有分组标题了，重复一遍是噪音
+      description: String(t.description || "").replace(/^\[MCP:[^\]]+\]\s*/, "").split("\n")[0].slice(0, 160),
+      source: m ? "mcp" : "builtin",
+      server: m ? m[1] : "",
+      short: m ? m[2] : "",
+    };
+  });
+  const groups = [{ key: "builtin", label: "内置工具", count: tools.filter((t) => t.source === "builtin").length }];
+  for (const name of new Set(tools.filter((t) => t.source === "mcp").map((t) => t.server))) {
+    groups.push({ key: "mcp:" + name, label: name, count: tools.filter((t) => t.server === name).length });
+  }
+  res.json({ tools, groups, total: tools.length, mode });
+});
+
+/** 一条连接器配置规整成后端认的形状；stdio 看 command，远程看 url */
+function normalizeMcpServer(s, i, prevByName = new Map()) {
+  const at = `第 ${i + 1} 个连接器`;
+  const name = String(s.name || "").trim();
+  if (!name) throw new Error(`${at}缺少 name`);
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`${at}的 name「${name}」只能用字母、数字、- 和 _（工具名要按 mcp__服务器__工具 拼）`);
+  const url = String(s.url || "").trim();
+  const command = String(s.command || "").trim();
+  if (!command && !url) throw new Error(`${at}要么填 command（本地进程），要么填 url（远程 Streamable HTTP）`);
+  if (url) {
+    let u;
+    try { u = new URL(url); } catch { throw new Error(`${at}的 url 不是合法地址：${url}`); }
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`${at}的 url 只支持 http/https`);
+    // 请求头里多半是 Authorization，GET 只回 header_keys 不回值；
+    // 前端原样存回来时没带 headers，就沿用原来那份，别把令牌洗没了。
+    const prev = prevByName.get(name);
+    const headers = s.headers && typeof s.headers === "object"
+      ? Object.fromEntries(Object.entries(s.headers).map(([k, v]) => [String(k), String(v)]))
+      : (prev && prev.headers) || {};
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
+    if (Object.keys(headers).length && u.protocol === "http:" && !local) {
+      throw new Error(`${at}带了请求头（多半是令牌）却走明文 http，令牌会在路上被看光——请改成 https`);
+    }
+    return { name, transport: "streamable-http", url, headers };
+  }
+  // env 里是 API Key，GET 只回键名；前端原样存回来时不带 env，就沿用原来那份
+  const prev = prevByName.get(name);
+  const env = s.env && typeof s.env === "object"
+    ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)]))
+    : (prev && prev.env) || {};
+  for (const k of Object.keys(env)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`${at}的环境变量名「${k}」不合法（只能字母、数字、下划线，不能以数字开头）`);
+  return { name, transport: "stdio", command, args: Array.isArray(s.args) ? s.args.map(String) : [], env };
+}
+
+app.post("/api/mcp", async (req, res) => {
+  try {
+    const list = (req.body || {}).servers;
+    if (!Array.isArray(list)) throw new Error("需要 servers 数组");
+    const prevByName = new Map((config.mcp_servers || []).map((s) => [s.name, s]));
+    const next = list.map((s, i) => normalizeMcpServer(s, i, prevByName));
+    const dup = next.map((s) => s.name).find((n, i, a) => a.indexOf(n) !== i);
+    if (dup) throw new Error(`连接器名字重复：${dup}`);
+
+    /**
+     * 存之前让 toolward 看一眼这批连接器。
+     *
+     * 连接器以前一次安全检查都不过：从 GitHub 装个技能要过两道闸，而一条
+     * `command: npx` + 一串参数的连接器，点个保存就在这台机器上跑起来了——权限比技能大得多。
+     * 拿不到结果（没装 toolward、它崩了）就是 null，一切照旧。
+     *
+     * **只提醒，不拦**：这是用户自己填的命令和地址，不是陌生人的代码。在「保存」这一步硬拦，
+     * 用户能做的只有改回去或者关掉整个检查，那这道提醒就等于逼人学会无视它。
+     * 密钥不出门——redactServers 把 env/headers 的值全换成 ***，只留键名，见 toolward.js。
+     */
+    let advice = null;
+    try {
+      const rep = toolward.scanConnectors(next, config);
+      if (rep && rep.findings.length) {
+        advice = { level: rep.level, findings: rep.findings.slice(0, 8), more: Math.max(0, rep.findings.length - 8), toolward: rep.toolward };
+        log.warn("mcp", "连接器配置有被提醒的地方（不影响保存）", {
+          count: rep.findings.length, rules: [...new Set(rep.findings.map((f) => f.rule))].slice(0, 10),
+        });
+      }
+    } catch (e) { log.warn("mcp", "连接器体检没跑成（不影响保存）", { err: e }); }
+
+    config.mcp_servers = next;
+    saveConfig();
+
+    // 插件带来的服务器也要一起重启：只重启 config 里的会把插件连接器整批打没，
+    // 而它们不在 config 里，重启前根本救不回来（旧版就是这个 bug）。
+    let fromPlugins = [];
+    try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该拖累连接器保存 */ }
+    const servers = [...config.mcp_servers, ...fromPlugins];
+    mcpManager.stop([...mcpManager.clients.keys(), ...mcpManager.failures.map((f) => f.name), ...servers.map((s) => s.name)]);
+    await mcpManager.startAll(servers); // 失败的单独在日志告警，不阻塞其他
+    res.json({
+      ok: true,
+      total_tools: mcpManager.toolDefs().length,
+      connected: [...mcpManager.clients.keys()],
+      failures: mcpManager.failures,
+      advice, // toolward 的第二意见；没装它就是 null
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- 项目（多工作空间，仿官方「项目」：每个项目一个独立工作目录，成果互不混淆） ----------
+/**
+ * 项目自带的「指令」和挂载的专家/技能/连接器。
+ * 指令不是装饰：切到这个项目之后，它会进系统提示词（见 accountedRuntime），
+ * 否则用户在弹窗里写一大段项目背景，agent 一个字都看不见。
+ */
+function projectMeta(body) {
+  const arr = (v) => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean).slice(0, 30) : []);
+  // library_dir：这个项目挂载资料库的哪一块。""=整个资料库（老行为）。
+  // 挂坏了不该让整次保存失败——目录可能是后来被人在磁盘上删的——所以校验不过就当没挂
+  let lib = "";
+  try { lib = libRel(body.library_dir); } catch { lib = ""; }
+  return {
+    instructions: String(body.instructions || "").slice(0, 4000),
+    connectors: arr(body.connectors),
+    experts: arr(body.experts),
+    skills: arr(body.skills),
+    library_dir: lib,
+  };
+}
+function activeProject() {
+  ensureProjects();
+  return config.projects.find((p) => p.name === config.active_project) || null;
+}
+
+/**
+ * 组装进系统提示词的项目上下文：指令 + 挂载清单。
+ * 挂载在弹窗里勾了才有；勾过但后来被删掉的专家/技能/连接器要过滤掉，不然提示词里指着空气让 agent 用。
+ */
+function projectContextOf(p) {
+  if (!p) return "";
+  const parts = [];
+  if (p.instructions) parts.push(p.instructions);
+  // 挂载了资料库的某一块就说出来。不说的话模型只会看见一个小得可疑的文件清单，
+  // 然后自作主张去 run_shell 翻整个 data 目录找「应该还有的那些文件」——那条路本来就该被安全中心拦下
+  if (p.library_dir) parts.push(`本项目只挂载了资料库的「${p.library_dir}」这一块，library_list 列出来的就是全部；别去别处找资料，也别猜库里还有什么。`);
+  const alive = (names, pool) => (names || []).filter((n) => pool.includes(n));
+  const exps = alive(p.experts, experts.map((e) => e.name));
+  if (exps.length) parts.push(`本项目挂载的专家：${exps.join("、")}。相应领域的子任务优先 delegate_to_expert 委派给他们。`);
+  let skillNames = [];
+  try { skillNames = skillsMgr.loadSkills().map((s) => s.name); } catch {}
+  const sks = alive(p.skills, skillNames);
+  if (sks.length) parts.push(`本项目挂载的技能：${sks.join("、")}。做对应任务前先 use_skill 加载，按技能里的规范执行。`);
+  const conns = alive(p.connectors, (config.mcp_servers || []).map((s) => s.name));
+  if (conns.length) parts.push(`本项目挂载的连接器：${conns.join("、")}。涉及外部系统时优先用这些连接器提供的工具。`);
+  // 项目目录里的 AGENTS.md / CLAUDE.md 是写给 agent 看的项目规范（pi / Claude Code 的通行惯例），
+  // 用户既然放了就自动带上，不用再往项目指令里手抄一遍。往上一直找到 git 仓库根，和命令行用的是同一份逻辑
+  const memo = projectMemo.memoContext(p.dir);
+  if (memo) parts.push(memo);
+  return parts.join("\n\n");
+}
+
+function ensureProjects() {
+  if (!Array.isArray(config.projects) || !config.projects.length) {
+    config.projects = [{ name: "默认项目", dir: getDefaultWorkspaceDir() }];
+    config.active_project = "默认项目";
+  }
+  if (!config.projects.some((p) => p.name === config.active_project)) config.active_project = config.projects[0].name;
+}
+
+/**
+ * 把一个项目的「空间」落到运行时：工作空间根 + 资料库挂载的那一块。
+ *
+ * 这两件事必须一起做。只切工作目录不切资料库挂载，就是「我明明在客户 A 的项目里，
+ * 它翻出来的是客户 B 的合同」；只切挂载不切目录，产出会写进上一个项目的文件夹。
+ * 切完顺手把根记进名单（rememberRoot），这样以后回看这条项目下的老对话还找得到文件。
+ */
+function applyProjectSpaces(p) {
+  if (!p) return;
+  try { setLibraryDir(p.library_dir || ""); } catch {}
+  if (p.dir) rememberRoot(p.dir);
+}
+/**
+ * config.json 是唯一一份存着所有 API Key 的文件，还不入 git——写坏了就是全丢。
+ * 所以全应用只留这一个写入口，走原子改名 + .bak。
+ */
+/**
+ * 存配置。
+ *
+ * 难点不在写，在于**别把别人的改动盖掉**。config.json 同时有两个人在改：
+ * 界面（走这个函数，写的是内存里那整份 config）和用户本人（文本编辑器里粘一个 API Key、
+ * 加一条 mcp_servers）。老写法不管三七二十一整份覆盖，于是手改的那些全没了——
+ * 最常见的是刚粘进去的 Key，用户的体感是「填了不生效」，回头一看文件，空的。
+ *
+ * 所以存盘前先看一眼文件的改动时间：跟我们上次对齐时不一样，说明外面有人动过。
+ * 这时候不是二选一，而是把两边合起来：磁盘上那份当底，只把**这个进程真改过的那几处**
+ * 按路径盖上去（哪几处 = 内存里的 config 跟基线快照的差集）。用户粘的 Key 在底上，一个字不动。
+ */
+function saveConfig() {
+  const now = cfgMerge.mtimeOf(CONFIG_PATH);
+  if (now && CONFIG_MTIME && now !== CONFIG_MTIME) mergeDiskEdits();
+  store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MODE });
+  CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
+  CONFIG_BASE = cfgMerge.snapshot(config);
+}
+
+/** 把磁盘上那份读回来当底，只把本进程改过的那几处盖上去。合不了就照旧覆盖，但要留一句。 */
+function mergeDiskEdits() {
+  let disk;
+  try {
+    disk = store.readJson(CONFIG_PATH, null);
+  } catch (e) {
+    console.warn(`[配置] config.json 在外面被改过，但读不回来（${(e && e.message) || e}），这次按内存里的存`);
+    return;
+  }
+  if (!disk || typeof disk !== "object" || Array.isArray(disk)) return; // 不成形的就别拿来当底
+  const { changed: mine } = cfgMerge.mergeOnto(disk, CONFIG_BASE, config);
+  // 用户可能整块删掉（server / agent 这种），跟启动时同一套兜底，免得合完之后某个字段没了就崩
+  fillDefaults(disk, CONFIG_DEFAULTS);
+  disk.shortcuts = disk.shortcuts || {};
+  disk.assistant = { ...ASSISTANT_DEFAULT, ...(disk.assistant || {}) };
+  // 换内容不换对象：llm、security、tools 这些模块启动时就把 config 的引用拿走了，
+  // 这里要是 config = disk，它们手上还攥着老的那份，界面显示新值、干活用老值。
+  for (const k of Object.keys(config)) delete config[k];
+  Object.assign(config, disk);
+  security.getSecurity(config); // 安全策略跟着新内容重新补齐
+  console.log(`[配置] config.json 在外面被改过，已合并：磁盘那份当底，本进程改的 ${mine.length} 处盖上去`);
+}
+
+
+app.get("/api/projects", (req, res) => {
+  // 租户看到的是自己那一个根，不是总部的项目清单——后者连目录名都是信息。
+  // 以前这里编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
+  // 而且这个名字跟老会话记的项目名对不上，前端按项目过滤后整排任务历史都没了。
+  // 现在如实说「你这儿没有项目这回事」，前端见到 locked 就整块不画、也不按项目过滤。
+  if (!ownsGlobalWorkspace(req.user)) return res.json({ projects: [], active: "", locked: true });
+  ensureProjects();
+  res.json({ projects: config.projects, active: config.active_project, locked: false });
+});
+
+app.post("/api/projects", (req, res) => {
+  try {
+    ensureProjects();
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) throw new Error("缺少项目名");
+    if (name.length > 30) throw new Error("项目名太长（最多 30 字）");
+    if (config.projects.some((p) => p.name === name)) throw new Error("同名项目已存在");
+    let dir = String((req.body || {}).dir || "").trim();
+    if (!dir) dir = dataPath("projects", name.replace(/[/\\:*?"<>|]/g, "_"));
+    const real = setWorkspaceDir(dir); // 建目录并切换过去
+    config.projects.push({ name, dir: real, ...projectMeta(req.body || {}), created_at: new Date().toISOString() });
+    rememberRoot(real); // 以后在别的项目里回看这条项目下的老对话，靠的就是这份名单
+    config.active_project = name;
+    config.workspace_dir = real;
+    applyProjectSpaces(config.projects[config.projects.length - 1]);
+    saveConfig();
+    res.json({ ok: true, projects: config.projects, active: name });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/projects/switch", (req, res) => {
+  try {
+    ensureProjects();
+    const p = config.projects.find((x) => x.name === (req.body || {}).name);
+    if (!p) return res.status(404).json({ error: "项目不存在" });
+
+    config.workspace_dir = setWorkspaceDir(p.dir);
+    config.active_project = p.name;
+    applyProjectSpaces(p);
+    saveConfig();
+    res.json({ ok: true, active: p.name, dir: p.dir, library_dir: p.library_dir || "" });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 新任务回到当前项目自己的目录：输入框里临时切过的文件夹不带进下一个任务
+app.post("/api/workspace/reset", (_req, res) => {
+  try {
+    // 工作目录是全局的：有任务在跑时重置会把它的写入目录半路拽走，产出散落两处。跳过，等空闲再说
+    if (activeRuns.size) return res.json({ ok: false, busy: true, workspace_dir: getWorkspaceDir() });
+    ensureProjects();
+    const ap = config.projects.find((p) => p.name === config.active_project) || config.projects[0];
+    if (ap && ap.dir && ap.dir !== getDefaultWorkspaceDir()) {
+      config.workspace_dir = setWorkspaceDir(ap.dir);
+      saveConfig();
+    }
+    applyProjectSpaces(ap);
+    res.json({ ok: true, workspace_dir: getWorkspaceDir() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 改项目：名字之外的东西（指令、挂载的专家/技能/连接器）都能改，改完立即对新任务生效
+app.patch("/api/projects/:name", (req, res) => {
+  ensureProjects();
+  const p = config.projects.find((x) => x.name === req.params.name);
+  if (!p) return res.status(404).json({ error: "项目不存在" });
+  Object.assign(p, projectMeta({ ...p, ...(req.body || {}) }));
+  // 换工作空间目录。老版本这儿根本收不了 dir，新建项目时也没处填，用户只能拿到
+  // data/projects/<名字> 这个藏在应用数据里的目录——「新增的项目好像没地方设置目录」说的就是它。
+  const nd = String((req.body || {}).dir || "").trim();
+  if (nd) {
+    try {
+      const real = path.resolve(nd);
+      if (!path.isAbsolute(real)) throw new Error("工作空间必须是绝对路径");
+      fs.mkdirSync(real, { recursive: true }); // 没权限/盘不在，在这儿就炸，别等任务跑到一半
+      p.dir = real;
+      rememberRoot(real);
+      // 改的是当前项目就得同步切根，否则界面显示新目录、任务还往老目录写，
+      // 下一次回看就是满屏「文件不存在」
+      if (config.active_project === p.name) config.workspace_dir = setWorkspaceDir(real);
+    } catch (e) {
+      return res.status(400).json({ error: "工作空间目录设置失败：" + e.message });
+    }
+  }
+  const rename = String((req.body || {}).name || "").trim();
+  if (rename && rename !== p.name) {
+    if (config.projects.some((x) => x.name === rename)) return res.status(400).json({ error: "同名项目已存在" });
+    if (config.active_project === p.name) config.active_project = rename;
+    p.name = rename;
+  }
+  if (config.active_project === p.name) applyProjectSpaces(p);
+  saveConfig();
+  res.json({ ok: true, project: p, projects: config.projects, active: config.active_project });
+});
+
+// 只从列表移除，不删磁盘文件
+app.delete("/api/projects/:name", (req, res) => {
+  ensureProjects();
+  if (config.projects.length <= 1) return res.status(400).json({ error: "至少保留一个项目" });
+  const i = config.projects.findIndex((p) => p.name === req.params.name);
+  if (i < 0) return res.status(404).json({ error: "项目不存在" });
+  config.projects.splice(i, 1);
+  if (config.active_project === req.params.name) {
+    const p0 = config.projects[0];
+    config.active_project = p0.name;
+    try {
+      config.workspace_dir = setWorkspaceDir(p0.dir);
+    } catch {}
+  }
+  saveConfig();
+  res.json({ ok: true, projects: config.projects, active: config.active_project });
+});
+
+// ---------- 资料库·灵感（跨项目共享：参考文件 + 灵感笔记，agent 可用 library_* 工具读取） ----------
+const LIB_DIR = dataPath("data", "library");
+/**
+ * 资料库的根：一人一个。
+ *
+ * 老库 data/library 原地不动，仍旧是「这台机器的主人」那一份——平台管理员、以及压根没开
+ * 账号体系的单机版。别人一人一个 data/library-users/<账号>/，头一次用的时候才建。
+ *
+ * 为什么非改不可：资料库以前是整台机器**共用的一份**，而且 admin.js 那张读表还特地把
+ * /api/library 放行了（理由是拦了也白拦，agent 的 library_list 照样念得出来）。两件事叠在一起，
+ * 结果就是新注册的号打开资料库，看见的是别人传进去的合同和素材——跟侧栏里那条会话历史
+ * 是同一个事故的两个面。
+ *
+ * 不搬文件：管理员那一份还躺在原地，路径一个字符没变；新号拿到的是一个空目录。
+ */
+function libraryRootOf(user) {
+  if (!user || ownsGlobalWorkspace(user)) return LIB_DIR;
+  return dataPath("data", "library-users", prefs.keyOf(user));
+}
+function readNotes() {
+  const list = store.readJson(notesFileOf(libBase()), []);
+  return Array.isArray(list) ? list : [];
+}
+function writeNotes(notes) {
+  store.writeJsonAtomic(notesFileOf(libBase()), notes, { pretty: true });
+}
+/**
+ * 资料库里的相对路径 → 绝对路径。
+ *
+ * 老版本这儿是一句 `path.basename(name)`：资料库被硬压成**一层平铺**。用户传二十份合同进来
+ * 就是二十条并排，分不出「客户 A / 客户 B」，项目也没法只挂载其中一块——
+ * 这正是「资料库看起来没有子目录或者指定目录的概念」那条反馈的根。
+ *
+ * 允许子目录之后越界检查就得自己做：basename 那一刀顺手也把 `../` 剁掉了，现在没有了。
+ * 三道：段里不许有 `..`、不许以 `.` 开头（.git/.ssh 这类别被翻出来）、不许有 Windows 非法字符；
+ * 拼完再让 safePathIn 按根复核一遍，两道都过才算数。
+ */
+function libPath(rel, root = libBase()) {
+  const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  for (const seg of parts) {
+    if (seg === ".." || seg.startsWith(".") || /[<>:"|?*\u0000-\u001f]/.test(seg)) throw new Error(`路径不合法：${seg}`);
+  }
+  return safePathIn(root, parts.join("/"));
+}
+/** 规整成对外用的相对路径（统一正斜杠、去掉首尾斜杠）；越界的在 libPath 里抛 */
+function libRel(rel) {
+  const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  libPath(parts.join("/")); // 只为触发校验
+  return parts.join("/");
+}
+/** 资料库里所有子目录的相对路径（给项目弹窗那个「挂哪一块」的下拉用）。深度封 4 层，防止有人把整个硬盘软链进来 */
+function libFolders(rel = "", depth = 0, out = []) {
+  if (depth >= 4) return out;
+  let ents = [];
+  try { ents = fs.readdirSync(libPath(rel), { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    const child = rel ? `${rel}/${e.name}` : e.name;
+    out.push(child);
+    libFolders(child, depth + 1, out);
+  }
+  return out;
+}
+/** 一个资料库目录里直接躺着几个文件（列表上给个「3 份」的角标，免得点进去才发现是空的） */
+function libCount(abs) {
+  try { return fs.readdirSync(abs, { withFileTypes: true }).filter((e) => !e.name.startsWith(".")).length; }
+  catch { return 0; }
+}
+
+app.get("/api/library", (req, res) => {
+  const dir = (() => { try { return libRel((req.query || {}).dir); } catch { return ""; } })();
+  let files = [];
+  let dirs = [];
+  try {
+    for (const e of fs.readdirSync(libPath(dir), { withFileTypes: true })) {
+      if (e.name.startsWith(".")) continue;
+      const abs = path.join(libPath(dir), e.name);
+      let st;
+      try { st = fs.statSync(abs); } catch { continue; }
+      const row = { name: e.name, path: dir ? `${dir}/${e.name}` : e.name, size: st.size, mtime: st.mtime.toISOString() };
+      if (e.isDirectory()) dirs.push({ ...row, count: libCount(abs) });
+      else if (e.isFile()) files.push(row);
+    }
+  } catch {}
+  dirs.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  files.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  // crumbs：["", "客户A", "客户A/2026"] 这样一层层的可点路径，前端不用自己切字符串
+  const segs = dir ? dir.split("/") : [];
+  const crumbs = segs.map((name, i) => ({ name, path: segs.slice(0, i + 1).join("/") }));
+  res.json({ dir, crumbs, dirs, files, folders: libFolders(), notes: readNotes() });
+});
+
+app.post("/api/library/folder", (req, res) => {
+  try {
+    const parent = libRel((req.body || {}).dir);
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) return res.status(400).json({ error: "文件夹名不能为空" });
+    const rel = parent ? `${parent}/${name}` : name;
+    const abs = libPath(rel);
+    if (fs.existsSync(abs)) return res.status(400).json({ error: "同名文件夹已存在" });
+    fs.mkdirSync(abs, { recursive: true });
+    res.json({ ok: true, dir: rel });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 删空文件夹。非空的不给删：这个接口的调用方是一个「删除」小链接，
+// 点错的代价不该是一整个文件夹的东西不可逆地没了
+app.delete("/api/library/folder", (req, res) => {
+  try {
+    const rel = libRel((req.query || {}).dir || (req.body || {}).dir);
+    if (!rel) return res.status(400).json({ error: "没说删哪个" });
+    const abs = libPath(rel);
+    if (!fs.existsSync(abs)) return res.json({ ok: true });
+    if (libCount(abs)) return res.status(400).json({ error: "文件夹里还有东西，先清空再删" });
+    fs.rmdirSync(abs);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/library/upload", (req, res) => {
+  try {
+    const { name, data_b64 } = req.body || {};
+    if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
+    const dir = libRel((req.body || {}).dir);
+    // 浏览器拖整个文件夹进来时 file.name 可能自带层级，一并接住；两边都有就拼起来
+    const rel = libRel(dir ? `${dir}/${name}` : name);
+    const abs = libPath(rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.from(data_b64, "base64"));
+    res.json({ ok: true, name: path.basename(rel), path: rel });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 通配而不是 :name —— 子目录以后路径里有斜杠，:name 只吃得下一段
+app.get("/api/library/file/*", async (req, res) => {
+  try {
+    const p = libPath(relOf(req));
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send("文件不存在");
+    // ?thumb=160：资料库那一页的图框最大 64px，一屏摆 120 张。缩不动就照旧发原件，
+    // 跟 /api/files/view/ 走的是同一段（thumb.js），缓存键带绝对路径所以两处不会串
+    res.set("Cache-Control", viewCacheHeader(req, p)); // 跟 /api/files/view/ 一个规矩：换过图不许再摆七天旧缩略图
+    const thumb = await thumbFileAsync(p, parseInt(req.query.thumb, 10), path.join(dataPath("data"), "thumbs"));
+    if (thumb) {
+      res.set("Content-Type", "image/png");
+      return res.sendFile(thumb);
+    }
+    // 默认内联发。以前这里一律 res.download，带上 Content-Disposition: attachment 之后
+    // <audio>/<video>/<iframe> 全都渲染不出来，点什么都预览不了。
+    // 真要存盘的走 ?dl=1，附件头只在那一条路上加。
+    if (String(req.query.dl || "") === "1") return res.download(p);
+    const mm = mediaMime(p);
+    if (mm) res.set("Content-Type", mm);
+    // 资料库里的网页更是外来的：被当顶层页面直接打开时同样要落进 sandbox（见「工作区预览的隔离」）。
+    // 应用内的资料库预览走的是 blob: + sandbox 属性，不经过这个响应头，不受影响
+    sandboxPreviewDoc(res, viewTypeOf(p));
+    res.sendFile(p);
+  } catch (e) {
+    res.status(400).send(e.message);
+  }
+});
+
+// 资料库里的 docx / xlsx / pptx / zip：浏览器自己打不开（zip 里一包 XML），得服务端先拆。
+// 跟 /api/files/preview 是同一个 previewData，只是换一个根——资料库在 data/library 下，
+// 工作目录在别处。以前这条不存在，于是同一份 .pptx 在对话里点得开、拖进资料库就点不开了。
+app.get("/api/library/preview/*", async (req, res) => {
+  try {
+    const rel = relOf(req);
+    const p = libPath(rel);
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
+    res.json(await previewData(p, rel));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete("/api/library/file/*", (req, res) => {
+  try {
+    const p = libPath(relOf(req));
+    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return res.status(400).json({ error: "这是文件夹，用删文件夹那个接口" });
+    fs.rmSync(p, { force: true });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/library/note", (req, res) => {
+  const text = String((req.body || {}).text || "").trim();
+  if (!text) return res.status(400).json({ error: "内容为空" });
+  const notes = readNotes();
+  notes.unshift({ id: "n_" + Date.now() + "_" + Math.floor(Math.random() * 1e4), text: text.slice(0, 2000), at: new Date().toISOString() });
+  writeNotes(notes.slice(0, 200));
+  res.json({ ok: true });
+});
+
+app.delete("/api/library/note/:id", (req, res) => {
+  writeNotes(readNotes().filter((n) => n.id !== req.params.id));
+  res.json({ ok: true });
+});
+
+// ---------- 资料库：按任务看产出 / 全库搜索 ----------
+/**
+ * 「这次任务到底产出了哪些文件」——这份数据一直都在，只是从来没人从这个方向读过。
+ *
+ * 每跑完一批工具，recordingEmit 会往 transcript 里压一条 { type:"files", changed:[…] }，
+ * changed 是 makeOwnership 认过主的那几个文件（不是整棵树的快照）。把一条会话里所有这种
+ * 事件的 changed 并起来，就是「这条任务产出了什么」的权威答案。
+ *
+ * 以前资料库只能按目录翻，而人记事情是按
+ * 「我那天让它做的那份周报」记的，不是按 out/2026-09/report-final-v3.md 记的。
+ *
+ * 按文件 mtime 增量缓存，跟 listSessionsOnDisk 同一个路子：几百个会话不能每次全量解析 JSON。
+ */
+const outIndexCache = new Map(); // 会话文件名 -> { mtime, row }
+function sessionOutputRow(id, s) {
+  if (!s || !Array.isArray(s.transcript) || !s.transcript.length) return null;
+  const names = [];
+  const turns = [];
+  const seen = new Set();
+  let firstAt = 0;
+  // 「第几回合」只能数 user 条目，不能拿数组下标充数：回放时一条 user 起一个回合
+  // （openSession 就是这么拼界面的），下标里还夹着 assistant，差一倍。
+  // 同一个文件被改过好几轮就只认头一轮——用户点它是想看「这东西怎么来的」，
+  // 那句话在第一次写出它的那一段里，后面几轮是修修补补。
+  let ti = -1;
+  for (const turn of s.transcript) {
+    if (turn.type === "user") { ti++; continue; }
+    if (turn.type !== "assistant" || !Array.isArray(turn.events)) continue;
+    for (const ev of turn.events) {
+      if (ev.type !== "files") continue;
+      for (const n of ev.changed || []) {
+        if (typeof n !== "string" || seen.has(n)) continue;
+        seen.add(n);
+        names.push(n);
+        turns.push(ti);
+        if (!firstAt) firstAt = Date.parse(turn.at || "") || 0;
+      }
+    }
+  }
+  if (!names.length) return null; // 没产出的对话不进这一页：这一页问的是「东西呢」，不是「聊过啥」
+  return {
+    id,
+    title: s.title || "未命名任务",
+    user: s.user || "",
+    project: s.project || "",
+    lane: lanes.normalize(s.lane) || undefined,
+    dir: s.dir || "",
+    at: Date.parse(s.updated_at || "") || firstAt,
+    names,
+    turns,
+  };
+}
+function listTaskOutputs() {
+  let files = [];
+  try { files = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return []; }
+  const rows = [];
+  const seen = new Set();
+  for (const n of files) {
+    const id = n.slice(0, -5);
+    seen.add(n);
+    const live = sessions.get(id);
+    if (live) { const r = sessionOutputRow(id, live); if (r) rows.push(r); continue; }
+    let mtime = 0;
+    try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+    const hit = outIndexCache.get(n);
+    if (hit && hit.mtime === mtime) { if (hit.row) rows.push(hit.row); continue; }
+    const row = sessionOutputRow(id, store.readJson(path.join(SESS_DIR, n), null));
+    outIndexCache.set(n, { mtime, row });
+    if (row) rows.push(row);
+  }
+  for (const k of outIndexCache.keys()) if (!seen.has(k)) outIndexCache.delete(k);
+  rows.sort((a, b) => b.at - a.at);
+  return rows;
+}
+
+/**
+ * 清单不全时别猜，去看一眼。
+ *
+ * outputFiles() 按 mtime 倒序只留最新 500 条（FILES_CAP）。工作目录攒到 500 个以上，
+ * 旧任务的产出就整批掉出这份快照——而"不在快照里"跟"文件没了"是两回事。以前这儿只能耸耸肩：
+ * size 记 0、mtime 记空、gone 一律 false，于是界面把一个根本不存在的文件画成一行正常记录，
+ * 体积那一栏还是 libSize(0) 撞下限撞出来的「1 KB」。点进去才发现是张 404 的碎图，
+ * 点「新窗口打开」也是空的。
+ *
+ * 快照查不到的名字，就单独 stat 一次。任务清单最多 200 条、每条产出屈指可数，这是笔小账；
+ * 同名只查一次，再给个总预算兜底，免得某天真有人攒出几万条来。查不动的（预算用完）记 null，
+ * 那才是唯一该说「我不知道」的情况——size 留 0、gone 留 false，由界面显示成「—」。
+ */
+function statLookup(roots) {
+  const cache = new Map();
+  let budget = 4000;
+  const probe = (abs) => {
+    try { const st = fs.statSync(abs); return st.isFile() ? { size: st.size, mtime: st.mtime.toISOString() } : null; } catch { return null; }
+  };
+  /**
+   * 升级时 migrate.js 会把工作区根目录下的散文件收进「以前的文件_日期」。搬完之后，
+   * 资料库拿当时记下的裸文件名再去查，一律查不到——一整批还好端端躺在盘上的文件
+   * 被判成「已经不在」，点开是一句「这个文件已经不在工作目录里了」，而它只是往下挪了一层。
+   *
+   * 文件是这个程序自己搬的，那就自己跟着搬过去找。两条限制是故意的：
+   *   · 只认「以前的文件_」这一个前缀 —— 那是我们自己建的目录，跟进去不算猜；
+   *   · 只认根目录下的裸名字 —— 当初也只搬了这一种（见 migrate.js 的 tidyLooseFiles）。
+   * 不做全盘按文件名搜：两个任务目录里各有一个 cover.png，搜回来的很可能是另一份，
+   * 而「打开的不是我要的那张图」比「说它不在了」更难发现。
+   */
+  const archives = (() => {
+    let list = null;
+    return () => {
+      if (list) return list;
+      list = [];
+      try {
+        list = fs.readdirSync(getWorkspaceDir()).filter((n) => n.startsWith("以前的文件_")).sort().reverse().slice(0, 8);
+      } catch {}
+      return list;
+    };
+  })();
+  return (rel) => {
+    if (cache.has(rel)) return cache.get(rel);
+    let v = null; // null = 没查（预算用完了）；false = 确实不在了；对象 = 还在
+    if (budget > 0) {
+      budget--;
+      v = false;
+      try { v = probe(safePath(rel)) || false; } catch {} // 越界的名字：safePath 直接抛，那就是不在
+      // 当前根下没有，不等于没了：这次任务可能是在别的项目目录里跑的（中途切过工作目录/换过项目）。
+      // 只在用户自己配过的那几个根里找，跟 rootedPath 同一条口径，不会读到工作区以外的地方。
+      if (v === false) {
+        for (const d of roots) {
+          let hit = null;
+          try { hit = probe(safePathIn(d, rel)); } catch { continue; }
+          if (hit) { v = hit; break; }
+        }
+      }
+      // 最后一手：升级那次被收进「以前的文件_日期」的那批。只在**当前**工作目录下找，
+      // 因为 at 是要拿去当地址用的（/api/files/view/ 按当前根解析），
+      // 在别的根里找到一个同名文件却给不出能打开的地址，比说它不在了还糟。
+      if (v === false && !String(rel).includes("/")) {
+        for (const a of archives()) {
+          const at = a + "/" + rel;
+          let hit = null;
+          try { hit = probe(safePath(at)); } catch { continue; }
+          if (hit) { v = { ...hit, at }; break; }
+        }
+      }
+    }
+    cache.set(rel, v);
+    return v;
+  };
+}
+
+app.get("/api/library/outputs", (req, res) => {
+  // 认领和「未归属」都拿**整个**工作区比，不拿 outputFiles()：那份只有最近的 500 个、最深 3 层，
+  // 拿它比的话，第 4 层往下的文件既不算任务产出、也不进「未归属」，整页哪儿都找不到它。
+  // full 仍按 outputFiles() 算：它说的是「files 事件那份快照截没截断」，老调用方靠它判「已删除」
+  const walk = wsBrowse.walkAllCached(getWorkspaceDir(), { appDataDir: dataPath("data") });
+  const meta = new Map(walk.files.map((f) => [f.name, f]));
+  const scope = filesScope(outputFiles());
+  // 未归属回多少条：默认 200（文件夹视图、搜索只借这份数据反查「出自哪次任务」，用不着全量）；
+  // 「按任务」视图要翻完全部，会自己带上一个大数
+  const lim = Math.max(0, Math.min(wsBrowse.WALK_CAP, parseInt(String((req.query || {}).orphan_limit || ""), 10) || 200));
+  const statOf = statLookup(knownRoots().slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
+  const claimed = new Set();
+  const tasks = [];
+  for (const row of listTaskOutputs()) {
+    if (!ownSession(req.user, row)) continue; // 跟侧栏一个口径：别人的任务不该出现在我的资料库里
+    const files = [];
+    for (let i = 0; i < row.names.length; i++) {
+      const n = row.names[i];
+      // 回合号是给「跳到写出它的那段对话」用的。老的内存缓存行没有这个字段，
+      // -1 一路传到前端会被当成第 0 回合，所以查不到就写 undefined，让界面自己决定退回顶部
+      const tn = row.turns && row.turns[i] >= 0 ? row.turns[i] : undefined;
+      const f = meta.get(n);
+      if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false, turn: tn }); continue; }
+      const st = statOf(n);
+      // 搬过家的按新地址报出去：名字给人看的那一截没变（前端只取最后一段），
+      // 但地址是能打开的那个。顺带认领一下，免得同一个文件在「未归属」里再出现一遍
+      if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false, turn: tn }); continue; }
+      files.push({ name: n, size: 0, mtime: "", gone: st === false, turn: tn });
+    }
+    files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+    const { names, turns, user, ...rest } = row;
+    tasks.push({ ...rest, files, live: files.filter((f) => !f.gone).length });
+    if (tasks.length >= 200) break;
+  }
+  // 「未归属」：工作目录里确实有、但没有任何一条任务认领过的文件——手动拷进来的素材、
+  // 更早版本产出的东西、别的工具写的。不列出来的话这一页就成了半份清单，用户会以为文件丢了。
+  const orphans = walk.files.filter((f) => !claimed.has(f.name))
+    .map((f) => ({ name: f.name, size: f.size, mtime: f.mtime, gone: false }));
+  // ws_total / ws_capped：工作区里一共多少个文件、数没数全（撞了两万个或十二层的线就是没数全）。
+  // 文件夹视图的「全部 N 个」和这里的 orphan_total 都照这个说，数不全就明说数不全
+  res.json({ tasks, orphans: orphans.slice(0, lim), orphan_total: orphans.length, ws_total: walk.files.length, ws_capped: walk.capped, ...scope });
+});
+
+// 能当正文搜的类型。二进制（图片/压缩包/PDF）只搜文件名——把 PDF 当 utf8 读进来
+// 匹配到的只会是一堆乱码里的巧合，比搜不到更糟
+const TEXTY = /\.(md|markdown|txt|csv|tsv|json|jsonl|ya?ml|html?|xml|log|ini|conf|toml|js|ts|py|sh|css|srt|vtt)$/i;
+const SEARCH_MAX_BYTES = 512 * 1024;  // 单个文件超过这个大小只搜名字：搜一个 30MB 的日志会把请求拖死
+const SEARCH_SCAN_CAP = 600;          // 最多读多少个文件的正文
+// 光数文件个数不够：600 个 400KB 的导出日志就是 240MB 的同步读，那几百毫秒里事件循环整个停着。
+// 两道闸哪道先到都停，然后如实把 capped 报给界面——搜不全可以，假装搜全了不行。
+const SEARCH_BYTE_CAP = 12 * 1024 * 1024;
+
+/**
+ * 正文缓存。搜索框是边打字边搜的（前端 260ms 防抖），「周报」四个字就是四趟请求，
+ * 不缓存的话同一批文件要被原样读四遍。键里带了大小和 mtime——文件一动键就失效，
+ * 所以永远读不到过期的内容（跟 tools.js 里 digestCache 同一个路子）。
+ * 满了整份丢掉重来：维护 LRU 不值这个复杂度，代价不过是下一次键入冷一趟。
+ */
+const searchTextCache = new Map();
+let searchTextBytes = 0;
+function searchRead(full, size, mtime) {
+  const key = `${full}|${size}|${mtime}`;
+  const hit = searchTextCache.get(key);
+  if (hit !== undefined) return hit;
+  let text = "";
+  try { text = fs.readFileSync(full, "utf8"); } catch { text = ""; }
+  if (searchTextBytes > SEARCH_BYTE_CAP) { searchTextCache.clear(); searchTextBytes = 0; }
+  searchTextCache.set(key, text);
+  searchTextBytes += text.length;
+  return text;
+}
+/** 命中行的上下文摘录：给出行号和那一行，用户一眼能判断「是不是我要找的那份」 */
+function searchExcerpt(text, needle, max = 3) {
+  const out = [];
+  const lower = text.toLowerCase();
+  let from = 0;
+  while (out.length < max) {
+    const i = lower.indexOf(needle, from);
+    if (i < 0) break;
+    const s = text.lastIndexOf("\n", i) + 1;
+    let e = text.indexOf("\n", i);
+    if (e < 0) e = text.length;
+    const line = text.slice(s, e).trim();
+    out.push({ line: text.slice(0, s).split("\n").length, text: line.length > 200 ? line.slice(0, 200) + "…" : line });
+    from = e + 1;
+  }
+  return out;
+}
+/** 递归走资料库；depth 封 6 层、条数封 4000，软链成环也走不死 */
+function libWalk(rel = "", depth = 0, out = []) {
+  if (depth >= 6 || out.length >= 4000) return out;
+  let ents = [];
+  try { ents = fs.readdirSync(libPath(rel), { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    if (e.name.startsWith(".")) continue;
+    const child = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) { libWalk(child, depth + 1, out); continue; }
+    if (!e.isFile()) continue;
+    let st; try { st = fs.statSync(libPath(child)); } catch { continue; }
+    out.push({ name: e.name, path: child, size: st.size, mtime: st.mtime.toISOString() });
+    if (out.length >= 4000) break;
+  }
+  return out;
+}
+
+/**
+ * 全库搜索。
+ *
+ * 以前那个 #lb-q 只是把**当前这一层已经加载出来的**文件名过滤一遍——换句话说，
+ * 东西在隔壁文件夹里就搜不到，正文里写了什么更是无从谈起。那不叫搜索，叫筛选。
+ *
+ * 这里搜四种东西，每种都如实标明来源：
+ *   lib   资料库文件（文件名 + 正文，正文命中给出行号和那一行）
+ *   ws    当前工作区的产出文件（文件名 + 正文，跟资料库共用同一份扫描预算）
+ *   note  灵感笔记
+ *   task  任务标题，附带这条任务的产出文件——「那份周报是哪次做的」这种找法才是常态
+ */
+app.get("/api/library/search", (req, res) => {
+  const q = String((req.query || {}).q || "").trim().slice(0, 120);
+  if (!q) return res.json({ q: "", lib: [], ws: [], notes: [], tasks: [], scanned: 0, capped: false });
+  const needle = q.toLowerCase();
+  const hitName = (n) => String(n).toLowerCase().includes(needle);
+
+  // 两棵树共用一份预算（资料库先扫、工作区后扫）。scanned/bytes 任一道到顶就只剩搜名字，
+  // capped 一路带到界面上明说「还有没搜到的」。
+  const budget = { scanned: 0, bytes: 0, capped: false };
+  /** 名字 + 正文各搜一遍，返回 null 表示这个文件根本没命中 */
+  const probe = (name, full, size, mtime) => {
+    const byName = hitName(name);
+    let lines = [];
+    if (TEXTY.test(name) && size <= SEARCH_MAX_BYTES) {
+      if (budget.scanned >= SEARCH_SCAN_CAP || budget.bytes >= SEARCH_BYTE_CAP) budget.capped = true;
+      else {
+        budget.scanned++;
+        budget.bytes += size;
+        const text = searchRead(full, size, mtime);
+        if (text) lines = searchExcerpt(text, needle);
+      }
+    }
+    if (!byName && !lines.length) return null;
+    return { by: byName && lines.length ? "both" : byName ? "name" : "text", lines };
+  };
+  // 名字命中排在正文命中前面：搜「周报」的人多半在找那个叫周报的文件，不是找提到周报的文件
+  const byNameFirst = (a, b) =>
+    (a.by === "text" ? 1 : 0) - (b.by === "text" ? 1 : 0) || String(b.mtime).localeCompare(String(a.mtime));
+
+  const lib = [];
+  for (const f of libWalk()) {
+    let hit;
+    try { hit = probe(f.path, libPath(f.path), f.size, f.mtime); } catch { continue; }
+    if (hit) lib.push({ ...f, ...hit });
+    if (lib.length >= 200) break;
+  }
+  lib.sort(byNameFirst);
+
+  // 工作区产出也搜正文。以前这儿只过滤文件名，理由写的是「正文可能是几百兆的中间产物」——
+  // 可那正是 TEXTY 和 SEARCH_MAX_BYTES 两道闸在管的事。真实后果是：这台机器上资料库一个文件
+  // 都没有，东西全在工作区，于是「全文搜索」实际上一次都没真正跑起来过，搜「上个月那份复盘里
+  // 提到的那家供应商」永远是空的。搜的是内容，不是文件名。
+  // 名字按整个工作区搜（不是 outputFiles() 那最近 500 个、最深 3 层）；新的在前，
+  // 所以正文预算先花在最近的文件上，翻不完照旧报 capped
+  const wsRoot = getWorkspaceDir();
+  const wsWalk = wsBrowse.walkAllCached(wsRoot, { appDataDir: dataPath("data") });
+  const wsAll = wsWalk.files;
+  const ws = [];
+  for (const f of wsAll) {
+    let hit;
+    try { hit = probe(f.name, safePathIn(wsRoot, f.name), f.size, f.mtime); } catch { continue; }
+    if (hit) ws.push({ name: f.name, size: f.size, mtime: f.mtime, ...hit });
+    if (ws.length >= 200) break;
+  }
+  ws.sort(byNameFirst);
+
+  const notes = readNotes().filter((n) => String(n.text || "").toLowerCase().includes(needle))
+    .slice(0, 50).map((n) => ({ id: n.id, text: n.text, at: n.at }));
+
+  const wsMeta = new Map(wsAll.map((f) => [f.name, f])); // 上面已经遍历过一次，别再走一趟全树
+  // 全量那趟撞了线（两万个、十二层）或者文件被收进了「以前的文件_」，不在 wsMeta 里≠没了：跟 outputs 一样再 stat 一眼
+  const statOf = statLookup(knownRoots().slice(0, 12));
+  const taskFile = (n) => {
+    const f = wsMeta.get(n);
+    if (f) return { name: n, size: f.size, mtime: f.mtime, gone: false };
+    const st = statOf(n);
+    return st ? { name: st.at || n, size: st.size, mtime: st.mtime, gone: false } : { name: n, size: 0, mtime: "", gone: st === false };
+  };
+  const tasks = [];
+  for (const row of listTaskOutputs()) {
+    if (!ownSession(req.user, row)) continue;
+    const titleHit = hitName(row.title);
+    const files = row.names.filter((n) => titleHit || hitName(n));
+    if (!titleHit && !files.length) continue;
+    tasks.push({
+      id: row.id, title: row.title, at: row.at, project: row.project, lane: row.lane,
+      by: titleHit ? "title" : "file",
+      files: files.slice(0, 20).map(taskFile),
+    });
+    if (tasks.length >= 50) break;
+  }
+
+  // ws_capped：工作区文件多到全量那趟没走完，名字也没搜全。跟 capped（正文预算用完）是两回事，分开报
+  res.json({ q, lib, ws, notes, tasks, scanned: budget.scanned, capped: budget.capped, ws_capped: wsWalk.capped });
+});
+
+// ---------- 长期记忆 ----------
+// 手写区（memory.md，全局共享）+ 条目区（agent 用 remember 自己记的，按账号隔离）
+/**
+ * 记忆能管到哪一格，跟审批那套是同一个判法。
+ *
+ * 返回 undefined = 不限定（平台管理员，以及双击打开的桌面版——屏幕前就一个人）。
+ * 返回登录名 = 只限定他自己那个作用域：共享区（memory.SHARED）会原样进**所有人**的系统提示词，
+ * 谁都能往里塞、谁都能删，那就不是「我的记忆」而是一块公告板了。
+ */
+const memScope = (req) =>
+  admin.isSoloDesktop() || admin.platformAdmin(req.user) ? undefined : (req.user && req.user.username) || "";
+app.get("/api/memory", (req, res) => {
+  const u = req.user ? req.user.username : undefined;
+  const scopeTo = memScope(req);
+  res.json({
+    content: memory.manual(), items: memory.list(u), shared_tag: memory.SHARED,
+    limits: { max_text: memory.MAX_TEXT, max_items: memory.MAX_PER_SCOPE }, vectors: memory.vectorStatus(),
+    // 界面照这两个决定要不要画那颗按钮：会 403 的按钮不该摆在那儿
+    can_share: scopeTo === undefined,   // 能不能往共享区写、能不能删共享区的
+    can_edit_manual: scopeTo === undefined, // 背景说明是全局一份，仍旧归平台管理员
+  });
+});
+app.post("/api/memory", (req, res) => {
+  memory.saveManual((req.body || {}).content || "");
+  res.json({ ok: true });
+});
+app.post("/api/memory/item", (req, res) => {
+  const b = req.body || {};
+  // 受限的人勾了「所有账号共用」：降成他自己的，并且照实说出来，不许悄悄换个作用域还报「已记住」
+  const wantShared = !!b.shared;
+  const downgraded = wantShared && memScope(req) !== undefined;
+  const r = memory.add({
+    text: b.text, user: req.user ? req.user.username : undefined,
+    shared: wantShared && !downgraded, source: "user",
+  });
+  if (r.ok && downgraded) r.note = (r.note || "记住了") + "。共享给这台机器上所有账号要平台管理员来做，这条先记成你自己的";
+  res.status(r.ok ? 200 : 400).json({ ...r, downgraded });
+});
+app.delete("/api/memory/item/:id", (req, res) => {
+  const r = memory.remove(req.params.id, memScope(req));
+  // 越权跟「本来就没有」不能返回同一种结果：前者要报出来，后者是正常竞态（别处已经删过）
+  if (r.forbidden) return res.status(403).json({ ok: false, removed: 0, error: "这条不是你记的，删不了" });
+  res.json({ ok: true, removed: r.removed });
+});
+
+// ---------- 自进化：反馈 → 信号 → 提案 → 人审 → 复盘 ----------
+// 👍👎 以前点了只换个高亮色，一个字节都没往外送。反馈得在干活的地方零摩擦地收，
+// 收不到就没有后面这一整条链——这是整套自进化的第一环。
+app.post("/api/feedback", (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json({ ok: true, item: evolve.recordFeedback({ ...b, user: req.user ? req.user.username : "" }) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 反馈汇总：👍👎 总数/好评率/按模型/按模式/最近的 👎 清单。管理员看全员，成员只看自己
+app.get("/api/feedback/summary", (req, res) => {
+  const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+  const user = req.user && !account.canAdmin(req.user) ? req.user.username : "";
+  res.json(evolve.feedbackSummary({ days, user }));
+});
+
+// 体检：这段时间它都败在哪儿、各多少次。不调模型，纯数数，随时能看
+app.get("/api/evolve/signals", (req, res) => {
+  try {
+    res.json(evolve.mineSignals({ days: Math.min(365, +req.query.days || evolve.CAPS.window) }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/evolve/state", (_req, res) => {
+  res.json({
+    caps: evolve.CAPS,
+    rules: evolve.activeRules(),
+    proposals: evolve.listProposals().slice(-50).reverse(),
+    scored: evolve.scoreRules(),
+    runs: evolve.listRuns(5),
+    auto: config.evolve || {},
+  });
+});
+
+// 跑一轮复盘：数信号 → 让模型提最小改动 → 过闸门 → 落盘等人审。**永远不自动生效**
+app.post("/api/evolve/review", async (req, res) => {
+  try {
+    const r = await evolve.runReview({ llm, days: +((req.body || {}).days) || undefined, promptExcerpt: (req.body || {}).prompt_excerpt || "" });
+    res.json({ ok: true, turns: r.mined.turns, signals: r.mined.signals.slice(0, 10), added: r.added, gated: r.gated, notes: r.notes, scored: r.scored });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/evolve/proposal/:id", (req, res) => {
+  try {
+    const b = req.body || {};
+    const p = evolve.decideProposal(req.params.id, b.decision, { by: req.user ? req.user.username : "", reason: b.reason });
+    res.json({ ok: true, proposal: p, rules: evolve.activeRules() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/evolve/rule/:id/retire", (req, res) => {
+  try {
+    res.json({ ok: true, ...evolve.retireRule(req.params.id, (req.body || {}).why || "人工下架"), rules: evolve.activeRules() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- 工作空间：原生文件夹选择（桌面版）与打开文件夹 ----------
+app.post("/api/pick-folder", async (_req, res) => {
+  try {
+    const { dialog } = require("electron");
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "选择工作空间文件夹" });
+    if (result.canceled || !result.filePaths.length) return res.json({ canceled: true });
+    res.json({ path: result.filePaths[0] });
+  } catch {
+    res.status(501).json({ error: "仅桌面版支持系统文件夹选择，Web 版请直接输入路径" });
+  }
+});
+/**
+ * 用系统程序打开文件/文件夹/URL（跨平台：macOS open / Windows explorer / Linux xdg-open）。
+ *
+ * 必须是 execFile，不能是 exec。exec 把整条命令交给 /bin/sh，而 target 里有用户能控制的文件名：
+ * 一个叫 `a";id>pwn.txt;"b.txt` 的文件（macOS/Linux 上完全合法，上传接口也没拦过这些字符）
+ * 就能把老写法 exec(`${opener} "${target}"`) 里的引号闭合掉，分号后面那段以服务端权限执行。
+ * execFile 不起 shell，参数原样递给程序，这类解析从根上就没有了。
+ * 回调吞掉错误是有意的：explorer 打开成功也常回非 0 退出码，而这个函数的调用方都不看结果。
+ */
+function openWithSystem(target) {
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  require("child_process").execFile(opener, [String(target)], () => {});
+}
+app.post("/api/open-workspace", (_req, res) => {
+  openWithSystem(getWorkspaceDir());
+  res.json({ ok: true });
+});
+
+// ================= 飞书：扫码授权（借本机 lark-cli 的设备码流程，larksuite/cli，MIT） =================
+// 说明一句免得误解：机器人「收消息」必须有应用的 app_id + app_secret，这是飞书的设计，扫码替代不了。
+// 扫码解决的是另一半——把「你本人」的身份授权出来，之后读日历/文档/邮件是以你的身份调的。
+const LARK_TMP = path.join(require("os").tmpdir(), "openworkbuddy-lark");
+function larkRun(args, { timeout = 60000, cwd } = {}) {
+  return new Promise((resolve) => {
+    const child = require("child_process").execFile(
+      "lark-cli", args,
+      { timeout, cwd: cwd || LARK_TMP, env: { ...process.env, PATH: shellPath() }, maxBuffer: 4 << 20 },
+      (err, stdout, stderr) => resolve({ ok: !err, code: err ? err.code : 0, stdout: stdout || "", stderr: stderr || "" }),
+    );
+    child.on("error", () => {});
+  });
+}
+function larkJson(s) { try { return JSON.parse(String(s).trim()); } catch { return null; } }
+const larkCli = require("./lark-cli");
+/** 读 lark-cli 当前绑定的应用凭证；读不到返回 null */
+async function larkConfig() {
+  return larkCli.parseConfigShow((await larkRun(["config", "show"], { timeout: 15000 })).stdout);
+}
+/**
+ * 把 lark-cli 里的凭证搬进飞书通道并重启长连接（新建和导入两条路都走这里）。
+ * 守卫：macOS 上 lark-cli 把 secret 锁在钥匙串里，`config show` 只回 `****`。
+ * 那串掩码要是写进去，用户原来能用的凭证就被顶掉了 —— 宁可不搬，也不搬一个假的。
+ * app_id 也一并不动：单搬 app_id 会让它跟旧 secret 配成一对错的，连上去只会报 10014。
+ */
+function adoptLarkCreds(cfg) {
+  const appId = (cfg && cfg.appId) || "";
+  if (!appId || !larkCli.usableSecret(cfg && cfg.appSecret)) {
+    return { ok: false, app_id: appId, error: larkCli.SECRET_LOCKED_HINT, console_url: larkCli.appConsoleUrl(appId, cfg && cfg.brand) };
+  }
+  config.im = config.im || {};
+  config.im.feishu = Object.assign(config.im.feishu || {}, { app_id: cfg.appId, app_secret: cfg.appSecret });
+  saveConfig();
+  if (imBridge) imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message));
+  return { ok: true, app_id: cfg.appId };
+}
+
+app.get("/api/feishu/lark-cli", async (_req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  const v = await larkRun(["--version"], { timeout: 15000 });
+  if (!v.ok) return res.json({ installed: false, install_cmd: "npx @larksuite/cli@latest install" });
+  const version = (v.stdout.match(/[\d.]+/) || [""])[0];
+  const cfg = await larkConfig();
+  // 只回布尔和非敏感字段，app_secret 一个字节都不出后端
+  res.json({
+    installed: true, version,
+    configured: !!(cfg && cfg.appId),
+    app_id: (cfg && cfg.appId) || "",
+    brand: (cfg && cfg.brand) || "",
+    has_secret: larkCli.usableSecret(cfg && cfg.appSecret),
+    // 读不出来跟没有是两回事：钥匙串锁着的时候得让前端说清楚，而不是装作「没配」
+    secret_locked: !!(cfg && cfg.appId && !larkCli.usableSecret(cfg.appSecret)),
+    users: (cfg && cfg.users) || "",
+  });
+});
+
+// 把 lark-cli 里已经配好的应用凭证搬进 OpenWorkBuddy 的飞书通道，省掉手动复制两串东西
+app.post("/api/feishu/lark-cli/import", async (_req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  const cfg = await larkConfig();
+  if (!cfg || !cfg.appId) {
+    return res.status(400).json({ error: "lark-cli 还没配置应用凭证，先「扫码新建应用」，或自己跑 lark-cli config init" });
+  }
+  const r = adoptLarkCreds(cfg);
+  if (!r.ok) return res.status(400).json({ error: r.error, app_id: r.app_id, secret_locked: true, console_url: r.console_url });
+  res.json({ ok: true, app_id: cfg.appId }); // secret 不回前端
+});
+
+// 反向：把 OpenWorkBuddy 里填好的凭证写进 lark-cli，这样才能开始扫码（设备码流程需要一个已绑定的应用）
+app.post("/api/feishu/lark-cli/bind", (_req, res) => {
+  const f = (config.im || {}).feishu || {};
+  if (!f.app_id || !f.app_secret) return res.status(400).json({ error: "先在上面填好 App ID / App Secret 并保存" });
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  // secret 走 stdin，不进进程参数表（ps 能看到 argv）
+  const child = require("child_process").execFile(
+    "lark-cli", ["config", "init", "--app-id", f.app_id, "--app-secret-stdin", "--brand", "feishu", "--lang", "zh"],
+    { timeout: 60000, cwd: LARK_TMP, env: { ...process.env, PATH: shellPath() } },
+    (err, stdout, stderr) => {
+      if (res.headersSent) return;
+      if (err) return res.status(400).json({ error: ((stderr || stdout || err.message) + "").slice(0, 300) });
+      res.json({ ok: true });
+    },
+  );
+  child.on("error", (e) => { if (!res.headersSent) res.status(400).json({ error: "lark-cli 没装或调不起来：" + e.message }); });
+  try { child.stdin.end(f.app_secret + "\n"); } catch {}
+});
+
+// ---- 一键新建飞书应用：全程不用手打 app_id / app_secret ----
+// 用户问过两次「不能扫码连机器人吗」。直答是：机器人在飞书这边就是一个「应用」，平台只认
+// app_id/app_secret，扫码换不来这两串。但 lark-cli 的 `config init --new` 能**替你新建一个应用**——
+// 它阻塞着打印一条验证链接，用户在浏览器里点完，凭证就落进 ~/.lark-cli/config.json。
+// 我们把链接变成二维码给用户扫，建完直接导进飞书通道 → 一个字都不用手打。
+let larkNew = null; // { url, state, error, app_id, child, startedAt }
+app.post("/api/feishu/app/create", async (_req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  if (larkNew && larkNew.child) { try { larkNew.child.kill(); } catch {} }
+  const before = await larkConfig();
+  // lark-cli 在 Agent 环境里会拒绝新建，把那两个标记摘掉；同时避免继承本进程的杂环境
+  const env = { ...process.env, PATH: shellPath() };
+  delete env.OPENCLAW_HOME; delete env.HERMES_HOME;
+  let out = "";
+  const child = require("child_process").spawn(
+    "lark-cli", ["config", "init", "--new", "--brand", "feishu", "--lang", "zh"],
+    { cwd: LARK_TMP, env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+  child.on("error", (e) => { if (larkNew) { larkNew.state = "error"; larkNew.error = larkCli.explainLarkError(e.message); } });
+  child.on("close", async () => {
+    if (!larkNew || larkNew.child !== child) return; // 已被新的一轮顶掉
+    const cfg = await larkConfig();
+    const born = cfg && cfg.appId && (!before || cfg.appId !== before.appId);
+    if (born) {
+      const r = adoptLarkCreds(cfg);
+      larkNew.app_id = cfg.appId;
+      // 应用是真建出来了，只是 secret 被钥匙串锁着 —— 这不是失败，是「还差最后一步」
+      larkNew.state = r.ok ? "ok" : "need_secret";
+      larkNew.error = r.ok ? "" : r.error;
+      larkNew.console_url = r.console_url || "";
+    } else if (larkNew.state === "pending") {
+      larkNew.state = "error"; larkNew.error = larkCli.explainLarkError(out) || "应用没建成，凭证没变化";
+    }
+  });
+  larkNew = { url: "", state: "pending", error: "", app_id: "", console_url: "", child, startedAt: Date.now() };
+
+  // 等它把验证链接打出来（一般 1~3 秒）；拿到就出二维码，拿不到就如实说
+  const url = await new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      const u = larkCli.verifyUrlOf(out);
+      if (u || child.exitCode !== null || Date.now() - t0 > 30000) { clearInterval(tick); resolve(u); }
+    }, 200);
+  });
+  if (!url) {
+    try { child.kill(); } catch {}
+    if (larkNew) larkNew.state = "error";
+    return res.status(400).json({ error: larkCli.explainLarkError(out) });
+  }
+  larkNew.url = url;
+  const png = "newapp-" + Date.now() + ".png";
+  await larkRun(["auth", "qrcode", url, "-o", png, "--size", "256"], { timeout: 20000 });
+  let qr = null;
+  try {
+    qr = "data:image/png;base64," + fs.readFileSync(path.join(LARK_TMP, png)).toString("base64");
+    fs.unlinkSync(path.join(LARK_TMP, png));
+  } catch {}
+  res.json({ ok: true, url, qr });
+});
+
+app.get("/api/feishu/app/create/status", (_req, res) => {
+  if (!larkNew) return res.json({ state: "idle" });
+  if (larkNew.state === "pending" && Date.now() - larkNew.startedAt > 15 * 60 * 1000) {
+    try { larkNew.child.kill(); } catch {}
+    larkNew.state = "error"; larkNew.error = "等了 15 分钟没完成，重新点一次";
+  }
+  // app_id 不敏感（前端本来就要显示），app_secret 一个字节都不出后端
+  res.json({ state: larkNew.state, error: larkNew.error || null, app_id: larkNew.app_id || "", url: larkNew.url || "", console_url: larkNew.console_url || "" });
+});
+
+// 设备码流程：start 拿二维码 → 用户在飞书里扫 → 后台那条 --device-code 自己会跑完 → status 变 ok
+let larkQr = null; // { device_code, url, expires_at, state, error, child }
+app.post("/api/feishu/qr/start", async (req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  if (larkQr && larkQr.child) { try { larkQr.child.kill(); } catch {} }
+  const domains = String((req.body && req.body.domains) || "im,docs,drive,calendar,task");
+  const r = await larkRun(["auth", "login", "--no-wait", "--json", "--domain", domains], { timeout: 60000 });
+  const j = larkJson(r.stdout);
+  if (!j || !j.verification_url || !j.device_code) {
+    const msg = (r.stderr || r.stdout || "").slice(0, 300);
+    return res.status(400).json({ error: /config init|app.?id/i.test(msg)
+      ? "lark-cli 还没绑定应用：先在上面填好 App ID / App Secret 并「写入 lark-cli」，或自己跑 lark-cli config init"
+      : "拿不到授权链接：" + (msg || "lark-cli 没有返回内容") });
+  }
+  // 出二维码：写进临时目录再读成 data URI，前端直接 <img>，不落工作区
+  const png = "qr-" + Date.now() + ".png";
+  await larkRun(["auth", "qrcode", j.verification_url, "-o", png, "--size", "256"], { timeout: 20000 });
+  let dataUri = null;
+  try {
+    dataUri = "data:image/png;base64," + fs.readFileSync(path.join(LARK_TMP, png)).toString("base64");
+    fs.unlinkSync(path.join(LARK_TMP, png));
+  } catch {}
+
+  // 阻塞式轮询交给后台子进程，前端只问我们自己的 status
+  const child = require("child_process").execFile(
+    "lark-cli", ["auth", "login", "--device-code", j.device_code, "--json"],
+    { timeout: (j.expires_in || 600) * 1000 + 15000, cwd: LARK_TMP, env: { ...process.env, PATH: shellPath() } },
+    (err, stdout, stderr) => {
+      if (!larkQr || larkQr.device_code !== j.device_code) return; // 已被新的一轮顶掉
+      if (err) { larkQr.state = "error"; larkQr.error = ((stderr || stdout || err.message) + "").slice(0, 300); }
+      else { larkQr.state = "ok"; larkQr.result = larkJson(stdout) || {}; }
+    },
+  );
+  child.on("error", (e) => { if (larkQr) { larkQr.state = "error"; larkQr.error = e.message; } });
+  larkQr = { device_code: j.device_code, url: j.verification_url, expires_at: Date.now() + (j.expires_in || 600) * 1000, state: "pending", child };
+  res.json({ ok: true, url: j.verification_url, qr: dataUri, expires_in: j.expires_in || 600 });
+});
+
+app.get("/api/feishu/qr/status", async (_req, res) => {
+  if (!larkQr) return res.json({ state: "idle" });
+  if (larkQr.state === "pending" && Date.now() > larkQr.expires_at) {
+    larkQr.state = "error"; larkQr.error = "二维码超时失效，重新点一次生成";
+  }
+  if (larkQr.state !== "ok") return res.json({ state: larkQr.state, error: larkQr.error || null });
+  const who = larkJson((await larkRun(["whoami"], { timeout: 15000 })).stdout) || {};
+  res.json({ state: "ok", identity: who.identity || "", app_id: who.appId || "", user: larkQr.result && larkQr.result.user_name || "" });
+});
+
+app.post("/api/feishu/qr/cancel", (_req, res) => {
+  if (larkQr && larkQr.child) { try { larkQr.child.kill(); } catch {} }
+  larkQr = null;
+  res.json({ ok: true });
+});
+
+// ---- 缓存清理：界面缓存(Electron chromium) + 各项目 .tmp 临时脚本；不动会话记录/工作区文件/登录态 ----
+const CHROMIUM_CACHE_DIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "blob_storage", "Shared Dictionary"];
+function appUserDataDir() {
+  if (process.versions.electron) {
+    try { return require("electron").app.getPath("userData"); } catch {}
+  }
+  const home = require("os").homedir();
+  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "openworkbuddy");
+  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "openworkbuddy");
+  return path.join(home, ".config", "openworkbuddy");
+}
+function dirSize(p) {
+  let n = 0;
+  try {
+    for (const e of fs.readdirSync(p)) {
+      const fp = path.join(p, e);
+      try {
+        const st = fs.lstatSync(fp); // lstat：.tmp/node_modules 软链绝不能跟进去统计/删除
+        if (st.isSymbolicLink()) continue;
+        n += st.isDirectory() ? dirSize(fp) : st.size;
+      } catch {}
+    }
+  } catch {}
+  return n;
+}
+function cacheTmpDirs() {
+  const set = new Set([path.join(getWorkspaceDir(), ".tmp")]);
+  for (const p of config.projects || []) if (p && p.dir) set.add(path.join(p.dir, ".tmp"));
+  return [...set];
+}
+function cacheStats() {
+  const ud = appUserDataDir();
+  const ui = CHROMIUM_CACHE_DIRS.reduce((n, d) => n + dirSize(path.join(ud, d)), 0);
+  const tmp = cacheTmpDirs().reduce((n, d) => n + dirSize(d), 0);
+  return { ui, tmp, total: ui + tmp };
+}
+// ---------- 数据备份与恢复 ----------
+// 打包 data/（会话/记忆/账号/用量/审计）+ config.json + schedules.json + experts.json。
+// 工作空间成果文件不进备份（可能巨大，且用户自己看得见摸得着）。备份放项目根 backups/，
+// 用系统 tar（mac/linux 自带，win10+ 也有），不为这事拖第三方压缩依赖。
+const BACKUP_DIR = dataPath("backups");
+// prefs/ 在 data/ 外面（prefs.js 直接落 DATA_DIR/prefs），得单列一项——
+// 漏了它的话搬完家宠物、快捷指令、上次挑的模型全要重设一遍
+const BACKUP_ENTRIES = ["data", "prefs", "config.json", "schedules.json", "experts.json"];
+// 包里允许出现的顶层条目。比 BACKUP_ENTRIES 多一个 skills/——自己写的技能是跟着备份走的
+// （见 userSkillEntries），所以列清单和解包的时候也得认它。
+const BACKUP_TOP = [...BACKUP_ENTRIES, "skills"];
+
+/**
+ * 自己写的技能也得跟着搬家。
+ *
+ * 随包出厂的那一堆不进包：光 ppt-master 一个就 170M，装机时 seedDataDir 本来就会把它们
+ * 铺到数据目录，新机器上一样有；每次备份都背一遍只会把包撑到没人敢点「立即备份」。
+ * 所以这儿只挑「出厂列表里没有的」——用户自己建的、或者从别处装进来的那些。
+ * 开发态（DATA_DIR === APP_DIR）下 skills/ 就是仓库里那份，git 管着，整个跳过。
+ * 代价说在明处：出厂技能被改过的话，那份改动不进包，到新机器上会是出厂那一版。
+ */
+function userSkillEntries() {
+  if (DATA_DIR === APP_DIR) return [];
+  const dirs = (d) => {
+    try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); }
+    catch { return []; }
+  };
+  const shipped = new Set(dirs(appPath("skills")));
+  return dirs(dataPath("skills")).filter((n) => !shipped.has(n)).map((n) => path.join("skills", n));
+}
+
+// 备份里有 config.json（含 API Key）和全部账号数据——只有管理员能碰。
+// 本地单人用没登录态时视同管理员（和任务归属的口径一致）
+function backupAllowed(req, res) {
+  if (!req.user || account.isAdmin(req.user)) return true;
+  res.status(403).json({ error: "只有管理员能操作备份" });
+  return false;
+}
+
+function listBackups() {
+  try {
+    return fs.readdirSync(BACKUP_DIR)
+      // wb- 那个前缀随改名退休了，但**认还得认**：老备份包就叫那个名字，
+      // 只认新名字的话，升上来这一刻磁盘上的备份会从列表里整个消失（文件还在，人以为丢了）
+      .filter((f) => /^(?:openworkbuddy|wb)-backup-[\w.-]+\.tar\.gz$/.test(f))
+      .map((f) => {
+        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        return { name: f, size: st.size, at: st.mtime.toISOString() };
+      })
+      .sort((a, b) => b.at.localeCompare(a.at));
+  } catch { return []; }
+}
+
+function makeBackup(tag) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    const name = `openworkbuddy-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
+    const entries = [...BACKUP_ENTRIES.filter((e) => fs.existsSync(dataPath(e))), ...userSkillEntries()];
+    if (!entries.length) return reject(new Error("没有可备份的数据"));
+    require("child_process").execFile(
+      "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", DATA_DIR, ...entries],
+      { timeout: 300000 },
+      (err) => {
+        if (err) return reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message));
+        // 包里整整齐齐装着 config.json（九把 Key）、账号表、积分账本、审计流水。
+        // 下载接口是管理员专属的，可这个文件本身就躺在 data/backups/ 下——tar 默认落 0644，
+        // 同机器上任何一个别的账号都能整包拿走，等于绕开了上面所有的权限判断
+        store.tighten(path.join(BACKUP_DIR, name), store.SECRET_MODE);
+        resolve(name);
+      }
+    );
+  });
+}
+
+/** 校验名字必须来自现有备份列表，杜绝路径注入 */
+function backupFile(name) {
+  const hit = listBackups().find((b) => b.name === name);
+  return hit ? path.join(BACKUP_DIR, hit.name) : null;
+}
+
+// 备份包里允许出现的顶层条目，和 BACKUP_ENTRIES 一一对应（data/ 是目录，其余三个是文件）。
+const BACKUP_SAFE_ENTRY = new RegExp(
+  "^(?:\\./)?(?:" + BACKUP_TOP.map((e) => e.replace(/\./g, "\\.") + (/\.json$/.test(e) ? "$" : "(?:/|$)")).join("|") + ")"
+);
+
+/**
+ * 把一个 .tar.gz 拆开看一遍，看不过就不收。
+ *
+ * 这是整套备份里唯一一个「外面来的文件」会经过的地方。restore 那一步是 `tar -xzf 包 -C DATA_DIR`，
+ * 在有这个接口之前，它解的每一个包都是本机自己 makeBackup() 打出来的，所以怎么解都安全；
+ * 现在包可能是从另一台机器、甚至从别人手里拿来的，那就得按不可信的东西对待：
+ *   · 绝对路径（/etc/...）和带 .. 的路径能写到 DATA_DIR 外面去；
+ *   · 软链接/硬链接更狠——先塞一个 data/x -> /Users/xxx/.ssh，后面往 data/x 里写就落到链接指的地方了；
+ *   · 顶层只认 data/ 和那三个 json，别的形状根本不是这套系统的备份，收进来也只会解出一地垃圾。
+ * 这里只看不解，验完才落盘。
+ */
+function inspectBackup(p) {
+  const execFile = require("child_process").execFile;
+  // 32MB 的清单大概装得下四十万条；再多的包不是正常备份，让它在这儿失败比解到一半失败强
+  const opt = { timeout: 300000, maxBuffer: 32 * 1024 * 1024 };
+  const run = (args) =>
+    new Promise((resolve, reject) =>
+      execFile("tar", args, opt, (err, out) => {
+        if (!err) return resolve(String(out || ""));
+        if (err.code === "ENOENT") return reject(new Error("系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）"));
+        if (err.code === "ENOBUFS") return reject(new Error("这个包里的文件太多了，不像是 OpenWorkBuddy 的备份"));
+        reject(new Error("这个文件打不开，可能不是完整的 .tar.gz：" + (err.message || "").split("\n")[0]));
+      })
+    );
+
+  return (async () => {
+    const names = (await run(["-tzf", p])).split("\n").map((x) => x.trim()).filter(Boolean);
+    if (!names.length) throw new Error("这个包是空的");
+    for (const n of names) {
+      if (n.startsWith("/")) throw new Error(`包里有绝对路径：${n}`);
+      if (n.split("/").includes("..")) throw new Error(`包里有跳出目录的路径：${n}`);
+      if (!BACKUP_SAFE_ENTRY.test(n)) throw new Error(`包里有不属于备份范围的东西：${n}`);
+    }
+    // 详细清单第一个字符就是条目类型：- 文件、d 目录、l 软链接、h 硬链接。只收前两种。
+    for (const line of (await run(["-tzvf", p])).split("\n")) {
+      const t = line.trim()[0];
+      if (!t) continue;
+      if (t !== "-" && t !== "d") throw new Error("包里有链接文件（软链接/硬链接），正常备份不会有，不收");
+    }
+    return names.length;
+  })();
+}
+
+app.get("/api/backup", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  res.json({ list: listBackups(), covers: BACKUP_ENTRIES, skills: userSkillEntries().length });
+});
+app.post("/api/backup", async (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  try {
+    const name = await makeBackup("");
+    security.audit("数据备份", `已创建备份 ${name}`, "放行");
+    res.json({ ok: true, name });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/backup/download/:name", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const p = backupFile(req.params.name);
+  if (!p) return res.status(404).json({ error: "备份不存在" });
+  res.download(p);
+});
+app.delete("/api/backup/:name", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const p = backupFile(req.params.name);
+  if (!p) return res.status(404).json({ error: "备份不存在" });
+  fs.unlinkSync(p);
+  res.json({ ok: true });
+});
+// 上传导入：换电脑、换服务器、从旧机器搬家时，把下载下来的那个包送回来。
+// 没有这一步的话「下载备份带走」就是句空话——新机器上没有任何地方能把它放进去。
+// 只有这里用 raw body：备份是二进制，走 JSON 得先 base64（凭空胖三分之一），
+// 而全局那个 express.json 的上限是给接口留的，不该为了搬家把它撑到 GB 级。
+app.post(
+  "/api/backup/upload",
+  express.raw({ type: () => true, limit: "2gb" }),
+  async (req, res) => {
+    if (!backupAllowed(req, res)) return;
+    const buf = req.body;
+    if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: "没收到文件" });
+    // gzip 的前两个字节永远是 1f 8b。先拦一道，省得把一个 .zip / 半截文件写到磁盘上再去解
+    if (buf[0] !== 0x1f || buf[1] !== 0x8b) return res.status(400).json({ error: "这不是 .tar.gz 备份文件" });
+
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    // 点开头的临时名不会被 listBackups() 的 openworkbuddy-backup-*.tar.gz 捞到，验不过的包不会在列表里露脸
+    const tmp = path.join(BACKUP_DIR, `.incoming-${Date.now()}.tar.gz`);
+    try {
+      fs.writeFileSync(tmp, buf);
+      const entries = await inspectBackup(tmp);
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+      let name = `openworkbuddy-backup-${stamp}-imported.tar.gz`;
+      for (let i = 2; fs.existsSync(path.join(BACKUP_DIR, name)); i++) name = `openworkbuddy-backup-${stamp}-imported-${i}.tar.gz`;
+      fs.renameSync(tmp, path.join(BACKUP_DIR, name));
+      security.audit("数据备份", `已导入外部备份 ${name}（${(buf.length / 1048576).toFixed(1)} MB，${entries} 个条目）`, "放行");
+      res.json({ ok: true, name, entries, size: buf.length });
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch {}
+      security.audit("数据备份", `导入备份被拒：${e.message}`, "拦截");
+      res.status(400).json({ error: e.message });
+    }
+  }
+);
+app.post("/api/backup/restore", async (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const p = backupFile(String((req.body || {}).name || ""));
+  if (!p) return res.status(404).json({ error: "备份不存在" });
+  try {
+    // 恢复前先把现状自动备一份——恢复错了还能回来，这一步绝不省
+    const safety = await makeBackup("before-restore");
+    await new Promise((resolve, reject) =>
+      // --no-same-owner：包可能是从另一台机器导进来的，里面记的 uid 跟这儿对不上，
+      // 不加这个的话以 root 跑的服务会把文件的属主改成那台机器上的号，恢复完自己反而读不了
+      require("child_process").execFile("tar", ["-xzf", p, "--no-same-owner", "-C", DATA_DIR], { timeout: 300000 },
+        (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）" : "tar 解包失败：" + err.message)) : resolve()))
+    );
+    security.audit("数据恢复", `已从 ${path.basename(p)} 恢复（恢复前现状已存为 ${safety}）`, "放行");
+    res.json({ ok: true, safety, restart_required: true, note: "已恢复到磁盘。内存里还是旧数据，重启应用后完全生效。" });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/backup/restart", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  if (!process.versions.electron) return res.status(400).json({ error: "非桌面版：请手动重启服务进程" });
+  res.json({ ok: true });
+  // 先把响应发出去再重启，不然前端只看到断线
+  setTimeout(() => {
+    try {
+      const { app: eApp } = require("electron");
+      eApp.relaunch();
+      eApp.exit(0);
+    } catch (e) { console.warn("[备份] 重启失败:", e.message); }
+  }, 600);
+});
+
+// ---------- 记忆搬家：导出 / 从其它 agent 导入 ----------
+// 导出成一份人能读的 Markdown（手写区 + 条目区），到哪都能用。
+// 导入支持两路：① 扫描本机已知的其它 agent 记忆文件（Claude Code / Codex / Claude Cowork），
+// 只读扫描白名单里的路径，绝不接受任意路径；② 粘贴任意文本（记忆不落在固定文件里的工具，
+// 从它界面里复制出来贴进来就行）。解析是确定性的，不烧 token。
+app.get("/api/memory/export", (req, res) => {
+  const u = req.user ? req.user.username : undefined;
+  const items = memory.list(u);
+  const lines = [
+    "# OpenWorkBuddy 记忆导出",
+    "",
+    `导出时间：${new Date().toLocaleString("zh-CN")}${req.user ? ` · 账号：${req.user.username}` : ""}`,
+    "",
+    "## 背景说明（手写区，全局共享）",
+    "",
+    memory.manual() || "（空）",
+    "",
+    "## 记忆条目",
+    "",
+    ...(items.length
+      ? items.map((it) => `- [${it.scope === memory.SHARED ? "共享" : it.scope}] ${it.text}`)
+      : ["（还没有条目）"]),
+    "",
+  ];
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-memory-${new Date().toISOString().slice(0, 10)}.md"`);
+  res.send(lines.join("\n"));
+});
+
+/** 本机其它 agent 的记忆文件白名单扫描（找得到才列出来，路径不存在就静默跳过） */
+function memoryImportSources() {
+  const home = require("os").homedir();
+  const out = [];
+  const push = (label, p, mode) => {
+    try {
+      const st = fs.statSync(p);
+      if (st.isFile() && st.size > 0 && st.size < 2 * 1024 * 1024) out.push({ label, path: p, size: st.size, mode });
+    } catch {}
+  };
+  push("Claude Code 全局记忆（~/.claude/CLAUDE.md）", path.join(home, ".claude", "CLAUDE.md"), "manual");
+  try {
+    for (const d of fs.readdirSync(path.join(home, ".claude", "projects"))) {
+      push(`Claude Code 项目记忆（${d.replace(/^-/, "").slice(0, 48)}）`, path.join(home, ".claude", "projects", d, "memory", "MEMORY.md"), "items");
+    }
+  } catch {}
+  push("Codex 全局记忆（~/.codex/AGENTS.md）", path.join(home, ".codex", "AGENTS.md"), "manual");
+  push("Claude Cowork 记忆（~/.cowork/CLAUDE.md）", path.join(home, ".cowork", "CLAUDE.md"), "manual");
+  push("Claude Cowork 记忆（应用目录）", path.join(home, "Library", "Application Support", "Claude Cowork", "CLAUDE.md"), "manual");
+  if (process.env.APPDATA) push("Claude Cowork 记忆（应用目录）", path.join(process.env.APPDATA, "Claude Cowork", "CLAUDE.md"), "manual");
+  return out;
+}
+
+app.get("/api/memory/import/scan", (_req, res) => res.json({ sources: memoryImportSources() }));
+
+app.post("/api/memory/import", (req, res) => {
+  const b = req.body || {};
+  let content = "", label = "粘贴的内容";
+  if (b.path) {
+    const hit = memoryImportSources().find((s) => s.path === String(b.path));
+    if (!hit) return res.status(400).json({ error: "只能导入扫描列表里的文件（防任意路径读取）" });
+    try { content = fs.readFileSync(hit.path, "utf8"); } catch (e) { return res.status(500).json({ error: "读取失败：" + e.message }); }
+    label = hit.label;
+  } else {
+    content = String(b.text || "");
+  }
+  content = content.trim();
+  if (!content) return res.status(400).json({ error: "没有可导入的内容" });
+  const mode = b.mode === "manual" ? "manual" : "items";
+  if (mode === "manual") {
+    // 成段的背景/规范：整段并入手写区，加来源标头，去重靠人眼（手写区本来就是人编辑的）
+    const cur = memory.manual();
+    if (cur.includes(content.slice(0, 200))) return res.json({ ok: true, added: 0, skipped: 1, note: "内容已在背景说明里，跳过" });
+    memory.saveManual((cur ? cur + "\n\n" : "") + `## 导入自 ${label}（${new Date().toISOString().slice(0, 10)}）\n\n` + content);
+    return res.json({ ok: true, added: 1, mode });
+  }
+  // 条目模式：逐行解析 markdown 列表（- / * / 数字.），[标题](链接) 压成 标题，跳过标题行和短行
+  const user = req.user ? req.user.username : undefined;
+  let added = 0, skipped = 0;
+  const lines = content.split(/\r?\n/).slice(0, 500);
+  for (const raw of lines) {
+    let t = raw.trim();
+    if (!t || /^#{1,6}\s/.test(t) || /^[-*_]{3,}$/.test(t)) continue; // 标题、分隔线
+    t = t.replace(/^[-*+]\s+/, "").replace(/^\d+[.)]\s+/, "");
+    t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1"); // markdown 链接压成文字
+    t = t.replace(/\*\*/g, "").trim();
+    if (t.length < 4) continue;
+    const r = memory.add({ text: t, user, shared: !!b.shared, source: "user" });
+    if (r.ok) added++; else skipped++;
+  }
+  security.audit("记忆导入", `${label}：导入 ${added} 条，跳过 ${skipped} 条`, "放行");
+  res.json({ ok: true, added, skipped, mode });
+});
+
+// 两份缓存，口径完全不同，所以一起报但分开说：上面那份是可再生的磁盘垃圾（清了只是下次慢一点），
+// gen 那份是「这一格已经买过了」的账（清了下次要重新花钱）。清理按钮只动前者。
+app.get("/api/cache", (_req, res) => res.json({ ...cacheStats(), gen: genCache.stats() }));
+app.post("/api/cache/clear", async (_req, res) => {
+  const before = cacheStats();
+  if (process.versions.electron) {
+    // 桌面版走官方 API：HTTP 缓存/代码缓存/着色器缓存；Cookie 与 localStorage（登录态、主题）不动
+    try {
+      const ses = require("electron").session.defaultSession;
+      await ses.clearCache();
+      try { await ses.clearCodeCaches({}); } catch {}
+      try { await ses.clearStorageData({ storages: ["shadercache", "cachestorage"] }); } catch {}
+    } catch (e) { console.warn("[缓存] Electron 清理失败:", e.message); }
+  }
+  const ud = appUserDataDir();
+  for (const d of CHROMIUM_CACHE_DIRS) {
+    const dir = path.join(ud, d);
+    try {
+      for (const e of fs.readdirSync(dir)) {
+        try { fs.rmSync(path.join(dir, e), { recursive: true, force: true }); } catch {} // 被占用就跳过
+      }
+    } catch {}
+  }
+  for (const dir of cacheTmpDirs()) {
+    try {
+      for (const e of fs.readdirSync(dir)) {
+        const fp = path.join(dir, e);
+        try {
+          if (fs.lstatSync(fp).isSymbolicLink()) fs.unlinkSync(fp); // node_modules 软链只解链，下次 runNode 自动重建
+          else fs.rmSync(fp, { recursive: true, force: true });
+        } catch {}
+      }
+    } catch {}
+  }
+  const after = cacheStats();
+  res.json({ ok: true, freed: Math.max(0, before.total - after.total), before: before.total, after: after.total });
+});
+
+// IM 凭证专用的合并：空字符串不覆盖已经存好的值，除非「取消连接」在 im.clear 里点了名。
+// 起因是一个能把人坑惨的组合——设置页里任何一次保存（点某张卡的「连接」也算）都会把所有卡的输入框
+// 原样回写；输入框只要因为任何原因是空的（只填了一半就点连接、渲染时值没进去、浏览器清了密码框），
+// 已经存好的 App Secret 就被一行空串抹掉，通道第二天就连不上，界面还只写「未连接」。
+// 现在的规矩：想清空必须显式说要清哪个字段（"feishu.app_secret" / 顶层直接写字段名）。
+function imAssign(target, incoming, keys, clear, prefix) {
+  for (const k of keys) {
+    if (incoming[k] === undefined) continue;
+    const v = typeof incoming[k] === "string" ? incoming[k].trim() : incoming[k];
+    if (v === "" && String(target[k] || "") !== "" && !clear.has(prefix + k)) continue; // 留着旧的
+    target[k] = v;
+  }
+}
+
+app.get("/api/skills", (_req, res) =>
+  // plugin 字段标出技能来自哪个 Agent Plugins 插件（本地技能没有这个字段），界面据此禁用编辑/删除
+  res.json((runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, description: s.description, plugin: s.plugin || "" })))
+);
+// 技能管理：getSkills 每次现读磁盘，增删改/安装即热生效，无需重启
+const skillsMgr = require("./skills");
+const actorOf = (req) => ({ user: (req && req.user && (req.user.username || req.user.name)) || "" });
+/**
+ * 被安装检查拦下的错误，要比普通 400 多带两样东西：
+ *   needs   前端据此决定画「我知道了，还是装」还是「只有平台管理员能强装」
+ *   scan    那份清单本身，好让界面把命中的文件和行号摊开，而不是只弹一句红字
+ * 普通错误（名字空、链接格式不对）照旧只有 message。
+ */
+const skillErr = (e) => (e && e.skillScan
+  ? { error: e.message, needs: e.needs, scan: { level: e.skillScan.level, hosts: e.skillScan.hosts, findings: e.skillScan.findings } }
+  : { error: e.message });
+app.get("/api/skills/:name", (req, res) => {
+  const s = skillsMgr.getSkillFull(req.params.name);
+  if (!s) return res.status(404).json({ error: "技能不存在" });
+  res.json(s);
+});
+// 增 / 改 / 删 / 装技能都归平台管理员，闸不在这儿——admin.js 的 PLATFORM_WRITE 表里
+// 有 "/api/skills" 前缀，app.use(admin.platformGuard) 排在所有路由前面，四条路一次拦完。
+// 这里不再写第二道：两张表迟早对不上，而对不上的那次一定是放行的那次。
+app.post("/api/skills", (req, res) => {
+  try {
+    const { name, description, content, original_name, confirm, force } = req.body || {};
+    if (!String(name || "").trim()) throw new Error("技能名不能为空");
+    if (!String(content || "").trim()) throw new Error("技能内容不能为空");
+    res.json(skillsMgr.saveSkill({ name, description, content, original_name, confirm: !!confirm, force: !!force, actor: actorOf(req) }));
+  } catch (e) {
+    res.status(400).json(skillErr(e));
+  }
+});
+app.delete("/api/skills/:name", (req, res) => {
+  try {
+    res.json({ ok: skillsMgr.deleteSkill(req.params.name) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post("/api/skills/install", async (req, res) => {
+  try {
+    const { url, confirm, force } = req.body || {};
+    const installed = await skillsMgr.installFromGitHub(url, { confirm: !!confirm, force: !!force, actor: actorOf(req) });
+    res.json({ ok: true, installed });
+  } catch (e) {
+    res.status(400).json(skillErr(e));
+  }
+});
+
+// ---- 默认技能：不随仓库打包，点一下从上游装 ----
+app.get("/api/skills/defaults/list", (_req, res) => res.json(skillsMgr.listDefaultSkills()));
+app.post("/api/skills/defaults/install", async (req, res) => {
+  try {
+    const { names, force } = req.body || {};
+    const results = await skillsMgr.ensureDefaultSkills({
+      only: Array.isArray(names) && names.length ? names : null,
+      force: !!force, // 「重新下载」要真的重下，不然点了没反应
+    });
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Agent Plugins 1.0.0 插件 ----
+const pluginsMgr = require("./plugins");
+app.get("/api/plugins", (_req, res) => {
+  const list = pluginsMgr.loadPlugins().map((p) => ({
+    ok: p.ok,
+    name: p.name,
+    error: p.error || "",
+    warnings: p.warnings || [],
+    version: p.manifest?.version || "",
+    description: p.manifest?.description || "",
+    license: p.manifest?.license || "",
+    author: p.manifest?.author?.name || "",
+    homepage: p.manifest?.homepage || "",
+    repository: p.manifest?.repository || "",
+    skills: (p.skills || []).map((s) => ({ name: s.name, description: s.description })),
+    mcp_servers: (p.mcpServers || []).map((s) => ({ name: s.name, transport: s.transport })),
+    bytes: p.ok ? skillsMgr.dirSize(p.dir) : 0,
+    source: pluginsMgr.pluginSource(p.name), // 有来源才给「更新」按钮
+  }));
+  res.json({ spec: pluginsMgr.SPEC_VERSION, plugins: list, mcp: mcpManager.status() });
+});
+app.post("/api/plugins/install", async (req, res) => {
+  try {
+    const info = await pluginsMgr.installPluginFromGitHub((req.body || {}).url);
+    // 插件带的 MCP 服务器要现起才能用；技能是每次任务现读磁盘的，不用管
+    const started = await startPluginMcp(info.name);
+    res.json({ ok: true, installed: info, mcp_started: started });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post("/api/plugins/:name/update", async (req, res) => {
+  try {
+    const name = req.params.name;
+    // 旧的先停干净：重装会把目录整个换掉，老进程留着还指着已经删掉的文件
+    mcpManager.stopPlugin(name);
+    const info = await pluginsMgr.updatePlugin(name);
+    const started = await startPluginMcp(info.name);
+    res.json({ ok: true, updated: info, mcp_started: started });
+  } catch (e) {
+    // 更新失败也得把停掉的服务器捞回来，不然用户点一下「更新」反而把能用的搞没了
+    try { await startPluginMcp(req.params.name); } catch { /* 插件目录可能已经没了 */ }
+    res.status(400).json({ error: e.message });
+  }
+});
+app.delete("/api/plugins/:name", (req, res) => {
+  try {
+    // 先停进程再删目录：目录一删就查不出它带过哪些服务器，子进程会一直挂到重启应用
+    const stopped = mcpManager.stopPlugin(req.params.name);
+    const ok = pluginsMgr.removePlugin(req.params.name);
+    if (!ok) return res.json({ ok: false, note: "没有这个插件" });
+    res.json({
+      ok: true,
+      mcp_stopped: stopped,
+      note: stopped.length ? `插件已卸载，同时停掉了它带的 ${stopped.length} 个 MCP 服务器` : "插件已卸载",
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/** 只起某个插件里还没连上的 MCP 服务器（装完立刻可用，不用重启） */
+async function startPluginMcp(pluginName) {
+  const want = pluginsMgr.pluginMcpServers().filter((s) => s.plugin === pluginName && !mcpManager.clients.has(s.name));
+  if (!want.length) return [];
+  await mcpManager.startAll(want);
+  return want.filter((s) => mcpManager.clients.has(s.name)).map((s) => s.name);
+}
+
+// 文件上传到工作空间（输入框 ＋ 按钮）
+// 用户传进来的文件要和这轮的产出待在一起。以前一律落工作空间根目录，于是
+// 「我传的素材」和「它做出来的成果」分了家，根目录越堆越乱（真实数据里躺了 22 个）。
+// 时序坑：用户是**先传文件再发消息**，而成果文件夹要等第一条消息才建得出名字。
+// 所以没文件夹时先落根目录并记账，等文件夹一建好，assignSessionDir 再把它们搬进去。
+app.post("/api/upload", (req, res) => {
+  try {
+    const { name, data_b64, session } = req.body || {};
+    if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
+    // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
+    // 而这些名字会被拼进链接、传给系统程序、写进日志
+    const base = path.basename(String(name)).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    if (!base || base === "." || base === "..") return res.status(400).json({ error: "文件名不合法" });
+    const sess = session ? getSession(String(session)) : null;
+    // 归属必须查：这个接口是拿请求体里的 sessionId 直接取会话的，不查就等于
+    // 「知道一个会话 id 就能往别人的成果文件夹里写文件」。会话 id 会出现在链接和截图里，不是秘密。
+    if (sess && !sessionAllowed(req.user, sess)) return res.status(403).json({ error: "这条对话不属于你" });
+    const rel = sess && sess.dir ? path.join(sess.dir, base) : base;
+    const p = safePath(rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, Buffer.from(data_b64, "base64"));
+    // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
+    // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
+    noteUserInput(rel);
+    if (sess && !sess.dir) {
+      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
+    }
+    // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
+    // 只回 name 的话，落进会话成果文件夹的文件在工作目录根上根本找不到。
+    res.json({ ok: true, name: base, path: rel });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+// 专家管理：增删改就地改 experts 数组（runtime 闭包同一引用，热生效）+ 持久化 experts.json
+// 一个专家 = 头像 + 名字 + 花名 + 说明 + 绑定技能 + 默认提示词 的智能体，用户可自建。
+const EXPERT_FIELDS = ["name", "alias", "avatar", "category", "tags", "description", "skills", "system"];
+/** 专家/专家团的头像存的是 sprite 图标名（"chart-column" 这种，最长十几个字符），
+ *  老配置里也可能还是 emoji 字符。切太短会把图标名削成半截，前端查不到就当文字显示了。 */
+const cardAvatar = (v, fallback) => String(v == null ? "" : v).trim().slice(0, 32) || fallback;
+function publicExpert(e) {
+  return {
+    name: e.name,
+    alias: e.alias || "",
+    avatar: e.avatar || "user",
+    category: e.category || "未分类",
+    tags: Array.isArray(e.tags) ? e.tags : [],
+    description: e.description || "",
+    skills: Array.isArray(e.skills) ? e.skills : [],
+    system: e.system || "",
+    builtin: !!e.builtin,
+  };
+}
+app.get("/api/experts", (_req, res) => res.json(experts.map(publicExpert)));
+app.post("/api/experts", (req, res) => {
+  const b = req.body || {};
+  const n = String(b.name || "").trim();
+  if (!n || !String(b.system || "").trim()) return res.status(400).json({ error: "专家名称与角色设定（提示词）不能为空" });
+  if (n === "delegate_to_expert" || n.length > 20) return res.status(400).json({ error: "专家名称不合法（≤20 字）" });
+  const arr = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 12) : []);
+  const idx = experts.findIndex((e) => e.name === (b.original_name || n));
+  // 改名时要保证新名字没被别人占着
+  if (experts.some((e, i) => e.name === n && i !== idx)) return res.status(400).json({ error: "同名专家已存在" });
+  const entry = {
+    name: n,
+    alias: String(b.alias || "").trim().slice(0, 12),
+    avatar: cardAvatar(b.avatar, "user"),
+    category: String(b.category || "未分类").trim().slice(0, 12) || "未分类",
+    tags: arr(b.tags),
+    description: String(b.description || "").trim(),
+    skills: arr(b.skills),
+    system: String(b.system).trim(),
+  };
+  if (idx >= 0) {
+    entry.builtin = !!experts[idx].builtin; // 内置标记只由 experts.json 决定，接口改不动
+    experts.splice(idx, 1, entry);
+    // 改了名字的话，团队成员名单要跟着改，否则团里挂着一个不存在的人
+    if (b.original_name && b.original_name !== n) {
+      for (const t of expertTeams) t.members = t.members.map((m) => (m === b.original_name ? n : m));
+    }
+  } else experts.push(entry);
+  saveExperts();
+  res.json({ ok: true, expert: publicExpert(entry) });
+});
+app.delete("/api/experts/:name", (req, res) => {
+  const idx = experts.findIndex((e) => e.name === req.params.name);
+  if (idx < 0) return res.status(404).json({ error: "专家不存在" });
+  const [gone] = experts.splice(idx, 1);
+  for (const t of expertTeams) t.members = t.members.filter((m) => m !== gone.name); // 顺手把团里的他摘掉
+  saveExperts();
+  res.json({ ok: true });
+});
+
+// 专家团 = 智能体团队：把若干专家编成一队，一次委派整队按顺序接力完成
+app.get("/api/expert-teams", (_req, res) =>
+  res.json(
+    expertTeams.map((t) => ({
+      name: t.name,
+      avatar: t.avatar || "users",
+      description: t.description || "",
+      members: (t.members || []).filter((m) => experts.some((e) => e.name === m)),
+    }))
+  )
+);
+app.post("/api/expert-teams", (req, res) => {
+  const b = req.body || {};
+  const n = String(b.name || "").trim();
+  if (!n || n.length > 20) return res.status(400).json({ error: "团队名称不合法（1~20 字）" });
+  const members = (Array.isArray(b.members) ? b.members : [])
+    .map((m) => String(m).trim())
+    .filter((m) => experts.some((e) => e.name === m));
+  if (members.length < 2) return res.status(400).json({ error: "一个团至少要有 2 位专家（成员必须是已存在的专家）" });
+  const idx = expertTeams.findIndex((t) => t.name === (b.original_name || n));
+  if (expertTeams.some((t, i) => t.name === n && i !== idx)) return res.status(400).json({ error: "同名专家团已存在" });
+  const entry = {
+    name: n,
+    avatar: cardAvatar(b.avatar, "users"),
+    description: String(b.description || "").trim(),
+    members: [...new Set(members)].slice(0, 8), // 接力式执行，人多了会把时间预算耗光
+  };
+  if (idx >= 0) expertTeams.splice(idx, 1, entry);
+  else expertTeams.push(entry);
+  saveExperts();
+  res.json({ ok: true, team: entry });
+});
+app.delete("/api/expert-teams/:name", (req, res) => {
+  const idx = expertTeams.findIndex((t) => t.name === req.params.name);
+  if (idx < 0) return res.status(404).json({ error: "专家团不存在" });
+  expertTeams.splice(idx, 1);
+  saveExperts();
+  res.json({ ok: true });
+});
+
+// ===== 桌面宠物：自定义形象（自己或朋友的照片）=====
+// 存进 data/ 而不是 public/：一来不污染仓库（data/ 已 gitignore），二来跟着备份一起走。
+const PET_PHOTO_EXT = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+function petPhotoPath() {
+  for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
+    const p = dataPath("data", "pet-avatar" + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  return "";
+}
+function clearPetPhoto() {
+  for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
+    try { fs.unlinkSync(dataPath("data", "pet-avatar" + ext)); } catch {}
+  }
+}
+/**
+ * 换宠物形象。
+ *
+ * 照片是这台机器上的一张图（data/pet-avatar.*）——宠物窗口跑在 Electron 主进程里，那儿没有
+ * 「当前登录的是谁」这个概念，所以照片本身不分账号。分账号的是**开关**：谁把宠物打开了、
+ * 用的哪种形象。以前这里无条件写 config.pet，多人服务器上一个成员传张图，
+ * 平台管理员桌面上那只就跟着换了形象——这才是真正会串台的那一半。
+ */
+app.post("/api/pet/avatar", (req, res) => {
+  try {
+    const m = /^data:(image\/(?:png|jpeg|webp|gif));base64,([\s\S]+)$/.exec(String((req.body || {}).data_url || ""));
+    if (!m) return res.status(400).json({ error: "只收 png / jpg / webp / gif 图片" });
+    const buf = Buffer.from(m[2], "base64");
+    // 前端已经压到 320px 见方再传，这里只兜底：3MB 以上不像压过，多半是直接甩了张原图
+    if (!buf.length || buf.length > 3 * 1024 * 1024) return res.status(400).json({ error: "图片太大（压缩后应小于 3MB）" });
+    fs.mkdirSync(dataPath("data"), { recursive: true });
+    clearPetPhoto(); // 换形象先清旧的，免得两个扩展名同时躺着分不清用哪个
+    fs.writeFileSync(dataPath("data", "pet-avatar" + PET_PHOTO_EXT[m[1]]), buf);
+    // 特地传了张照片 = 想要它出现
+    if (ownPrefs(req)) {
+      prefs.write(req.user, { pet: { character: "photo", enabled: true } });
+      return res.json({ ok: true, size: buf.length });
+    }
+    config.pet = { ...(config.pet || {}), character: "photo", enabled: true };
+    saveConfig();
+    if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+    res.json({ ok: true, size: buf.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/pet/avatar", (req, res) => {
+  clearPetPhoto();
+  if (ownPrefs(req)) {
+    prefs.write(req.user, { pet: { character: "cat" } });
+    return res.json({ ok: true });
+  }
+  config.pet = { ...(config.pet || {}), character: "cat" };
+  saveConfig();
+  if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+  res.json({ ok: true });
+});
+
+/**
+ * 桌面宠物工具的落地实现（tools.js 的 desktop_pet 通过 global.__openworkbuddyPetTool 调进来）。
+ *
+ * 为什么放在 server.js：改宠物要同时动三样东西——config.json（持久化）、data/pet-avatar.png（形象）、
+ * 还有 Electron 主进程里那个活着的窗口。这三样的把手都在这个文件里，tools.js 只管把参数递过来。
+ * 纯 node 模式没有桌面窗口，整个工具会如实报错而不是假装成功。
+ */
+global.__openworkbuddyPetTool = {
+  async run(input, baseDir) {
+    const P = global.__openworkbuddyPet;
+    const action = String((input || {}).action || "create").toLowerCase();
+    if (!P) {
+      return {
+        content: "桌面宠物只在桌面版里有（用 `npm run app` 启动的那种）。当前跑的是纯服务端模式（npm start），没有桌面窗口可以挂宠物。请如实告诉用户这一点，别假装做好了。",
+        isError: true,
+      };
+    }
+    const cur = config.pet || {};
+    const nowInfo = () => {
+      const has = !!petPhotoPath();
+      const look = cur.character === "sprite" && cur.sprite ? `像素宠物「${cur.sprite}」`
+        : has && cur.character === "photo" ? "用户上传的照片" : "内置小猫";
+      return `当前状态：宠物${cur.enabled === true ? "已显示" : "未显示"}，形象=${look}，大小=${Math.round((cur.scale || pet.DEFAULT_SCALE) * 100)}%。`;
+    };
+
+    if (action === "status") return { content: nowInfo(), isError: false };
+
+    if (action === "hide") {
+      config.pet = { ...cur, enabled: false };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: false }); } catch {}
+      return { content: "桌面宠物已收起。用户想让它回来的话，再叫一声就行（或者去 设置 → 人设 里打开）。", isError: false };
+    }
+
+    if (action === "show") {
+      config.pet = { ...cur, enabled: true };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
+      return { content: "桌面宠物已经站到桌面右下角了。" + nowInfo(), isError: false };
+    }
+
+    if (action === "remove") {
+      clearPetPhoto();
+      config.pet = { ...cur, enabled: false, character: "cat" };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: false }); } catch {}
+      return { content: "宠物已经撤掉，上传的照片也从本机删干净了。", isError: false };
+    }
+
+    // ---- sprite：列出 / 换上本机的 Codex / Petdex 像素宠物 ----
+    // 只读目录、只改配置，不生成任何图——「自己孵一只」是要烧生图额度的事，不放在这条路上。
+    if (action === "sprite") {
+      const all = petSprites.scanPets();
+      const good = all.filter((x) => x.ok);
+      const want = String((input || {}).sprite_id || "").trim();
+      const listing = all.length
+        ? all.map((x) => `· ${x.id}（${x.displayName}，来自 ${x.source}）${x.ok ? "" : " —— 用不了：" + x.why}`).join("\n")
+        : "";
+      if (!want) {
+        if (!good.length) {
+          return {
+            content: "本机一只像素宠物都没扫到。" + (listing ? "扫到但都用不了：\n" + listing + "\n" : "") +
+              "告诉用户：在终端跑 `npx petdex install <名字>` 装一只（画廊 petdex.dev），或者把宠物文件夹（含 pet.json + spritesheet.webp）丢进 data/pets/，装完再叫你换。这一步得他自己去终端跑，你别替他执行。",
+            isError: false,
+          };
+        }
+        return { content: "本机的像素宠物：\n" + listing + "\n\n问用户想用哪只，拿到 id 后带 sprite_id 再调一次。", isError: false };
+      }
+      const pick = good.find((x) => x.id === want);
+      if (!pick) return { content: `没有叫「${want}」的可用像素宠物。本机现有：\n${listing || "（一只都没有）"}`, isError: true };
+      config.pet = { ...cur, enabled: true, character: "sprite", sprite: pick.id };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
+      return { content: `已经换成「${pick.displayName}」（${pick.cols}×${pick.rows} 帧图集，来自 ${pick.source}），宠物也一并显示出来了。它会跟着状态切动作：干活跑、要问问题跳、完成挥手、出错摊手。`, isError: false };
+    }
+
+    if (action !== "create") return { content: `不认识的 action「${action}」，只支持 create / show / hide / remove / status / sprite。`, isError: true };
+
+    // ---- create：把一张图做成宠物形象 ----
+    const raw = String((input || {}).image || "").trim();
+    if (!raw) {
+      return {
+        content: "做宠物得先有张图。请让用户在输入框里上传一张照片（人像、宠物照、表情包都行），拿到文件名后把它作为 image 参数再调一次。",
+        isError: true,
+      };
+    }
+    // 用户上传的图落在工作空间根目录，agent 自己产出的图在本次对话的成果子目录里，两处都找
+    const wsRoot = getWorkspaceDir();
+    let abs = "";
+    for (const cand of [baseDir ? path.resolve(baseDir, raw) : "", path.resolve(wsRoot, raw), path.resolve(wsRoot, path.basename(raw))]) {
+      if (!cand) continue;
+      const rel = path.relative(wsRoot, cand);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) continue; // 越出工作空间的一律不认
+      if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { abs = cand; break; }
+    }
+    if (!abs) return { content: `工作空间里找不到「${raw}」。先用 list_files 看看用户上传的图到底叫什么名字。`, isError: true };
+    if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(abs)) return { content: `「${path.basename(abs)}」看着不是图片。支持 png / jpg / webp / gif / bmp。`, isError: true };
+
+    let buf, note = "";
+    try {
+      // 用 Electron 自带的 nativeImage 裁切缩放，不引任何图像库。GIF 只取第一帧（宠物本来就自带动效，
+      // 再叠一层 GIF 动画会打架），这点必须跟用户说清楚，不能让他以为动图没生效是 bug。
+      const { nativeImage } = require("electron");
+      let img = nativeImage.createFromPath(abs);
+      if (img.isEmpty()) return { content: `「${path.basename(abs)}」解码失败，可能是文件损坏或者根本不是图片。`, isError: true };
+      const sz = img.getSize();
+      const side = Math.min(sz.width, sz.height);
+      if (sz.width !== sz.height) {
+        img = img.crop({ x: Math.round((sz.width - side) / 2), y: Math.round((sz.height - side) / 2), width: side, height: side });
+        note += `原图 ${sz.width}×${sz.height} 不是正方形，已按中心裁成方图；`;
+      }
+      img = img.resize({ width: 320, height: 320, quality: "best" });
+      if (/\.gif$/i.test(abs)) note += "GIF 只取了第一帧（宠物自己带呼吸/跳跃动效）；";
+      buf = img.toPNG();
+      if (!buf || !buf.length) throw new Error("编码 PNG 失败");
+    } catch (e) {
+      return { content: "处理图片失败：" + e.message, isError: true };
+    }
+
+    fs.mkdirSync(dataPath("data"), { recursive: true });
+    clearPetPhoto();
+    fs.writeFileSync(dataPath("data", "pet-avatar.png"), buf);
+    const scale = Math.max(0.6, Math.min(2, Number((input || {}).scale) || Number(cur.scale) || pet.DEFAULT_SCALE));
+    config.pet = { ...cur, enabled: true, character: "photo", scale };
+    saveConfig();
+    try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
+    try { P.setState("done", "新形象上岗"); } catch {}
+    return {
+      content: `已经用「${path.basename(abs)}」做好桌面宠物，它现在站在桌面右下角。${note}\n` +
+        "它会实时显示你在干什么：干活时头顶转圈、有问题要问时跳起来并弹系统通知、任务完成撒花。\n" +
+        "点它一下开关主窗口，拖动换位置，右键有菜单（回到右下角 / 免打扰 / 收起）。\n" +
+        "照片只存在用户本机的 data/ 目录，没有上传到任何服务器。",
+      isError: false,
+    };
+  },
+};
+// 在访达/资源管理器里定位到这个文件（不是打开文件本身，是打开它所在的文件夹并选中它）
+// 清掉根目录里那些「跟成果文件夹里某个文件逐字节相同」的副本。
+// 敢做这个动作只因为两条：一、判定标准是**哈希相同**，不是名字像，原件确确实实还在；
+// 二、**搬进 .trash 而不是删**，捞得回来。少一条都不该有这个按钮。
+// 名字像但内容不同的、根目录独有的，一个都不碰——那些是用户自己的东西。
+// 空的成果文件夹 = 名字是 任务_ 开头、除了 .DS_Store 一个条目都没有、且不是刚刚才建的。
+// 最后那条是唯一的危险点：一个正在跑的回合可能刚建好目录、文件还没落盘，
+// 这时候把它搬走就等于把这一轮的产出打断。10 分钟的静默期换掉这个风险，很值。
+function listEmptyTaskDirs({ quietMs = 600000, now = Date.now() } = {}) {
+  const ws = getWorkspaceDir();
+  if (path.resolve(ws) !== dataPath("workspace")) return []; // 用户自选目录不分配成果文件夹，也就没这回事
+  let names = [];
+  try { names = fs.readdirSync(ws); } catch { return []; }
+  return names.filter((n) => {
+    if (!n.startsWith("任务_")) return false;
+    try {
+      const st = fs.statSync(path.join(ws, n));
+      if (!st.isDirectory() || now - st.mtimeMs < quietMs) return false;
+      return !fs.readdirSync(path.join(ws, n)).some((e) => e !== ".DS_Store");
+    } catch { return false; }
+  });
+}
+
+app.post("/api/files/tidy", (_req, res) => {
+  try {
+    const dupes = outputFiles().filter((f) => f.dup_of && !f.name.includes("/"));
+    // 空的成果文件夹：纯聊天也会建目录，真实数据里 24 个文件夹有 6 个一个文件都没有。
+    // 现在回合收尾会自己撤掉，但历史遗留的那些得有人收——顺手挂在这个按钮上，不再单独做一次性脚本。
+    const emptyDirs = listEmptyTaskDirs();
+    if (!dupes.length && !emptyDirs.length) return res.json({ ok: true, moved: 0, files: [] });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+    const trash = safePath(path.join(".trash", stamp));
+    fs.mkdirSync(trash, { recursive: true });
+    const moved = [];
+    for (const f of dupes) {
+      try {
+        // 搬之前再验一次原件真的在：列表是几毫秒前拍的快照，这中间原件可能已经没了，
+        // 那就不是"清掉多余副本"而是"把唯一一份扔掉"了
+        const origin = safePath(f.dup_of);
+        if (!fs.existsSync(origin) || !fs.statSync(origin).isFile()) continue;
+        fs.renameSync(safePath(f.name), path.join(trash, f.name));
+        moved.push(f.name);
+      } catch {}
+    }
+    const movedDirs = [];
+    for (const d of emptyDirs) {
+      // 搬之前再确认一次还是空的：列表是几毫秒前拍的快照，这中间可能刚好有一轮往里写了东西
+      try {
+        const p = safePath(d);
+        if (fs.readdirSync(p).some((n) => n !== ".DS_Store")) continue;
+        fs.renameSync(p, path.join(trash, d));
+        movedDirs.push(d);
+      } catch {}
+    }
+    security.audit("清理重复副本", [...moved, ...movedDirs.map((d) => d + "/")].join("、") || "（没有可清理的）", "放行");
+    res.json({ ok: true, moved: moved.length, files: moved, dirs: movedDirs, trash: path.join(".trash", stamp) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+/**
+ * 清中间物：先看清单，再决定删不删。
+ *
+ * 跟隔壁 /api/files/tidy 的分工：tidy 管的是「同一份东西存了两遍」，证据是逐字节相同，
+ * 所以它敢自己动手，只把副本挪进 .trash。这里管的是「过程留下的脚手架」，判断靠的是
+ * 规则（成片出来了 → 逐帧图可以扔），规则会看走眼，所以这里**只出清单不动手**，
+ * 删哪些由用户勾。而且删是真删——用户要的是腾出空间，挪进 .trash 照样占着地方。
+ *
+ * GET  给清单：?task= 只看一个任务，?since= 只看这个时刻之后动过的
+ * POST 按清单删：body.paths 里的每一条都得在**这一刻重新算出来的**清单里，否则不删
+ */
+app.get("/api/files/sweep", (req, res) => {
+  try {
+    const q = req.query || {};
+    res.json(sweep.plan(getWorkspaceDir(), {
+      task: q.task ? String(q.task) : undefined,
+      since: q.since ? Number(q.since) : undefined,
+      // 「整理文件夹」面板要多一份「地方花在哪了」。收尾那一句不要——
+      // 它只问这一轮刚造的东西，翻出三周前的旧任务只会喧宾夺主
+      usage: q.usage ? 1 : 0,
+    }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.post("/api/files/sweep", (req, res) => {
+  try {
+    const b = req.body || {};
+    const paths = Array.isArray(b.paths) ? b.paths.slice(0, 5000) : [];
+    if (!paths.length) return res.status(400).json({ error: "没说要清哪些" });
+    const r = sweep.apply(getWorkspaceDir(), paths, {
+      task: b.task ? String(b.task) : undefined,
+      since: b.since ? Number(b.since) : undefined,
+    });
+    // 审计要记**删了什么**，不是「删了几个」：事后有人问「我那个文件呢」，得查得出来
+    security.audit("清理中间文件", r.removed.join("、") || "（清单对不上，一个都没删）", "放行");
+    res.json({ ok: true, ...r, files: outputFiles() });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/**
+ * 「在访达里显示」和「复制这个文件」两条路共用的定位：文件可能在工作区，也可能在资料库。
+ * 资料库那一份走 libPath（它自己那三道校验 + safePathIn 复核），工作区走 rootedPath，
+ * 两边都是越界就抛——别为了少写一行把资料库的路径塞进工作区的根里算。
+ */
+function hostFileOf(req) {
+  const b = req.body || {};
+  const name = String(b.name || "");
+  return String(b.src || "") === "lib" ? libPath(libRel(name)) : rootedPath(req, name); // root 提示 rootedPath 自己从 body 里取
+}
+
+app.post("/api/files/reveal", (req, res) => {
+  try {
+    const p = hostFileOf(req); // 越界一律抛错，跟下载走同一道门
+    if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
+    let revealed = false;
+    try {
+      const { shell } = require("electron");
+      if (shell && shell.showItemInFolder) { shell.showItemInFolder(p); revealed = true; }
+    } catch {}
+    if (!revealed) openWithSystem(path.dirname(p)); // 纯 node 模式：退而求其次，打开所在文件夹
+    res.json({ ok: true, revealed });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/**
+ * 把文件本身放进剪贴板，用户回头直接 Cmd+V 粘到微信、邮件、访达里。
+ * 在这之前只能先下载一份，再自己去下载目录里翻。
+ *
+ * 优先用 Electron 的 clipboard（桌面版里最稳，不用起子进程）；纯 node 部署退回系统命令。
+ * 两条路都不通时兜底把**绝对路径**当文字放进去，并且如实告诉前端放进去的是哪一种——
+ * 「我以为复制了文件，粘出来是一行字」比直接说清楚更糟。
+ */
+app.post("/api/files/copy", (req, res) => {
+  try {
+    const p = hostFileOf(req);
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
+    try {
+      const { clipboard } = require("electron");
+      // macOS 的文件剪贴板口味叫 NSFilenamesPboardType，内容是一段 plist；Windows/Linux 上
+      // Electron 没给对应的写法，所以那两边照旧走命令行那条。
+      if (clipboard && process.platform === "darwin" && clipboard.writeBuffer) {
+        const plist = '<?xml version="1.0" encoding="UTF-8"?>\n'
+          + '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+          + '<plist version="1.0"><array><string>' + p.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</string></array></plist>";
+        clipboard.writeBuffer("NSFilenamesPboardType", Buffer.from(plist, "utf8"));
+        return res.json({ ok: true, kind: "file", name: path.basename(p) });
+      }
+    } catch {}
+    const r = require("./cli-attach.js").writeClipboard({ file: p });
+    if (!r.ok) return res.status(400).json({ error: r.why || "剪贴板写不进去" });
+    res.json({ ok: true, kind: r.kind, name: path.basename(p) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/** 通配路由里取出工作区相对路径。Express 已经解码过，%2F 老写法和真斜杠新写法都落这里 */
+function relOf(req) { return String(req.params[0] || ""); }
+// Chromium 对 .wav / .mov 这类的容忍度取决于上游 MIME：标成 application/octet-stream 之后
+// <audio>/<video> 只会静默不播。资料库和工作区两条路都从这儿取，别各写各的。
+function mediaMime(p) {
+  return {
+    ".wav": "audio/wav", ".wave": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".ogv": "video/ogg", ".mov": "video/quicktime",
+  }[path.extname(String(p || "")).toLowerCase()] || "";
+}
+
+/**
+ * 成果文件的跨工作目录解析。
+ *
+ * 问题：会话里记的成果路径是**相对**的（任务_0905_xx/报告.html），safePath 永远拿
+ * 「此刻的」工作目录去拼。用户在输入框里切一次文件夹、或者切一次项目，再回到之前那条对话，
+ * 满屏的产出卡片点下去全是「文件不存在」——东西还在旧目录里躺着，是坐标系被换掉了。
+ *
+ * 三条线索按可靠度排，全都只在**用户自己配过的目录**里找，不会因为带了个 root 参数
+ * 就能读到工作区以外的任何地方：
+ *   ① ?root=<8位指纹>：files 事件本来就带着它、也跟着会话存了盘，前端照原样回传；
+ *   ② ?sid=<会话 id>：新会话都记了 sess.root，比指纹更直接（也查归属）；
+ *   ③ 兜底扫一遍已知的根：老会话盘上什么线索都没有，只能按「哪个根下真有这个文件」认，
+ *      多个根都有就取改动时间最新的那个。这条是专门救用户手上那些已经存在的旧对话的。
+ * 找不到就退回当前根的路径，让调用方照常报 404。
+ */
+// 用过的工作目录根。反查只在这份名单里找，不会因为链接上带了 root 参数就能读到名单外的任何地方。
+// 开机先把上次记下的读回来：这个 Set 是进程内的，空着启动再写回去，等于每次重启都把历史抹一遍
+const seenRoots = new Set((config.workspace_roots || []).filter((d) => d && typeof d === "string").map((d) => path.resolve(d)));
+const SEEN_ROOTS_MAX = 40; // 记这么多个目录够用了；再多就是很久以前的目录，留着也只是拖慢反查
+/** 记下一个用过的根，并落进 config，免得重启后「这条老对话属于哪个目录」这条线索又断了 */
+function rememberRoot(dir) {
+  if (!dir || typeof dir !== "string") return;
+  let abs;
+  try { abs = path.resolve(dir); } catch { return; }
+  if (seenRoots.has(abs)) return;
+  seenRoots.add(abs);
+  while (seenRoots.size > SEEN_ROOTS_MAX) seenRoots.delete(seenRoots.values().next().value); // Set 按插入序，先进先出
+  config.workspace_roots = [...seenRoots];
+  saveConfig();
+}
+function knownRoots() {
+  const set = new Set();
+  const add = (d) => { if (d && typeof d === "string") { set.add(d); try { set.add(path.resolve(d)); } catch {} } };
+  add(getWorkspaceDir());
+  add(getDefaultWorkspaceDir());
+  add(config.workspace_dir);
+  for (const p of config.projects || []) add(p && p.dir);
+  for (const d of config.workspace_roots || []) add(d);
+  for (const d of seenRoots) add(d);
+  for (const s of sessions.values()) add(s && s.root);
+  return [...set];
+}
+function rootFromKey(key) {
+  const k = String(key || "");
+  if (!/^[0-9a-f]{6,40}$/.test(k)) return "";
+  for (const d of knownRoots()) if (workspaceKeyOf(d) === k) return d;
+  return "";
+}
+/**
+ * 租户的成果根。**只有多租户服务器上才有值**，个人版和默认组织一律空串。
+ *
+ * 干什么用：下面 rootedPath 找不到文件时会去 knownRoots() 里挨个试，而那张表是**整台机器**的
+ * （config.projects、所有还开着的会话的 root、历史上见过的根）。多租户服务器上这就是一条缝——
+ * B 公司的报告叫「季度报告.html」，A 公司的人照着这个相对路径请求一次，兜底扫描就把它翻出来了。
+ * 有租户根的时候，候选根一律只认这个根底下的。
+ *
+ * 为什么不拿「当前工作目录 ≠ 默认工作目录」当判据：个人版把工作目录换到别处是常事，
+ * 那样会把 rootedPath 存在的全部意义（旧会话里的相对路径还指得回老根）一并掐掉。
+ * 按 req.user 的组织算，只有真的分了租户才收紧，个人版一字不差。
+ */
+function tenantRootOf(req) {
+  try {
+    const o = org.getOrg(org.orgIdOf(req && req.user));
+    if (!o || o.id === org.DEFAULT_ORG) return "";
+    return path.resolve(org.rootDirOf(o, getDefaultWorkspaceDir()));
+  } catch { return ""; }
+}
+
+/** 只读接口用：把请求里的相对路径解析成真实绝对路径，必要时换到它原本所属的根 */
+function rootedPath(req, rel) {
+  const here = safePath(rel); // 先按当前根算，顺带做越界检查（越界直接抛，下面一律不碰）
+  if (fs.existsSync(here)) return here;
+  const tenant = tenantRootOf(req);
+  const inTenant = (d) => {
+    if (!tenant) return true;
+    const p = path.resolve(String(d || ""));
+    return p === tenant || p.startsWith(tenant + path.sep);
+  };
+  const tryRoot = (d) => {
+    if (!d || !inTenant(d)) return "";
+    try { const p = safePathIn(d, rel); return fs.existsSync(p) ? p : ""; } catch { return ""; }
+  };
+  const hint = (k) => String((req.query || {})[k] || (req.body || {})[k] || ""); // GET 走 query，reveal/open 那两个 POST 走 body
+  const hinted = tryRoot(rootFromKey(hint("root")));
+  if (hinted) return hinted;
+  const sid = hint("sid");
+  if (sid) {
+    const s = getSession(sid);
+    // 归属照查：会话 id 出现在链接和截图里，不是秘密
+    if (s && sessionAllowed(req.user, s)) { const p = tryRoot(s.root); if (p) return p; }
+  }
+  const hits = [];
+  for (const d of knownRoots()) { const p = tryRoot(d); if (p) hits.push(p); }
+  if (!hits.length) return here;
+  if (hits.length === 1) return hits[0];
+  return hits.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+}
+
+app.get("/api/files/download/*", (req, res) => {
+  try {
+    const p = rootedPath(req, relOf(req));
+    if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
+    res.download(p);
+  } catch (e) {
+    res.status(400).send(e.message);
+  }
+});
+
+/**
+ * 「这几个文件还在不在」——只回在与不在，不回内容。
+ *
+ * 为什么要这么一个口子：产出列表（/api/files）是**有上限的**——最深 3 层、最多 500 条，
+ * 超了 filesScope() 会把 full 置成 false，意思是「这份清单不完整，别拿它给谁盖章」。
+ * 无限画布当初没接这条规矩，直接拿「不在这份列表里」当成「文件被删了」，于是：
+ *   · 工作目录攒过 500 个文件之后，老素材集体被判死刑；
+ *   · 落在第 4 层子目录里的素材（对话成果/某会话/某轮/图.png）从来就没进过列表；
+ *   · /api/files 请求本身失败时列表是空的，满画布的节点一起显示「素材已从工作区移除」。
+ * 三种情况下文件都好端端在盘上，画布却红口白牙说它没了。
+ *
+ * 所以判「没了」这件事交给盘，不交给那份截断过的清单：解析走 rootedPath（跟预览/下载同一条），
+ * 换过工作目录、素材在别的会话根下也认得回来。
+ */
+app.post("/api/files/exists", (req, res) => {
+  const list = Array.isArray((req.body || {}).paths) ? (req.body || {}).paths : [];
+  const out = {};
+  // 200 是一屏画布撑死的量级；再多也不该一次问完，何况这口子每问一条就是一次 existsSync
+  for (const raw of list.slice(0, 200)) {
+    const rel = String(raw || "").trim();
+    if (!rel) continue;
+    // 解析不出来（越界、根本不是相对路径）不等于「文件没了」——那是另一回事，
+    // 一律按「不敢说」处理返回 true，宁可不显示那条横幅，也不冤枉一个还在盘上的文件
+    try { out[rel] = fs.existsSync(rootedPath(req, rel)); } catch { out[rel] = true; }
+  }
+  res.json({ exists: out });
+});
+
+/**
+ * 文件接口的缓存头。对话里的图、右侧面板、画布三处看的必须是同一份字节。
+ *
+ * 链接带了 ?v=<mtime ISO> 且跟盘上这一版对得上 → 内容跟着版本号走，让浏览器留七天（private）；
+ * 没带 v、或者带的是旧版本号 → no-cache：每次都回来核对一次 ETag / Last-Modified（send 自带），
+ * 没变就 304 不传正文，变了当场换新。老链接（历史回放、画布节点、Markdown 内嵌图）就不会
+ * 把过期的图一直摆着。
+ * 拆成纯函数是为了能测：给它一个 req 和一条路径，它只回一个字符串。
+ */
+function viewCacheHeader(req, p) {
+  let st = null;
+  try { st = fs.statSync(p); } catch { return "private, no-cache"; }
+  const v = String((req.query && req.query.v) || "");
+  return v && (v === st.mtime.toISOString() || v === String(st.mtimeMs)) ? "private, max-age=604800" : "private, no-cache";
+}
+
+// ---- 工作区预览的隔离：网页当外来的东西看 ----
+/**
+ * 工作区里的网页是模型写的，也可能是从网上下回来的。以前预览它的 iframe 跟应用同源、
+ * 又没有 sandbox——页面里一句 fetch("/api/chat") 就带着用户的登录 cookie 发出去了，
+ * 能跑工具、能花钱。现在两道闸一起上，缺一道都不算数：
+ *   ① 前端 iframe 带 sandbox="allow-scripts allow-popups"，不给 allow-same-origin。
+ *      页面落进一个不透明的 origin：读不到应用的 cookie / localStorage / DOM，
+ *      请求 /api/* 是跨源请求——不带 SameSite=Lax 的登录 cookie，回来的东西也读不到。
+ *   ② 这里给「浏览器会当成文档渲染、能跑脚本」的响应加 CSP sandbox。
+ *      防的是这个地址被当成顶层页面直接打开（资料库的「新窗口打开」、手动复制地址）——
+ *      那时候没有 iframe 属性可靠，只剩这个响应头。
+ * 判据是 Content-Type 而不是后缀清单：HTML，加上一切 XML 系（SVG / XHTML / RSS……
+ * XML 文档里 XHTML 命名空间的 <script> 照样会跑）。
+ * 图片 / PDF / 音视频不加：CSP sandbox 会把 PDF 阅读器（插件文档）整个挡掉，图片音视频本来也不跑脚本。
+ *
+ * 全局那条 CSP（base-uri / form-action / frame-ancestors / object-src）原样保留，
+ * 这里是往它后面追加一段，不是替换。
+ */
+const PREVIEW_SANDBOX_CSP = "sandbox allow-scripts allow-popups";
+const PREVIEW_DOC_TYPE_RE = /^text\/html\b|[/+]xml\b/i;
+/** 这份文件发出去会是什么 Content-Type。先看 mediaMime（下面 sendFile 前也是它先定），
+ *  再按 send 自己用的那张 mime 表查——跟 sendFile 真正发出去的是同一个值 */
+function viewTypeOf(p) {
+  const mm = mediaMime(p);
+  if (mm) return mm;
+  try { return String(express.static.mime.lookup(p) || ""); } catch { return ""; }
+}
+/** 该隔离的就在现有 CSP 后面追加 sandbox。返回是否加了（测试和日志用） */
+function sandboxPreviewDoc(res, type) {
+  if (!PREVIEW_DOC_TYPE_RE.test(String(type || ""))) return false;
+  const cur = res.getHeader("Content-Security-Policy");
+  res.setHeader("Content-Security-Policy", (cur ? String(cur) + "; " : "") + PREVIEW_SANDBOX_CSP);
+  return true;
+}
+/**
+ * 自报尺寸的那段脚本，跟 app-01.js 的 PV_FIT_REPORTER 一字不差（test/preview-layout.js 钉着）。
+ * sandbox 之后外面读不到 contentDocument，量不了页面多宽多高，只能让页面自己 postMessage 报出来，
+ * 协议是 {__wbFit:1,w,h,v}（v = 量的时候视口多宽，前端拿它认出路上的旧报数），前端 fitPreviewFrame 收。
+ * resize 只在**宽度**变了才重报：外面按报上来的高度把框拉高，框一拉高页面又会收到 resize；
+ * 页面要是写了 min-height:100vh 再加 padding，每报一次就高出一截，来回拉就是无底洞。
+ * 宽度变了（面板被拖宽、缩放切换）才真需要重排重量。
+ * SVG 另算：sandbox 框里的独立 SVG 文档，根 <svg> 的盒子一律按视口大小排（写了 width='800' height='2400'
+ * 也量出 150px 高），scrollWidth/scrollHeight 量的是视口。所以没有 body 的时候读根元素写死的 width/height；
+ * 只写了 viewBox 的，宽度跟着视口走、高度按 viewBox 的比例算。
+ */
+const PV_FIT_JS = 'var w0=-1;function s(){try{var d=document.documentElement,b=document.body,w=Math.max(d.scrollWidth||0,b?b.scrollWidth||0:0),h=Math.max(d.scrollHeight||0,b?b.scrollHeight||0:0);w0=innerWidth;'
+  + 'if(!b&&d.width&&d.width.baseVal){var W=d.width.baseVal,H=d.height.baseVal,v=d.viewBox&&d.viewBox.baseVal;if(W.unitType!==2)w=W.value;if(H.unitType!==2)h=H.value;else if(v&&v.width&&v.height)h=Math.ceil(w*v.height/v.width);}'
+  + 'parent.postMessage({__wbFit:1,w:w,h:h,v:innerWidth},"*");}catch(e){}}'
+  + 'addEventListener("load",s);addEventListener("resize",function(){if(innerWidth!==w0)s();});setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);';
+const PV_FIT_HTML = "<script>(function(){" + PV_FIT_JS + "})()</script>";
+// 太大的网页不挂：挂的话要整份读进内存再发。不挂也看得到，前端等不到尺寸会退回「占满面板、框里自己滚」
+const PV_FIT_MAX_BYTES = 20 * 1024 * 1024;
+/**
+ * 给这次响应挂上自报脚本，挂不上返回 null（调用方照原样 sendFile）。只动这一次响应，盘上的文件一个字节不改。
+ * HTML 直接接在尾巴上（解析器会把 </html> 后面的东西收进 body，资料库预览也是这么挂的）；
+ * 按字节拼，GBK 之类的老网页也不会被转一遍码。
+ * SVG 是 XML，根元素后面多一个字就整张解析失败，所以得塞进最后那个 </svg> 前面，脚本包 CDATA。
+ */
+function withFitReporter(buf, type) {
+  if (/^text\/html\b/i.test(type)) return Buffer.concat([buf, Buffer.from(PV_FIT_HTML)]);
+  if (/^image\/svg\+xml\b/i.test(type)) {
+    const s = buf.toString("latin1");
+    const at = s.lastIndexOf("</svg");
+    if (at < 0 || !/^<\/svg\s*>/.test(s.slice(at, at + 16))) return null;
+    const tag = Buffer.from("<script><![CDATA[(function(){" + PV_FIT_JS + "})()]]></script>");
+    return Buffer.concat([buf.subarray(0, at), tag, buf.subarray(at)]);
+  }
+  return null;
+}
+/**
+ * 这次请求要不要挂自报脚本：前端预览框明着要（?fit=1），或者浏览器说这是 iframe 里的一次导航
+ * （Sec-Fetch-Dest: iframe）——后一条接的是「网页里点链接跳到同目录另一页」，
+ * 那一跳的地址是页面自己拼的，不会带 fit=1。以前同源时外面在 load 上重量一遍就行，现在得靠它。
+ * Sec-Fetch-* 只对 127.0.0.1 / localhost / https 发，局域网 http 上没有——那边跳过去的页退回框里自己滚。
+ */
+function wantsFitReporter(req) {
+  return String((req.query && req.query.fit) || "") === "1" || String(req.get("sec-fetch-dest") || "") === "iframe";
+}
+/**
+ * 预览页里的相对资源：路径里带一枚只读令牌，不靠 cookie。
+ *
+ * sandbox 之后页面是不透明源，它自己发的每个请求（<img src="fig.jpg">、<link>、<script src>）
+ * 在浏览器眼里都是跨站请求，SameSite=Lax 的登录 cookie 一个都不带——/api/files/view 回 401，
+ * 预览里的图全裂（实测 Chromium：iframe 导航本身带 cookie，页面里的子资源一律不带）。
+ * 所以浏览器来「打开」一个网页 / SVG 时，/api/files/view 不直接发，而是 302 到
+ *   /pv/<令牌>/<同一条相对路径>
+ * 页面里的相对地址照常按目录算，算出来的还在 /pv/<令牌>/ 底下。
+ * 令牌只能做一件事：读**签发时那一个工作根**里的文件（网页和 SVG 照样带 CSP sandbox），
+ * 调不了任何 /api/*。另外三道：
+ *   - 跟签发它的那枚登录令牌绑着，每次都拿它再过一遍登录闸：退出登录、账号停用、登录过期、
+ *     组织强制二次验证、远程设备被关，它跟着失效；
+ *   - 跟签发时的客户端 IP 绑着：页面能从自己的地址里读到它、发到外面去，别的机器拿着也用不了；
+ *   - 闲置 30 分钟作废，最多留 500 枚（最久没用的先走）。
+ */
+const PV_TOKENS = new Map(); // 令牌 -> { dir, auth, ip, seen }，Map 的顺序就是最近使用的顺序
+const PV_TOKEN_IDLE_MS = 30 * 60 * 1000;
+const PV_TOKEN_MAX = 500;
+// 跟 account.js 的 tokenFromReq 同一条规则（那边没导出）
+const authTokenOf = (req) => (/(?:^|;\s*)openworkbuddy_token=([\w]+)/.exec((req.headers && req.headers.cookie) || "") || [])[1] || "";
+function pvTokenFor(req, dir) {
+  const auth = authTokenOf(req);
+  if (!auth || !dir) return "";
+  const ip = account.clientIp(req);
+  for (const [tok, r] of PV_TOKENS) {
+    if (r.auth === auth && r.dir === dir && r.ip === ip && Date.now() - r.seen <= PV_TOKEN_IDLE_MS) {
+      r.seen = Date.now();
+      PV_TOKENS.delete(tok); PV_TOKENS.set(tok, r);
+      return tok;
+    }
+  }
+  const tok = require("crypto").randomBytes(18).toString("hex");
+  PV_TOKENS.set(tok, { dir, auth, ip, seen: Date.now() });
+  while (PV_TOKENS.size > PV_TOKEN_MAX) PV_TOKENS.delete(PV_TOKENS.keys().next().value);
+  return tok;
+}
+function pvTokenCheck(req, tok) {
+  const r = PV_TOKENS.get(tok);
+  if (!r) return null;
+  if (Date.now() - r.seen > PV_TOKEN_IDLE_MS) { PV_TOKENS.delete(tok); return null; }
+  if (account.clientIp(req) !== r.ip) return null;
+  // 拿签发时那枚登录令牌把登录闸原样再过一遍，不自己挑几条抄：只查「人在不在、停没停用」的话，
+  // 组织后来开了「强制二次验证」、或关了「允许远程设备接入」，扫码连上来的那台照样能拿这枚令牌接着读
+  let passed = false;
+  const as = { path: "/api/files/view/", headers: { ...req.headers, cookie: "openworkbuddy_token=" + r.auth }, socket: req.socket };
+  const stop = { status: () => stop, json: () => stop };
+  try { account.authGuard(as, stop, () => { passed = true; }); } catch { passed = false; }
+  if (!passed) { PV_TOKENS.delete(tok); return null; }
+  r.seen = Date.now();
+  PV_TOKENS.delete(tok); PV_TOKENS.set(tok, r);
+  return r;
+}
+/** 这次请求是不是浏览器在「打开」这个文档（地址栏、iframe、新窗口），而不是 fetch / <img> 来取字节 */
+function isDocNavigation(req) {
+  const mode = String(req.get("sec-fetch-mode") || "");
+  if (mode) return mode === "navigate";
+  // 局域网 http 上浏览器不发 Sec-Fetch-*：认预览框明着带的 fit=1，再认导航才会带的 Accept: text/html
+  return String((req.query && req.query.fit) || "") === "1" || /\btext\/html\b/i.test(String(req.get("accept") || ""));
+}
+/** 文件 p 是按相对路径 rel 在哪个根下找到的。对不上（rel 里绕了 ..）就给空，调用方照原样发 */
+function rootOfResolved(p, rel) {
+  const segs = String(rel || "").replace(/\\/g, "/").split("/").filter((s) => s && s !== ".");
+  if (!segs.length || segs.includes("..")) return "";
+  let d = p;
+  for (let i = 0; i < segs.length; i++) d = path.dirname(d);
+  try { return safePathIn(d, rel) === p ? d : ""; } catch { return ""; }
+}
+// ---- 工作区预览的隔离 end ----
+
+/**
+ * 应用内预览：按正确 Content-Type 内联返回（HTML/图片/PDF 可直接在 iframe/img 中显示）。
+ *
+ * 这里必须是通配路由，不能是 :name —— 这就是「预览的时候图片都不正常显示」的真身：
+ * 成果按会话分了子文件夹（任务_0905_.../hunan_travel.html），前端要是把整条相对路径
+ * 当成一个参数 encodeURIComponent 一下，斜杠变成 %2F，浏览器眼里这一整串只是**一段**路径。
+ * 网页里 <img src="fig_hero.jpg"> 是相对当前地址算的，于是它去要
+ *   /api/files/view/fig_hero.jpg          ← 工作区根目录，没有这张图
+ * 而不是
+ *   /api/files/view/任务_0905_.../fig_hero.jpg
+ * 图当然全裂。改成通配之后每一段单独编码、斜杠还是斜杠，相对路径就算得对了。
+ * 老的 %2F 写法也照样能用（Express 会把参数解码回来），不用怕别处还有旧链接。
+ */
+app.get("/api/files/view/*", async (req, res) => {
+  try {
+    const p = rootedPath(req, relOf(req));
+    if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
+    // ?thumb=320：产出卡要的是 120px 的缩略图，别把 7 MB 的原图整张塞给浏览器解码。
+    // await 是因为纯 node（网页版 / 私有化部署）那条路把缩放扔到 thumb-worker.js 的线程上做了——
+    // 解码+缩放是纯 JS，一张大图几十上百毫秒，搁主线程上做会把正在推的 SSE 卡住。
+    // 任何一步不顺（尺寸不在档位里、图太小、不是 PNG、解码失败、缓存目录写不进去）
+    // 都返回 null，落回下面原样发原图——缩略图是锦上添花，绝不许因为它让一张图显示不出来。
+    // 细账和理由在 thumb.js 开头
+    // 缓存策略看链接上的 ?v= 对不对得上盘上这一版（见 viewCacheHeader）：对得上才让浏览器长期留着。
+    // 以前不看 v、缩略图一律留七天：产出卡带着旧版本号、文件又被 agent 原地改写一次，
+    // 对话里那张图就七天不换——用户看到的是「对话里预览的图和右边打开的不一样」
+    res.set("Cache-Control", viewCacheHeader(req, p));
+    const thumb = await thumbFileAsync(p, parseInt(req.query.thumb, 10), path.join(dataPath("data"), "thumbs"));
+    if (thumb) {
+      res.set("Content-Type", "image/png");
+      return res.sendFile(thumb);
+    }
+    const mm = mediaMime(p);
+    if (mm) res.set("Content-Type", mm);
+    // 网页 / SVG 一律带 CSP sandbox（理由见上面「工作区预览的隔离」那段）
+    const type = viewTypeOf(p);
+    if (sandboxPreviewDoc(res, type)) {
+      // 浏览器来打开它：转到带令牌的地址，页面里的相对资源才取得到（理由见 PV_TOKENS）
+      if (isDocNavigation(req)) {
+        const dir = rootOfResolved(p, relOf(req));
+        const tok = pvTokenFor(req, dir);
+        if (tok) {
+          const rel = path.relative(dir, p).split(path.sep).map(encodeURIComponent).join("/");
+          res.set("Cache-Control", "no-store");
+          return res.redirect(302, "/pv/" + tok + "/" + rel + (wantsFitReporter(req) ? "?fit=1" : ""));
+        }
+      }
+      if (await sendWithFitReporter(req, res, p, type)) return;
+    }
+    res.sendFile(p);
+  } catch (e) {
+    res.status(400).send(e.message);
+  }
+});
+
+/** 该挂自报脚本的就挂上发出去，返回 true；不该挂或挂不上返回 false，调用方照原样 sendFile */
+async function sendWithFitReporter(req, res, p, type) {
+  if (!wantsFitReporter(req)) return false;
+  const st = await fs.promises.stat(p);
+  const out = st.isFile() && st.size <= PV_FIT_MAX_BYTES ? withFitReporter(await fs.promises.readFile(p), type) : null;
+  if (!out) return false;
+  // 跟 sendFile 发的 Content-Type 同一个值（send 给 text/* 补 charset=UTF-8，这里照补）
+  res.set("Content-Type", type + (/^text\//i.test(type) ? "; charset=UTF-8" : ""));
+  res.send(out);
+  return true;
+}
+
+/**
+ * 预览网页和它引的图 / 样式 / 脚本从这里发，认路径里的令牌不认 cookie（为什么见 PV_TOKENS）。
+ * 不在 /api/ 底下是故意的：/api/* 一律要登录 cookie，而这条路上的请求恰恰带不了。
+ * 只读、只在签发时那一个根里找，越界照样抛。
+ */
+app.get("/pv/:tok/*", async (req, res) => {
+  try {
+    const r = pvTokenCheck(req, String(req.params.tok || ""));
+    if (!r) return res.status(404).type("text/plain; charset=utf-8").send("预览链接已失效，回应用里重新打开这个文件");
+    const p = safePathIn(r.dir, relOf(req));
+    const st = fs.existsSync(p) ? fs.statSync(p) : null;
+    if (!st || !st.isFile()) return res.status(404).type("text/plain; charset=utf-8").send("文件不存在");
+    res.set("Cache-Control", "private, no-cache");
+    const mm = mediaMime(p);
+    if (mm) res.set("Content-Type", mm);
+    const type = viewTypeOf(p);
+    if (sandboxPreviewDoc(res, type) && await sendWithFitReporter(req, res, p, type)) return;
+    res.sendFile(p);
+  } catch (e) {
+    res.status(400).type("text/plain; charset=utf-8").send(e.message);
+  }
+});
+
+// Office 三件套和压缩包的应用内预览：浏览器打不开 zip 里的一包 XML，这一层把它拆成结构化数据。
+// 只吐数据不吐 HTML——文件内容是模型写的或从网上下的，转出来的 HTML 直接进渲染进程等于自开 XSS，
+// 拼 HTML 的活统一留在前端一处（每个字段都过 esc），转义漏没漏只需要审那一个地方。
+app.get("/api/files/preview/*", async (req, res) => {
+  try {
+    const rel = relOf(req);
+    const p = rootedPath(req, rel);
+    if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
+    res.json(await previewData(p, rel));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 对话里的内联图表「存为文件」：内容是前端已经渲染过的东西，落盘到工作目录就能进成果面板、
+// 能下载、能被后续回合当素材继续用。扩展名白名单挡住"顺手写个 .sh/.command 再让我打开"的路子。
+const SAVE_EXT_OK = /\.(svg|png|jpe?g|html?|md|markdown|txt|csv|json)$/i;
+/**
+ * 前端给的目标文件夹 —— 也就是「这次对话的成果文件夹」（任务_0911_xxx）。
+ * 以前这个参数根本不存在：对话里画的图一律落在工作区**根目录**，跟这次对话的其它产出分家，
+ * 用户下一次打开成果面板得从几十个任务文件夹旁边的一堆散图里认自己那张。
+ * 只认工作区内的相对路径；绝对路径、盘符、`..` 一律当没给（退回根目录），越界交给 safePath 再兜一道。
+ */
+function saveDirOf(dir) {
+  const d = String(dir || "").replace(/\\/g, "/").trim().replace(/^\/+|\/+$/g, "");
+  if (!d || /^[a-zA-Z]:/.test(d) || d.split("/").includes("..")) return "";
+  return d;
+}
+/** 前端可能直接递一串 data:image/png;base64,... 过来（PNG 就是这么来的），落盘前还原成二进制 */
+function decodeSaveBody(content) {
+  const b64 = String(content).match(/^data:[^;]+;base64,(.*)$/s);
+  return b64 ? Buffer.from(b64[1], "base64") : content;
+}
+/**
+ * 落盘失败时，把 errno 翻成一句用户能照着做的话。
+ * 以前是 `res.status(400).json({ error: e.message })`，前端弹出来是一句
+ * "EACCES: permission denied, open '/…/图表.png'"——用户看得见路径，看不出该干什么。
+ */
+function saveErrorText(e, p) {
+  const code = e && e.code;
+  if (code === "EACCES" || code === "EPERM") return "没有写入权限，换个目录，或者去「设置 → 工作目录」挑一个你能写的文件夹";
+  if (code === "ENOSPC") return "磁盘满了，腾点地方再存";
+  if (code === "EROFS") return "这个位置是只读的，换个目录";
+  if (code === "ENAMETOOLONG") return "文件名太长了，改短一点再存";
+  if (code === "EISDIR") return "同名的是个文件夹，不是文件——换个名字";
+  if (code === "EMFILE" || code === "ENFILE") return "系统打开的文件太多了，稍等一下再点一次";
+  return (e && e.message) || "写文件失败";
+}
+/** 桌面端才有系统保存框。纯 node 起的网页端返回 null，由前端退回浏览器下载 */
+function electronDialog() {
+  if (!process.versions || !process.versions.electron) return null;
+  try {
+    const e = require("electron");
+    if (!e || !e.dialog || !e.dialog.showSaveDialog) return null;
+    const BW = e.BrowserWindow;
+    const win = (BW && (BW.getFocusedWindow() || BW.getAllWindows()[0])) || null;
+    return { dialog: e.dialog, win };
+  } catch { return null; }
+}
+app.post("/api/files/save", async (req, res) => {
+  let p = "";
+  try {
+    // 只收文件名：目录由 dir 决定，名字里夹路径一律拍平，省得绕过 dir 往别处写
+    const name = path.basename(String(req.body?.name || "").trim());
+    const content = req.body?.content;
+    if (!name || typeof content !== "string") return res.status(400).json({ error: "缺少 name 或 content" });
+    if (!SAVE_EXT_OK.test(name)) return res.status(400).json({ error: "不支持保存这种类型的文件" });
+    const sub = saveDirOf(req.body?.dir);
+    const rel = sub ? sub + "/" + name : name;
+    p = safePath(rel);
+    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+    // 异步写：桌面端这个 HTTP 服务跟 Electron 主进程同一个事件循环，
+    // 一张几十兆的 PNG 用 writeFileSync 落盘，整个界面会跟着卡住不动
+    await fs.promises.writeFile(p, decodeSaveBody(content));
+    res.json({ ok: true, name, rel, dir: sub, files: outputFiles() });
+  } catch (e) {
+    // 存盘失败以前只回前端不进日志，事后什么都查不到（用户报过一次「保存失败」，
+    // 翻遍日志一行记录都没有）。留一行，带上路径和 errno
+    console.error(`[存盘] 失败 ${p || req.body?.name || "?"}：${e.code || ""} ${e.message}`);
+    res.status(400).json({ error: saveErrorText(e, p) });
+  }
+});
+/**
+ * 「另存为…」：桌面端弹系统保存框，用户自己挑地方（可以挑到工作区外——那是他自己的电脑、
+ * 他自己点的路径，不是模型能构造的）。网页端没有这种能力，回 no_dialog，
+ * 前端退回浏览器下载——在网页上，那就是「自己选位置」。
+ */
+app.post("/api/files/save-as", async (req, res) => {
+  try {
+    const name = path.basename(String(req.body?.name || "").trim());
+    const content = req.body?.content;
+    if (!name || typeof content !== "string") return res.status(400).json({ error: "缺少 name 或 content" });
+    if (!SAVE_EXT_OK.test(name)) return res.status(400).json({ error: "不支持保存这种类型的文件" });
+    const el = electronDialog();
+    if (!el) return res.json({ ok: false, no_dialog: true });
+    // 保存框开在这次对话的成果文件夹里：用户多半就想存它旁边，省得每次从头翻
+    let base = getWorkspaceDir();
+    try { const sub = saveDirOf(req.body?.dir); if (sub) base = safePath(sub); } catch {}
+    const r = await el.dialog.showSaveDialog(el.win || undefined, {
+      title: "另存为", defaultPath: path.join(base, name), buttonLabel: "保存",
+    });
+    if (r.canceled || !r.filePath) return res.json({ ok: false, canceled: true });
+    await fs.promises.mkdir(path.dirname(r.filePath), { recursive: true });
+    await fs.promises.writeFile(r.filePath, decodeSaveBody(content));
+    res.json({ ok: true, path: r.filePath, files: outputFiles() });
+  } catch (e) {
+    console.error(`[另存为] 失败 ${req.body?.name || "?"}：${e.code || ""} ${e.message}`);
+    res.status(400).json({ error: saveErrorText(e) });
+  }
+});
+
+// ---- 本地部署预览：把工作目录当静态站点跑在一个独立端口上 ----
+// 应用内 iframe 预览走 /api/files/view，够看长相；但真正的网页要有自己的 origin 才对
+// （相对路径引资源、fetch、localStorage、手机上开来看）。这里起一个只监听本机的静态服务器。
+/**
+ * 每个租户一份，不是全局一份。以前这是个模块级单例，三个后果：
+ *   ① B 组织一点「预览」就把 A 组织正在对外的服务掐了；
+ *   ② GET /api/preview/status 把**别人**工作目录的绝对路径和局域网地址回给任何登录用户；
+ *   ③ 两边抢同一个变量，谁停都停成对方那份。
+ * 键用工作目录（tenantScope 已经把 getWorkspaceDir() 绑到调用者所属组织的根上）。
+ */
+const previewServers = new Map(); // dir -> { srv, port, dir, lanOpen, token }
+function lanAddress() {
+  const nets = require("os").networkInterfaces();
+  for (const list of Object.values(nets)) {
+    for (const ni of list || []) {
+      if (ni.family === "IPv4" && !ni.internal) return ni.address;
+    }
+  }
+  return null;
+}
+function previewState(dir) {
+  const ps = previewServers.get(dir);
+  if (!ps) return { running: false };
+  const lan = ps.lanOpen ? lanAddress() : null;
+  // url / lan_url 是**不带令牌的根**，令牌单独给：调用方要在后面接文件名，
+  // 拼在根上会变成 ".../?t=xxxindex.html"。静态站是独立的 express 实例，
+  // 登录态 cookie 到不了那边，没有令牌的话「开了局域网」就等于同网段裸奔。
+  return {
+    running: true,
+    port: ps.port,
+    dir: ps.dir,
+    lan_open: !!ps.lanOpen,
+    token: ps.token,
+    url: `http://127.0.0.1:${ps.port}/`,
+    lan_url: lan ? `http://${lan}:${ps.port}/` : null,
+  };
+}
+app.get("/api/preview/status", (_req, res) => res.json(previewState(getWorkspaceDir())));
+app.post("/api/preview/start", (req, res) => {
+  const dir = getWorkspaceDir();
+  // lan=true 才对局域网开放：开了手机能扫，但同一个 Wi-Fi 下的人也能翻整个工作目录。
+  // 「把这台机器上的一个目录挂到局域网上」是服务器级动作，普通成员开不了；
+  // 不静默降级——降了要在返回体里说清楚，不然用户只会看到「怎么扫不出来」。
+  const wantLan = !!(req.body && req.body.lan);
+  const lanOpen = wantLan && isPlatformOwner(req);
+  const lanDenied = wantLan && !lanOpen;
+  // open=文件名：服务就绪后用系统默认浏览器打开它
+  const openName = req.body && req.body.open ? String(req.body.open).replace(/^\/+/, "") : null;
+  const done = (st) => {
+    if (openName) openWithSystem(st.url + openName.split("/").map(encodeURIComponent).join("/") + `?t=${st.token}`);
+    res.json(lanDenied ? { ...st, lan_denied: true, lan_hint: "对局域网开放要平台管理员来开" } : st);
+  };
+  // 已经在跑且参数一致：不用重起，但该开的浏览器还是得开。
+  // （这里以前是直接 return，把 open 一起吞了——而「在浏览器打开」按钮只在服务已启动时才出现，
+  //   必然走这条分支，所以那个按钮点了从来没反应过。）
+  const cur = previewServers.get(dir);
+  if (cur && cur.lanOpen === lanOpen) return done(previewState(dir));
+  if (cur) { try { cur.srv.close(); } catch {} previewServers.delete(dir); }
+  const token = require("crypto").randomBytes(16).toString("hex");
+  const site = express();
+  // 令牌闸必须挂在 static 前面，不然静态中间件先把文件送出去了。
+  // 第一次带 ?t= 进来就种个 cookie，之后页面里的相对路径（图片、js、fetch）不用各自带令牌。
+  site.use((rq, rs, nx) => {
+    const cookie = String(rq.headers.cookie || "");
+    if (cookie.includes("openworkbuddy_preview=" + token)) return nx();
+    if (rq.query && rq.query.t === token) {
+      rs.setHeader("Set-Cookie", `openworkbuddy_preview=${token}; Path=/; HttpOnly; SameSite=Lax`);
+      return nx();
+    }
+    rs.status(401).type("text/plain; charset=utf-8").send("这个预览链接要带令牌才能看（回 OpenWorkBuddy 里重新复制一次）");
+  });
+  site.use(express.static(dir, { extensions: ["html"] }));
+  // 端口 0 = 让系统分配空闲端口，避免和用户本机其它服务撞车
+  const srv = site.listen(0, lanOpen ? "0.0.0.0" : "127.0.0.1", () => {
+    previewServers.set(dir, { srv, port: srv.address().port, dir, lanOpen, token });
+    done(previewState(dir));
+  });
+  srv.on("error", (e) => {
+    if (!res.headersSent) res.status(500).json({ error: "本地预览服务起不来：" + e.message });
+  });
+});
+app.post("/api/preview/stop", (_req, res) => {
+  const dir = getWorkspaceDir();
+  const ps = previewServers.get(dir);
+  if (ps) { try { ps.srv.close(); } catch {} previewServers.delete(dir); } // 只停自己那份
+  res.json({ running: false });
+});
+
+// 「用系统程序打开」= 在服务器上起一个进程，所以这里必须挡住可执行类型。
+// 走白名单不走黑名单：黑名单漏一个后缀就是一次任意代码执行（macOS 的 .command/.app/.scpt、
+// Windows 的 .bat/.cmd/.ps1/.lnk/.reg、Linux 上任何带 +x 的文件）。
+// 目录不在白名单里但要放行——「打开所在文件夹」是这个接口最常用的用法。
+const OPEN_EXT_OK = /\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|markdown|json|ya?ml|log|rtf|html?|odt|ods|odp|pages|numbers|key|svg|png|jpe?g|gif|webp|bmp|tiff?|heic|mp4|mov|webm|m4v|mp3|wav|m4a|flac|aac|zip)$/i;
+// 用系统默认程序打开（Word/PPT/Excel 等交给本机 Office/WPS）
+app.post("/api/files/open/*", (req, res) => {
+  try {
+    const p = rootedPath(req, relOf(req));
+    if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
+    if (!fs.statSync(p).isDirectory() && !OPEN_EXT_OK.test(p))
+      return res.status(400).json({ error: "这种类型不能交给系统程序打开，只放行文档、图片、音视频" });
+    openWithSystem(p);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/**
+ * 直调一个工具：不过模型。
+ *
+ * /api/chat 是唯一能触发工具执行的入口，代价是每一次都得先烧一轮主模型的 token：
+ * 用户按「把这一格重画一遍」，服务端先把那段 prompt 复述给模型听，模型再决定要不要
+ * 照原样调一次工具——它有权改写那段话、也可能顺手多干点别的。确定性的重跑不该付这笔钱。
+ *
+ * 省钱的另一半在 gen-cache.js：参数逐字一样时连模型都不调，直接复用上次的产物。
+ * 确实要换一版的，input 里带 no_cache: true。
+ *
+ * 能直调的工具在 agent.js 的 DIRECT_TOOLS 里，只有生图/生视频/配音/网页截图这四个。
+ */
+/**
+ * 直调工具的 subdir（画布按「短剧/第10集」分目录落产物）→ 工作区里的绝对路径，没给就是 ""。
+ * 只收相对路径：绝对路径、盘符、NUL 和控制字符、任何一段带「..」一律 400。
+ * 拼完再核一次落点：判据漏一条，产物就能写到工作区外面去
+ */
+function toolRunSubdir(raw) {
+  if (raw == null || raw === "") return "";
+  const bad = (why) => Object.assign(new Error("subdir 不合法：" + why), { status: 400 });
+  if (typeof raw !== "string") throw bad("只能是字符串");
+  const s = raw.trim().replace(/\\/g, "/");
+  if (!s) return "";
+  if (s.length > 200) throw bad("超过 200 个字符");
+  if (/[\0-\x1f]/.test(s)) throw bad("带了控制字符");
+  if (s.startsWith("/") || /^[a-zA-Z]:/.test(s) || path.isAbsolute(raw.trim())) throw bad("只能是工作区里的相对路径");
+  const segs = s.split("/").filter((x) => x && x !== ".");
+  if (segs.some((x) => x.includes(".."))) throw bad("不能带 ..");
+  if (!segs.length) return "";
+  const root = path.resolve(getWorkspaceDir());
+  const abs = path.resolve(root, segs.join("/"));
+  if (!abs.startsWith(root + path.sep)) throw bad("落到工作区外面了");
+  return abs;
+}
+/**
+ * 按真实路径核完再建 subdir：工作区里的一个符号链接就能把「子目录」指到外面去。
+ * 先核最近一层已经在的祖先、再 mkdir、建完再核一遍——先建后核的话，目录已经建在外面了
+ */
+function toolRunSubdirReady(abs) {
+  const root = fs.realpathSync(getWorkspaceDir());
+  const inside = (p) => { const real = fs.realpathSync(p); return real === root || real.startsWith(root + path.sep); };
+  const out = () => Object.assign(new Error("subdir 不合法：落到工作区外面了"), { status: 400 });
+  let probe = abs;
+  while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe);
+  if (!inside(probe)) throw out();
+  fs.mkdirSync(abs, { recursive: true });
+  if (!inside(abs)) throw out();
+  return abs;
+}
+/**
+ * 产物在工作区里的相对路径。工具回执里的 file 只有文件名，分目录落盘之后光凭文件名
+ * 分不清是哪一集的，画布该存的是这个
+ */
+function toolRunRel(baseDir, file) {
+  if (!file) return "";
+  const root = path.resolve(getWorkspaceDir());
+  for (const d of [baseDir, root]) {
+    if (!d) continue;
+    const p = path.resolve(root, d, String(file));
+    if (p.startsWith(root + path.sep) && fs.existsSync(p)) return path.relative(root, p).split(path.sep).join("/");
+  }
+  return "";
+}
+app.post("/api/tool/run", async (req, res) => {
+  const { tool, input, sessionId } = req.body || {};
+  if (!tool) return res.status(400).json({ error: "缺少 tool" });
+  let sub = "";
+  try { sub = toolRunSubdir((req.body || {}).subdir); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (!runtime) return res.status(503).json({ error: "服务还在启动，稍等一下再试" });
+  const user = req.user; // authGuard 已挂上
+  if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
+    return res.status(402).json({ error: "用量不足，跑不了。生图生视频每跑一次都是真花钱——找管理员在企业后台充值，或者把「用量限额」关掉。" });
+  }
+  // 产物落在这条对话自己的成果目录里：跟对话里生成的那一批待在一起，交付时才是完整一包。
+  // 自选工作目录 / 项目目录下没有这个概念，照旧就地读写（跟 /api/chat 同一条口径）。
+  let baseDir = null;
+  let label = "直调工具";
+  if (sessionId) {
+    const sess = getSession(sessionId);
+    if (!sessionAllowed(user, sess)) return res.status(403).json({ error: "这条对话不属于你" });
+    if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) baseDir = sess.dir || null;
+    if (sess.title) label = sess.title.slice(0, 24);
+  }
+  // 对话自己的成果目录优先；没有才用画布给的 subdir
+  if (!baseDir && sub) { try { baseDir = toolRunSubdirReady(sub); } catch (e) { return res.status(e.status || 500).json({ error: e.message }); } }
+  // 请求断了就叫停这次生成。挂在 res 的 close 上而不是 req 的：Node 新版里请求体一读完
+  // req 就会发 close，正常请求也会被当成断开；res 没写完就 close 才是真断了
+  const ac = new AbortController();
+  res.on("close", () => { if (!res.writableFinished) ac.abort(); });
+  const t0 = Date.now();
+  try {
+    const r = await runtime.runTool(tool, input, { user: user ? user.username : undefined, baseDir, taskLabel: label, signal: ac.signal, stopSignal: ac.signal });
+    // 工具自己报的失败（渠道没配、模型点错名）不是 HTTP 错误：原话比任何状态码都说得清，
+    // 前端要把它贴在那一格上给用户看，所以照原样送出去，只用 isError 标明成没成
+    res.json({
+      ok: !r.isError,
+      isError: !!r.isError,
+      content: String(r.content || ""),
+      file: r.file || "",
+      path: toolRunRel(baseDir, r.file), // 工作区相对路径；找不到就是空串
+      cached: !!r.cached, // true = 这一次没花钱，复用的是上次的产物
+      submitted: r.submitted || "", // 非空 = 上游已经收下了这一单才出的错，多半已扣费，别自动重跑
+      ms: Date.now() - t0,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/**
+ * 批量生成之前先报个价：这一批真跑下去，大概要花多少钱。
+ *
+ * 只算不跑：不碰 runtime、不调任何供应商、不预扣额度、不记账——问多少次都一分钱不花。
+ * 算法跟真跑时是同一套，不许另写一份（各算各的，确认框上的数和账单早晚对不上）：
+ *   · 量：tools.js 的 unitsFor，预扣和记账用的也是它。渠道配置整份传进去，
+ *         视频的秒数按型号夹紧之后算（要 10 秒、型号只出 5 秒，就按 5 秒报）；
+ *   · 型号：跟 withGenCache 记账时一样，按 input.model 挑出真正会用的那条，没写就是默认那条；
+ *   · 价：pricing.costOfUnits。进过额度闸的人（组织配了预算）带着自己那份价目走，
+ *         管理员改过的价、组织谈下的折扣都算上；没进的按管理员价目表 + 内置价查。
+ *
+ * 查不到单价的那一条 cost 是 null、known 是 false，绝不填 0：0 会被读成「免费」，
+ * 人就放心点下去了。total 只合计查得到价的那几条，unknownCount 说还有几条没算进去——
+ * 两个数要一起看，unknownCount 不是 0 时 total 只是下限。
+ *
+ * 缓存命中不在这里扣：参数逐字一样时真跑会复用上次的产物、不花钱，这里照样按全价报。
+ * 宁可报高，不许报低——报低了人按了确认，扣的比说的多。
+ */
+const ESTIMATE_TOOLS = { generate_image: "image", generate_video: "video", text_to_speech: "tts" };
+const ESTIMATE_MAX = 500; // 一张画布十几镜 × 首帧/视频/配音，几十条顶天；再多就是有人拿它当压测口
+const { unitsFor } = require("./tools")._internals;
+function toolEstimateOne(tool, input, media, priceOpts) {
+  const cap = ESTIMATE_TOOLS[tool];
+  let cfg = null, error = "";
+  // 点名了一个不存在的型号：真跑会原样报这句，这里也原样带回去，价按「不知道」算。
+  // 不能拿点名的那串去查价：它碰巧在内置价目表里（比如没配过的 wanx2.1-t2i-plus），
+  // 就会报出一笔真跑根本不会花的钱，还标着「已知」
+  try { cfg = mediaModels.pick(media, cap, input.model); } catch (e) { error = e.message; }
+  const model = cfg ? String(cfg.model || "") : String(input.model || "");
+  const units = unitsFor(cap, input, null, media);
+  const c = error ? null : pricing.costOfUnits({ cap, model, units }, priceOpts);
+  const known = !!c && !c.unknown;
+  return {
+    tool, model, units, unit: c ? c.unit : pricing.UNITS[cap].unit,
+    // 单价给折后的：界面上写「2 张 × ¥0.26」，乘出来得等于 cost，不然人会以为算错了
+    unitPrice: known ? pricing._internals.r6(c.per * c.discount) : null,
+    cost: known ? c.yuan : null,
+    known,
+    ...(error ? { error } : {}),
+  };
+}
+app.post("/api/tool/estimate", (req, res) => {
+  const items = (req.body || {}).items;
+  if (!Array.isArray(items)) return res.status(400).json({ error: "缺少 items：要估价的那一批，数组" });
+  if (items.length > ESTIMATE_MAX) return res.status(400).json({ error: `一次最多估 ${ESTIMATE_MAX} 条，这次是 ${items.length} 条` });
+  // 先整批核一遍再算：一条不合格就整批退回，不回半截账——半截的 total 看着比真的少
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i] || {};
+    const tool = typeof it.tool === "string" ? it.tool : "";
+    // hasOwn 而不是直接取：tool 写成 constructor / __proto__ 的话，普通取值会取到原型上的东西
+    if (!Object.hasOwn(ESTIMATE_TOOLS, tool)) {
+      return res.status(400).json({ error: `第 ${i + 1} 条的「${tool || "（空）"}」不能估价，只能估 ${Object.keys(ESTIMATE_TOOLS).join("、")}` });
+    }
+    if (it.input != null && (typeof it.input !== "object" || Array.isArray(it.input))) {
+      return res.status(400).json({ error: `第 ${i + 1} 条的 input 要是一个对象` });
+    }
+  }
+  const media = mediaModels.resolve(config);
+  const who = quota.currentActor();
+  const priceOpts = (who && who.price) || { config };
+  const out = items.map((it) => toolEstimateOne(it.tool, it.input || {}, media, priceOpts));
+  // 量大到溢出（n:"Infinity"、n:1e308）：JSON 里 Infinity 会变成 null，
+  // 回出去就是「known:true、cost:null」，界面拿它去乘就是 NaN。一样整批退回
+  const bad = out.findIndex((x) => !Number.isFinite(x.units) || (x.known && !Number.isFinite(x.cost)));
+  if (bad >= 0) return res.status(400).json({ error: `第 ${bad + 1} 条的量大到算不出来，没法估价` });
+  const known = out.filter((x) => x.known);
+  const total = pricing._internals.r6(known.reduce((s, x) => s + x.cost, 0));
+  if (!Number.isFinite(total)) return res.status(400).json({ error: "这一批合计大到算不出来，没法估价" });
+  res.json({
+    ok: true,
+    items: out,
+    total,
+    unknownCount: out.length - known.length,
+  });
+});
+
+app.post("/api/chat", async (req, res) => {
+  const { sessionId, message, mode, regen, lang, lane, shown } = req.body || {};
+  if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
+  // shown：用户自己打的那句话。画布这类入口会在 message 前面拼一大段给模型看的操作说明，
+  // 历史里、标题里、搜索里都该是人说的话，不是那段说明——模型那边照旧拿完整的 message
+  let shownText = typeof shown === "string" && shown.trim() && shown !== message ? shown.trim().slice(0, 2000) : "";
+  const user = req.user; // authGuard 已挂上
+  // 积分闸门默认是关的（本地个人用不该被自己的账本拦），开了才查余额
+  if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
+    return res.status(402).json({ error: "用量不足，无法执行任务。本月固定用量已用完、加油包也见底了——找管理员在企业后台充值，或者把「用量限额」关掉。" });
+  }
+  // 钱闸。跟上面那道是两件事：积分是「所有模型一个价」的字数折算，
+  // 这一道算的是真金白银——而 Opus 的输出价是 gpt-5-nano 的一百多倍，
+  // 两个数经常是反的。中转站发出去的 Key 开头就在 budget 下面过，
+  // 内部员工在界面上跑的任务以前不过——同一笔预算漏了一半，
+  // 而漏的那一半恰好是能一直点「重试」的那一半。
+  if (user) {
+    try {
+      const o = org.getOrg(org.orgIdOf(user));
+      const hit = budget.exhausted({ org: org.settingsOf(o), orgId: o.id, user });
+      if (hit) return res.status(402).json({ error: `${hit.message}预算由管理员在「企业管理 → API 中转站」里设，每月 1 号重置。` });
+    } catch (e) {
+      // 预算模块自己坏了不该拦住正事，跟 quota.gate 那边同一个选择：放行，但喊一声
+      console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
+    }
+  }
+  if (activeRuns.has(sessionId)) {
+    return res.status(409).json({ error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
+  }
+  // 归属要赶在 SSE 头之前查：这条路由的 sessionId 来自请求体，以前一个字都没查——
+  // 拿到别人的会话 id 就能接着他的上下文继续跑，跑出来的内容还会写进他的历史里。
+  // 新会话（磁盘上还没有这个 id）没有归属字段，照常放行。
+  if (!sessionAllowed(user, getSession(sessionId))) {
+    return res.status(403).json({ error: "这条对话不属于你" });
+  }
+  // 终端里这会儿正跑着同一条（放在归属检查之后：不是你的会话，连「它在跑」也不该告诉你）：两头各拿一份内存副本，后存的那头会把另一头这一轮整段盖掉
+  {
+    const row = cliLive.get(sessionId);
+    if (row && row.live) return res.status(409).json({ error: "这条会话正在终端里跑。要补充说明可以在「工程」里插话，跑完再接着聊。" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.on("error", () => {});
+  // 客户端可能中途断开（刷新页面/断网/电脑睡眠），任务照跑：
+  // 主连接断了就不再写它，事件继续发给 /api/chat/stream 续流进来的订阅者
+  const runState = { ctrl: new AbortController(), interject: [], asks: new Map(), subscribers: new Set(), events: null };
+  const send = (event) => {
+    const line = `data: ${JSON.stringify(event)}\n\n`;
+    if (!res.destroyed && !res.writableEnded) { try { res.write(line); } catch {} }
+    for (const sub of runState.subscribers) { try { sub.write(line); } catch {} }
+  };
+
+  const sess = getSession(sessionId);
+  if (user && !sess.user) sess.user = user.username;
+  // 任务属于哪个项目，以前只记在浏览器里。第一轮就在服务端定死，缓存清了也还分得清组。
+  // 只有拥有全局工作目录的人才有「项目」这个概念，租户端记了反而是假信息。
+  if (!sess.project && ownsGlobalWorkspace(user)) sess.project = config.active_project || "";
+  // 这一轮走哪条工作线。前端每次都把当前标签带上来，所以用户把一条对话从一个标签拖到另一个
+  // 标签底下是允许的（共用同一份文件和历史，本来就是一回事）；没带就按会话上记过的、再按配置回落。
+  sess.lane = lanes.normalize(lane) || lanes.laneOf(sess);
+  const laneId = sess.lane;
+  // 续跑 id 按引擎分开记（claude 的 id 喂给 codex 只会当场炸）。跟工作线无关——
+  // 引擎是用户在设置里挑一次、两条线共用的那个。
+  const laneEngine = prefs.agentCfg(config).engine || "builtin";
+  const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
+  if (regen) {
+    // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
+    const lastUser = sess.history.map((h) => h.role).lastIndexOf("user");
+    if (lastUser >= 0) sess.history.splice(lastUser);
+    if (sess.transcript.length && sess.transcript[sess.transcript.length - 1].type === "assistant") sess.transcript.pop();
+    if (sess.transcript.length && sess.transcript[sess.transcript.length - 1].type === "user") {
+      const was = sess.transcript.pop();
+      // 从主界面点「重新生成」只带回了完整的 message，人说的那句要从被回滚的这一条上接过来
+      if (!shownText && was.shown && was.text === message) shownText = was.shown;
+    }
+  }
+  // 截断兜底标题要先去掉「【任务类型：X】」这个给模型看的前缀，不然起标题失败时历史列表全是它
+  if (!sess.title) sess.title = (shownText || message).replace(/^\s*【任务类型：[^】]*】\s*/, "").slice(0, 24);
+  sess.history.push({ role: "user", content: message });
+  // 每一轮自己盖时间戳。以前只有会话级的 updated_at，于是自进化的挖掘器只能拿它当近似——
+  // 结果是**一个会话里几个月前的失败和今天的失败共用同一个时间**。这不是精度问题：
+  // scoreRules 按"规则生效以来"开窗打分，只要这个会话今天被打开过，它里面规则生效**之前**的
+  // 失败就全算进"生效之后"，规则越有效越会被判「没起作用」并建议下架。
+  const turnAt = new Date().toISOString();
+  sess.transcript.push({ type: "user", text: message, ...(shownText ? { shown: shownText } : {}), mode, at: turnAt });
+  const asstEvents = [];
+  sess.transcript.push({ type: "assistant", events: asstEvents, at: turnAt });
+  autosaveSession(sessionId, 0); // 先把用户这句话落盘，后面再崩至少问题还在
+
+  runState.events = asstEvents; // 续流端点靠它补发已记录的事件
+  activeRuns.set(sessionId, runState);
+  persistRunning();
+  const emitFn = recordingEmit(send, asstEvents, sessionId);
+  /**
+   * 撞车才隔离：另有任务正在改这同一个 git 仓库，这一条就去自己的 worktree 里改。
+   *
+   * 只有撞上才开，先到的那条一动不动——它在用户眼皮底下那份工作区里改，看得见摸得着，
+   * 这是用户的预期。后到的才是"多出来的"，让它去侧线。为什么非做不可、边界在哪，见 worktree.js 开头。
+   *
+   * 整段包在 try 里：分身开不出来（没装 git、仓库还没有第一次提交、磁盘满）绝不能让任务起不来。
+   * 那种情况下退回老样子——两条任务共用一份工作区，跟这个功能上线前一模一样。
+   */
+  let wtInfo = null;
+  try {
+    // 名单要把终端里那趟也算上：撞车最常见的一种就是「网页上开着一条，人又在终端里 openworkbuddy 了一句」，
+    // 而这两个是两个进程——盘上那个 cli-live 目录是它们唯一互相看得见的地方
+    const busy = [...activeRuns].map(([sid, r]) => ({ session: sid, dir: r.root || "" }));
+    try { for (const r of cliLive.list({ prune: false })) if (r.live && r.cwd) busy.push({ session: r.id, dir: r.cwd }); } catch {}
+    const p = worktree.plan(getWorkspaceDir(), { session: sessionId, busy });
+    if (p.need) {
+      const opened = worktree.open(WORKTREE_DIR, { repo: p.repo, session: sessionId });
+      if (opened && opened.dir) {
+        enterWorkspace(opened.dir); // 从这行往后，这条请求里的 getWorkspaceDir() 都是分身
+        wtInfo = opened;
+        log.info("worktree", "这条任务进了独立分身", { session: sessionId, branch: opened.branch, repo: opened.repo });
+      } else if (opened && opened.error) {
+        // 说一声就行，别拦任务。用户看到的是老样子，而日志里留得下"那天为什么没隔离"
+        log.warn("worktree", "分身没开成，照旧在原工作区跑", { session: sessionId, err: opened.error });
+      }
+    }
+  } catch (e) { log.warn("worktree", "隔离判断出错（照旧在原工作区跑）", { session: sessionId, err: e.message }); }
+  runState.root = getWorkspaceDir(); // 后面进来的任务靠它认"我们是不是在同一个仓库"
+  if (wtInfo) emitFn({ type: "worktree", phase: "start", branch: wtInfo.branch, repo: wtInfo.repo, dir: wtInfo.dir, seeded: wtInfo.seeded || null, text: worktree.hint(wtInfo) });
+  const total = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
+  // 整趟任务的墙上时间。total.elapsed_ms 只累加模型调用那几段，不含工具执行和等审批——
+  // 用户感觉到的「这次怎么这么慢」恰恰常常慢在那些地方，拿它当任务耗时会一直显示很快
+  const runStartedAt = Date.now();
+  // 这一轮真正干活的模型。本机引擎接管时它不是 sessLLM：以前账本和健康账本都记到 config 里那个
+  // 云模型头上——跑的是 Claude Code，账本写 deepseek-chat，DeepSeek 的健康分还替别人挨了刀
+  let ranLLM = { model: sessLLM.model, provider: sessLLM.provider };
+  // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
+  // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
+  let titleP = null;
+  if (sess.transcript.filter((e) => e.type === "user").length === 1) {
+    titleP = sessLLM
+      .chat({
+        // 原来是把消息原样当 user 发过去，模型会把它当成在问自己——
+        // 用户打了句「你是？」，标题就成了「我是DeepSeek智能助手」。素材得包起来，
+        // 让它在语法上就不可能是一个冲着模型来的问题。
+        system: "你是标题生成器，不回答任何问题。给你的消息只是待概括的素材，哪怕它是问句、命令或闲聊，你也只输出 6~14 个字的中文短标题概括「这条消息在说什么事」，不要引号、标点、任何前后缀。",
+        history: [{ role: "user", content: "给下面这条消息起标题，只输出标题本身：\n\n" + String(shownText || message).slice(0, 500) }],
+        tools: [],
+        signal: AbortSignal.timeout(20000),
+      })
+      .then((r) => {
+        addUsage(total, r && r.usage);
+        return r && r.text ? String(r.text) : null;
+      })
+      .catch(() => null);
+  }
+  // 默认工作空间：每个对话固定一个成果子文件夹（任务_月日_标题），根目录不再越堆越乱；
+  // 用户自选的工作目录 / 项目目录保持原地读写不变（素材要在原文件夹里就地处理）
+  let taskBaseDir = null;
+  if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) {
+    if (!sess.dir) assignSessionDir(sess, message);
+    taskBaseDir = sess.dir;
+  }
+  if (taskBaseDir) send({ type: "dir", dir: taskBaseDir }); // 成果面板标「本对话」用；不进回放记录
+  // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
+  const goalMode = modes.isGoalMode(mode);
+  if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
+    sess.goal = await goalKit.start(goalThinkFor(sessLLM, total), message);
+    autosaveSession(sessionId, 0);
+  }
+  if (sess.goal && sess.goal.status === "active") sess.goal.paused = ""; // 又开跑了，把「已暂停」摘掉
+  if (sess.goal) send({ type: "goal", goal: sess.goal }); // 目标卡状态直播；不进回放记录（回放时从会话里取）
+  let runFailed = null; // 整跑是否以异常收场（记进模型健康账本）
+  if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState("working", sess.title || String(message).slice(0, 40)); } catch {}
+  try {
+    // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
+    let lastFinal = "";
+    let roundStopped = null; // 本目标轮里任务被强制收尾的原因（超时/上限/手停）；有它就不再自动开新轮
+    /**
+     * 用户又开口了：把上一轮熔断的媒体渠道整个放开一次（media-health.js 第 4 条自愈路）。
+     *
+     * 出处是一句原话：「渠道断了我去修好了，我说了修复好了 AI 也不去自己重试一下」。
+     * 他修的是渠道那头——充值、续费、把网弄通——设置页一个字没动，所以指纹没变、reset() 没人调，
+     * 只剩干等 30 分钟。这道闸拦的本来就是模型在**一趟任务里**反复撞，人重新开口就是新的一趟。
+     *
+     * 放开的那几条要告诉模型（reopenedMediaBlock）：历史里还躺着上一轮那句「别再调这个工具了」，
+     * 不说一声的话它照着历史继续拒绝，用户看到的还是「用不了」。只报第一轮——
+     * 后面那些是目标模式自己开的新轮和插队消息，不是人又说了一次话。
+     */
+    let mediaReopened = [];
+    try { mediaReopened = mediaHealth.reopen(); } catch {}
+    for (let goalRound = 0; ; goalRound++) {
+      roundStopped = null;
+      // 进行中的目标注入任务上下文：agent 每一轮都对着验收标准干活，不跑偏
+      const goalCtx = goalKit.contextFor(sess.goal);
+      // 内层：任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
+      for (;;) {
+        const r = await runtime.runTask({
+          lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
+          taskLabel: sess.title || String(message).slice(0, 24),
+          mediaReopened, // 刚放开的媒体渠道，写进这一轮的提示词（见上面那段）
+          sessionId, // 追踪上按会话归堆：同一个对话问了十轮，在 Langfuse 上是一条会话线而不是十条散 trace
+          baseDir: taskBaseDir,
+          llmOverride: sessLLM,
+          history: sess.history,
+          emit: emitFn,
+          mode: modes.agentMode(mode), // goal 是套在 craft 外面的壳，agent 只认识 ask/plan/craft
+          user: user ? user.username : undefined,
+          projectContext: (projectContextOf(activeProject()) || "") + goalCtx,
+          stopSignal: runState.ctrl.signal,
+          // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 openworkbuddy 命令行
+          // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
+          engineSession: lanes.engineSessionFor(sess, laneEngine),
+          getInterject: () => runState.interject.splice(0),
+          // ask_user 工具的等待端：回答从 /api/chat/answer 进来；超时或用户点停止都放行 null
+          askUser: ({ askId, timeoutMs }) => new Promise((resolve) => {
+            const done = (v) => {
+              clearTimeout(timer);
+              runState.asks.delete(askId);
+              runState.ctrl.signal.removeEventListener("abort", onAbort);
+              resolve(v);
+            };
+            const timer = setTimeout(() => done(null), timeoutMs);
+            const onAbort = () => done(null);
+            runState.ctrl.signal.addEventListener("abort", onAbort);
+            runState.asks.set(askId, done);
+          }),
+        });
+        mediaReopened = [];   // 只报给这一轮：后面的目标轮/插队不是「人又说了一次话」
+        addUsage(total, r && r.usage);
+        if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
+        if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
+        if (r && r.finalText) lastFinal = r.finalText;
+        if (r && r.stopped) roundStopped = r.stopped;
+        const leftover = runState.interject.splice(0);
+        if (!leftover.length || runState.ctrl.signal.aborted) break;
+        for (const m of leftover) {
+          sess.history.push({ role: "user", content: m });
+          emitFn({ type: "interject", text: m });
+        }
+      }
+      // 没有进行中的目标 / 用户已手动停止 → 不验收不加轮
+      if (!sess.goal || sess.goal.status !== "active" || runState.ctrl.signal.aborted) break;
+      sess.goal.note = "";
+      sess.goal.paused = "";
+      await goalKit.verify(goalThinkFor(sessLLM, total), sess, lastFinal, (w) => { sess.goal.note = w; });
+      sess.goal.round = (sess.goal.round || 0) + 1;
+      send({ type: "goal", goal: sess.goal });
+      autosaveSession(sessionId, 0);
+      if (sess.goal.status === "done") break;
+      if (!goalMode) break;
+      // 自动补跑用完了。以前到这儿就悄悄不跑了，目标卡停在「2/4 · 第 3 轮」——用户分不清是"还在跑"
+      // 还是"不跑了"。写清楚为什么停、还差几项，卡上给一颗「接着冲」，把要不要继续烧钱交回给用户
+      if (goalRound + 1 >= GOAL_MAX_ROUNDS) {
+        sess.goal.paused = `自动补跑已用满 ${GOAL_MAX_ROUNDS} 轮，还差 ${goalKit.progress(sess.goal).unmet} 项没达成`;
+        send({ type: "goal", goal: sess.goal });
+        autosaveSession(sessionId, 0);
+        break;
+      }
+      // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
+      if (roundStopped) {
+        sess.goal.paused = `这轮任务被强制收尾（${roundStopped}），暂停自动补跑`;
+        send({ type: "goal", goal: sess.goal });
+        autosaveSession(sessionId, 0);
+        emitFn({ type: "interject", text: `【目标验收】这轮任务被强制收尾（${roundStopped}），暂停自动补跑。解决后可以直接说「继续」接着冲目标。` });
+        break;
+      }
+      // 没达标 → 把未达成项作为下一轮指令，接着冲（进回放记录，回放时能看懂为什么又跑了一轮）
+      const fb = goalKit.feedbackFor(sess.goal);
+      sess.history.push({ role: "user", content: fb });
+      emitFn({ type: "interject", text: fb });
+    }
+  } catch (e) {
+    runFailed = e.message;
+    const streak = (modelFailStreak.get(ranLLM.provider) || 0) + 1;
+    modelFailStreak.set(ranLLM.provider, streak);
+    let emsg = e.message;
+    if (streak >= 2) {
+      emsg += `\n\n模型「${ranLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
+    }
+    send({ type: "error", message: emsg });
+    asstEvents.push({ type: "error", message: emsg });
+  } finally {
+    activeRuns.delete(sessionId);
+    persistRunning();
+    if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
+  }
+  if (total.calls > 0) modelFailStreak.delete(ranLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
+  // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）
+  if (runFailed) recordModelHealth(ranLLM.provider, false, runFailed);
+  else if (total.calls > 0) recordModelHealth(ranLLM.provider, true);
+
+  // 指标 + 运行期日志。这两行是「出了事能不能知道」的全部来源：
+  // 健康账本只留每条渠道最近 20 次，答不了「今天失败率多少」「P95 几秒」；
+  // 而 console 打出来的东西，桌面用户根本看不到。
+  if (total.calls > 0 || runFailed) {
+    metrics.bump("tasks");
+    if (runFailed) metrics.bump("tasks_failed");
+    metrics.observe("task", Date.now() - runStartedAt);
+    metrics.bump("tokens", (total.prompt || 0) + (total.completion || 0));
+    metrics.bump("model_calls", total.calls || 0);
+    if (runFailed) metrics.bump("model_fail");
+    log[runFailed ? "warn" : "info"]("chat", runFailed ? "任务失败" : "任务完成", {
+      session: sessionId, user: (user && user.username) || "", provider: ranLLM.provider, model: ranLLM.model,
+      calls: total.calls || 0, tokens: (total.prompt || 0) + (total.completion || 0),
+      ms: Date.now() - runStartedAt, err: runFailed || undefined,
+    });
+  }
+
+  // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
+  if (user && total.calls > 0) {
+    const spent = account.chargeRun(user, { ...total, model: ranLLM.model, provider: ranLLM.provider, source: "web", sessionId });
+    // 不限额时 spent 是 0，就别在结果下面挂一行「扣 0 积分」了，那只是噪声
+    if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
+  }
+
+  // 标题生成失败/没赶上就保持截断标题，绝不为它多等
+  if (titleP) {
+    const t = await Promise.race([titleP, new Promise((r) => setTimeout(r, 3000, null))]);
+    const clean = t && t.replace(/[\r\n"“”「」『』]/g, "").trim().slice(0, 20);
+    if (clean) { sess.title = clean; send({ type: "title", title: clean }); }
+  }
+  // 这一轮什么都没产出的话，别留一个空文件夹在工作空间里。
+  // 空文件夹的来路不止一条：executeTool 拿到 baseDir 就 mkdir（连只读工具也会）、
+  // 脚本的 cwd 也要目录先在。逐个堵必漏，所以在回合收尾处一处收口。
+  // 用 rmdirSync 而不是 rm -r：**它删不掉非空目录**，这是天生的保险——
+  // 万一判断有误，最坏结果是删不动报个错，绝不会连着成果一起没了。
+  // 顺带把名字修好：清掉之后 sess.dir 置空，下一轮重新分配时 sess.title 已经是
+  // 模型生成的真短标题了，于是「任务_0822_你好」这种名字自己就没了。
+  if (taskBaseDir && sess.dir && !(sess.pending_uploads || []).length) {
+    const full = path.join(getWorkspaceDir(), sess.dir);
+    try {
+      if (fs.existsSync(full) ? !fs.readdirSync(full).length : true) {
+        if (fs.existsSync(full)) fs.rmdirSync(full); // 非空会抛，抛了就什么都不动
+        assignedDirs.delete(sess.dir);
+        sess.dir = null;
+      }
+    } catch {} // 删不动就留着，一个空文件夹远好过一次误删
+  }
+  saveSession(sessionId);
+  // 收尾只是刷一遍完整文件列表，不是"本回合有产出"的通报：changed 明确给空，
+  // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
+  const files0 = outputFiles();
+  send({ type: "files", files: files0, changed: [], ...filesScope(files0) });
+  /**
+   * 收尾问一句「这次顺手造的中间文件要不要清掉」。
+   *
+   * 为什么放在这儿、而不是让用户自己想起来去资料库翻：因为没人会想起来。
+   * 用户是攒到 4.3 GB、自己翻硬盘的时候才发现的，那时候早已经分不清哪个文件属于哪次任务了。
+   * 刚跑完这一刻是唯一「还记得这次干了什么」的时刻，问的成本也最低。
+   *
+   * since 卡在这一轮的起点：三周前那个任务留下的东西不该趁这次一起端上来——
+   * 用户点「清理」时心里想的是「刚才这一趟」，多删一个字都是背信。
+   * 门槛 20 MB / 30 个：比这还少就别打扰人，一条提示本身也是打扰。
+   */
+  try {
+    const sw = sweep.plan(getWorkspaceDir(), { since: runStartedAt });
+    if (sw.count && (sw.bytes >= 20 * 1024 * 1024 || sw.count >= 30)) {
+      send({ type: "sweep", since: runStartedAt, ...sw });
+    }
+  } catch {} // 清单算不出来不该拖累一次成功的任务
+  // 分身收尾：什么都没干就地收掉（跟上面"空的任务文件夹不留"同一个道理），
+  // 干了活的替它提交一笔——没提交的改动是合不回来的，用户照着提示敲 git merge 会发现什么都没有
+  if (wtInfo) {
+    try {
+      const rel = worktree.release(WORKTREE_DIR, wtInfo.dir, { title: sess.title || "" });
+      if (rel && rel.removed) emitFn({ type: "worktree", phase: "done", empty: true, branch: wtInfo.branch, text: "这条任务在独立分身里跑，没留下改动，分身已经收掉了。" });
+      else if (rel) emitFn({ type: "worktree", phase: "done", branch: rel.branch, repo: rel.repo, dir: rel.dir, touched: rel.touched, commits: rel.commits, text: worktree.hint(rel) });
+    } catch (e) { log.warn("worktree", "分身收尾出错（东西还在，没丢）", { session: sessionId, err: e.message }); }
+  }
+  send({ type: "done" });
+  if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
+  for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
+  runState.subscribers.clear();
+});
+
+// 插队：往正在运行的任务里注入一条补充消息（agent 在下一个安全间隙读到并继续）
+app.post("/api/chat/interject", (req, res) => {
+  const { sessionId, message } = req.body || {};
+  const text = String(message || "").trim();
+  const run = activeRuns.get(sessionId);
+  if (!run) return res.status(409).json({ ok: false, error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, sessionId)) return;
+  if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
+  run.interject.push(text);
+  res.json({ ok: true, queued: run.interject.length });
+});
+
+// ask_user 的回答通道：agent 弹的问题，用户点选/输入后从这里回填给正在等待的那次工具调用
+app.post("/api/chat/answer", (req, res) => {
+  const { sessionId, askId, answer } = req.body || {};
+  const run = activeRuns.get(sessionId);
+  if (!run) return res.status(409).json({ ok: false, error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, sessionId)) return;
+  const resolve = run.asks && run.asks.get(String(askId || ""));
+  if (!resolve) return res.status(404).json({ ok: false, error: "这个问题已过期或已回答过" });
+  const text = String(answer || "").trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ ok: false, error: "回答为空" });
+  resolve(text);
+  res.json({ ok: true });
+});
+
+// 正在运行任务的会话列表：前端刷新后靠它找回后台任务，断流后靠它判断任务是否还活着
+app.get("/api/chat/running", (req, res) => {
+  // 口径跟侧栏一样窄（ownSession）：这份列表不是「我能打开哪些」，是「页面刷新后该替我接回哪些」。
+  // 以前管理员这里拿到的是全服务器所有人正在跑的任务 id，前端 reattachRunning 会挨个把它们
+  // 回放进他自己的窗口——同事的任务画面直接铺到管理员屏幕上，还顺手订上了人家的实时流。
+  const ids = [...activeRuns.keys()].filter((id) => ownSession(req.user, { user: (sessions.get(id) || {}).user || "" }));
+  res.json(ids);
+});
+
+// 断点续流：把 transcript 里已记录的事件从 from 序号补发，然后接上直播（页面刷新/断网重连后无缝接回）。
+// textOffset 处理最后一条还在增长的合并文本：客户端已看过前 textOffset 个字符，只补后半段。
+// slice 到加入订阅是同步完成的，中间不会漏事件也不会重复。
+app.get("/api/chat/stream/:id", (req, res) => {
+  const run = activeRuns.get(req.params.id);
+  if (!run || !run.events) return res.status(404).json({ error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, req.params.id)) return;
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.on("error", () => {});
+  const from = Math.max(0, parseInt(req.query.from, 10) || 0);
+  const textOffset = Math.max(0, parseInt(req.query.textOffset, 10) || 0);
+  run.events.slice(from).forEach((ev, i) => {
+    const out = i === 0 && textOffset && ev.type === "text" ? { type: "text", delta: String(ev.delta).slice(textOffset) } : ev;
+    try { res.write(`data: ${JSON.stringify(out)}\n\n`); } catch {}
+  });
+  run.subscribers.add(res);
+  req.on("close", () => run.subscribers.delete(res));
+});
+
+// 任务历史列表。前端侧栏以前只信 localStorage，清个缓存 / 换台机器就「历史全没了」，
+// 其实对话一直在 data/sessions/ 里躺着。这条接口是那份列表的权威来源，前端登录后跟本地缓存并一次。
+app.get("/api/sessions", (req, res) => {
+  const rows = listSessionsOnDisk().filter((r) => ownSession(req.user, r)).slice(0, 300);
+  res.json({ sessions: rows.map(({ user, ...r }) => r) }); // 归属只用来过滤，不回给前端
+});
+
+// ---------- 任务历史检索 ----------
+// 侧栏那个放大镜以前只筛标题。可标题是任务跑完自动起的，用户从没读过一眼；
+// 他记得的是自己当时打的那句话（「把这个 csv 里重复的行挑出来」），或者最后拿到的那个文件名。
+// 按标题筛，这两种记法一条都找不着。
+// 所以这儿给每条会话摘一段能搜的正文（摘法在 session-search.js），按文件 mtime 增量缓存——
+// 跟侧栏那份 .index 同一套判据，但**分开存**：.index 是每次拉侧栏都要读的，
+// 一条会话几 KB 的正文摘要塞进去，等于让「打开应用」这条最热的路去为「偶尔搜一次」买单。
+const SESS_SEARCH_FILE = path.join(SESS_DIR, ".search");
+let sessSearchIdx = null;      // { v, model, rows: { <文件名>: { mtime, digest, files, vec } } }
+let sessSearchDirty = false;
+let sessSearchTimer = null;
+function loadSessSearchIdx() {
+  if (sessSearchIdx) return sessSearchIdx;
+  const raw = store.readJson(SESS_SEARCH_FILE, null);
+  sessSearchIdx = (raw && raw.v === 1 && raw.rows && typeof raw.rows === "object")
+    ? { v: 1, model: String(raw.model || ""), rows: raw.rows }
+    : { v: 1, model: "", rows: {} };
+  return sessSearchIdx;
+}
+function saveSessSearchIdx() {
+  if (!sessSearchDirty || sessSearchTimer) return;
+  sessSearchTimer = setTimeout(() => {
+    sessSearchTimer = null;
+    sessSearchDirty = false;
+    try { store.writeJsonAtomic(SESS_SEARCH_FILE, sessSearchIdx, { backup: false }); } catch {}
+  }, 2000);
+  if (sessSearchTimer.unref) sessSearchTimer.unref();
+}
+/** 摘要索引跟盘上的文件对齐。只重读 mtime 变过的，没变的直接用缓存 */
+function sessSearchIndex() {
+  const idx = loadSessSearchIdx();
+  let names = [];
+  try { names = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return idx; }
+  const seen = new Set(names);
+  for (const n of names) {
+    const id = n.slice(0, -5);
+    let mtime = 0;
+    try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+    const live = sessions.get(id);
+    const hit = idx.rows[n];
+    if (!live && hit && hit.mtime === mtime) continue;
+    const data = live || store.readJson(path.join(SESS_DIR, n), null);
+    if (!data) { delete idx.rows[n]; sessSearchDirty = true; continue; }
+    const digest = sessSearch.digestOf(data);
+    // 正文变了，旧向量就作废——留着的话，搜出来的「意思相近」说的是这条会话上一版的意思
+    const changed = !hit || hit.digest !== digest;
+    idx.rows[n] = { mtime, digest, files: sessSearch.filesOf(data), vec: changed ? null : (hit.vec || null) };
+    sessSearchDirty = true;
+  }
+  for (const k of Object.keys(idx.rows)) if (!seen.has(k)) { delete idx.rows[k]; sessSearchDirty = true; }
+  saveSessSearchIdx();
+  return idx;
+}
+
+// 向量那一路：配了 embeddings 渠道才有。没有就只走字面 + 词面，并在结果里明说这一路没走——
+// 悄悄降级的话，用户搜不到就只会觉得「这个搜索不准」，而真正该做的是去配一条渠道。
+const SESS_VEC_MAX = 400;   // 只给最近这些条算向量：更早的靠字面找得到，而每条向量都是一次真花钱的调用
+function setSessEmbedder(fn) { sessEmbedder = typeof fn === "function" ? fn : null; }
+/** 后台补算向量。尽力而为：算不动就下次再说，绝不拖住一次搜索 */
+async function ensureSessVectors() {
+  if (!sessEmbedder || sessVecRunning) return { computed: 0 };
+  sessVecRunning = true;
+  try {
+    const idx = loadSessSearchIdx();
+    // 换了嵌入模型要全部作废重算，但「到底换没换」先探一次再说：
+    // 首选渠道欠费时 embedder 报的是首选的名字，照着它清库会把整库清空又一条算不出来
+    if (idx.model && idx.model !== sessEmbedder.model && Object.values(idx.rows).some((r) => r && r.vec)) {
+      const probe = await sessEmbedder(["嵌入模型探针"]);
+      if (!probe) return { computed: 0 };
+      if (idx.model !== sessEmbedder.model) { for (const r of Object.values(idx.rows)) if (r) r.vec = null; idx.model = sessEmbedder.model; }
+    }
+    if (!idx.model) idx.model = sessEmbedder.model;
+    const todo = Object.entries(idx.rows)
+      .filter(([, r]) => r && !r.vec)
+      .sort((a, b) => Number(b[1].mtime || 0) - Number(a[1].mtime || 0))
+      .slice(0, SESS_VEC_MAX);
+    let computed = 0;
+    for (let i = 0; i < todo.length; i += 16) {
+      const batch = todo.slice(i, i + 16);
+      const out = await sessEmbedder(batch.map(([n, r]) => sessSearch.embedTextOf({ title: n.slice(0, -5), digest: r.digest })));
+      if (!out) break;  // embedder 自己记失败次数并停用，这儿不重试
+      batch.forEach(([n], j) => { idx.rows[n].vec = out[j].map((x) => Math.round(x * 1e5) / 1e5); });
+      computed += batch.length;
+    }
+    if (computed) { sessSearchDirty = true; saveSessSearchIdx(); }
+    return { computed };
+  } catch { return { computed: 0 }; } finally { sessVecRunning = false; }
+}
+const qVecCache = new Map();   // 搜索词 → 向量。边打字边搜，同一个词几秒内会来好几趟
+async function queryVector(q) {
+  if (!sessEmbedder) return null;
+  const k = String(q).slice(0, 200);
+  if (qVecCache.has(k)) return qVecCache.get(k);
+  let v = null;
+  try { const r = await sessEmbedder([k]); v = (r && r[0]) || null; } catch { v = null; }
+  if (qVecCache.size > 50) qVecCache.delete(qVecCache.keys().next().value);
+  qVecCache.set(k, v);
+  return v;
+}
+
+app.get("/api/sessions/search", async (req, res) => {
+  const q = String((req.query || {}).q || "").trim();
+  if (!q) return res.json({ q: "", hits: [], semantic: false, note: "" });
+  const meta = new Map(listSessionsOnDisk().filter((r) => ownSession(req.user, r)).map((r) => [r.id, r]));
+  const idx = sessSearchIndex();
+  const rows = [];
+  for (const [n, r] of Object.entries(idx.rows)) {
+    const m = meta.get(n.slice(0, -5));
+    if (!m || !r) continue;   // 侧栏看不见的（别人的、空壳的）也搜不到：搜索不是绕过归属的后门
+    rows.push({ id: m.id, title: m.title, at: m.at, turns: m.turns, lane: m.lane, project: m.project, digest: r.digest, files: r.files || [], vec: r.vec || null });
+  }
+  const withVec = rows.filter((r) => r.vec).length;
+  const qVec = await queryVector(q);
+  const hits = sessSearch.rank(rows, q, { qVec, limit: 40 });
+  ensureSessVectors().then((x) => { if (x.computed) console.log(`[任务检索] 补算了 ${x.computed} 条向量`); }).catch(() => {});
+  res.json({
+    q,
+    scanned: rows.length,
+    semantic: !!qVec,
+    vectors: { ready: withVec, of: Math.min(rows.length, SESS_VEC_MAX) },
+    note: sessSearch.searchNote({ total: rows.length, semantic: !!qVec, why: sessEmbedder ? "嵌入渠道这次没算出来" : "" }),
+    hits: hits.map((h) => ({
+      id: h.id, title: h.row.title, at: h.row.at, turns: h.row.turns, lane: h.row.lane, project: h.row.project,
+      why: h.why, score: Math.round(h.score * 1000) / 1000, snippet: h.snippet,
+    })),
+  });
+});
+
+// 历史会话回放
+app.get("/api/session/:id", (req, res) => {
+  const s = guardSession(req, res);
+  if (!s) return;
+  // 之前点过的 👍👎 一起带回：反馈早落库了，重开对话不该看着像没点过
+  let feedback = [];
+  try { feedback = evolve.readFeedback().filter((f) => f.session === req.params.id).map((f) => ({ turn: f.turn, verdict: f.verdict, note: f.note || "" })); } catch {}
+  // title/kind 是给「从别处点进来」的那几条路用的：定时任务的执行过程、搜索结果、评测页。
+  // 这几段会话不在侧栏列表里（定时任务那种是故意不进的），前端就没地方取标题——
+  // 于是点开「看执行过程」，顶上写的是光秃秃一个「任务」，看不出这是哪条定时任务跑的哪一趟。
+  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
+});
+
+// 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
+app.post("/api/session/:id/goal", (req, res) => {
+  const s = guardSession(req, res);
+  if (!s) return;
+  if (!s.goal) return res.status(400).json({ error: "该对话没有目标" });
+  if ((req.body || {}).action === "close") {
+    s.goal.status = "closed";
+    saveSession(req.params.id);
+  }
+  res.json({ ok: true, goal: s.goal });
+});
+
+// ---------- 内置评测（界面版）：spawn 子进程跑 eval/run.js ----------
+// 子进程隔离是刚需：评测会 setWorkspaceDir 到自己的沙盒目录，进程内跑会把主应用的工作空间劫走
+const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null };
+function evalSummaryBrief(j) {
+  if (!j) return null;
+  // 兼容两代格式：v3 有 repeat/pass1_avg/attempts，旧格式按 k=1 折算，前端只走一条代码路径
+  return {
+    at: j.at, model: j.model, model_id: j.model_id, score_pct: j.score_pct,
+    repeat: j.repeat || 1,
+    pass1_avg: j.pass1_avg != null ? j.pass1_avg : (j.tasks ? Math.round((j.full_pass / j.tasks) * 100) : 0),
+    flaky_tasks: j.flaky_tasks || [], fail_code_counts: j.fail_code_counts || {},
+    baseline: j.baseline || null,
+    tasks: j.tasks, full_pass: j.full_pass, checks_passed: j.checks_passed, checks_total: j.checks_total,
+    tokens_total: j.tokens_total, avg_prompt_per_call: j.avg_prompt_per_call || 0,
+    commit: j.commit || "", judge: j.judge || null, human: j.human || null,
+    results: (j.results || []).map((r) => {
+      const k = r.k || 1;
+      const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
+      return {
+        id: r.id, name: r.name, level: r.level || 1, kind: r.kind || "",
+        passed: r.passed, total: r.total, elapsed_s: r.elapsed_s,
+        k, passes, pass_rate: r.pass_rate != null ? r.pass_rate : +(passes / k).toFixed(3),
+        flaky: !!r.flaky, fail_codes: r.fail_codes || [],
+        attempts: (r.attempts || []).map((a) => ({ n: a.n, passed: a.passed, total: a.total, elapsed_s: a.elapsed_s, fail_code: a.fail_code || null })),
+        tool_calls: r.tool_calls || 0, tool_errors: r.tool_errors || 0,
+        judge: r.judge ? (r.judge.dims ? { passed: r.judge.passed, total: r.judge.total } : (r.judge.score ? { score: r.judge.score, verdict: r.judge.verdict || "" } : null)) : null,
+        human: r.human || null,
+        failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name),
+      };
+    }),
+  };
+}
+function evalHistory(limit = 20) {
+  const out = [];
+  try {
+    const root = dataPath("eval", "runs");
+    for (const d of fs.readdirSync(root).sort().reverse()) {
+      const j = store.readJson(path.join(root, d, "results.json"), null);
+      if (j) out.push({ dir: d, ...evalSummaryBrief(j) });
+      if (out.length >= limit) break;
+    }
+  } catch {}
+  return out;
+}
+app.post("/api/eval/start", (req, res) => {
+  if (evalState.running) return res.status(409).json({ error: "已有一轮评测在跑，等它结束" });
+  const model = String((req.body || {}).model || config.active_model);
+  if (!(config.models || []).some((m) => m.name === model)) return res.status(400).json({ error: `模型「${model}」不在列表里` });
+  const args = [appPath("eval", "run.js"), "--model", model];
+  const only = String((req.body || {}).task || "").trim();
+  if (only) args.push("--task", only);
+  const judge = String((req.body || {}).judge || "").trim();
+  if (judge && !(config.models || []).some((m) => m.name === judge)) return res.status(400).json({ error: `评委模型「${judge}」不在列表里` });
+  if (judge) args.push("--judge", judge);
+  const repeat = Math.max(1, Math.min(5, Math.round(+(req.body || {}).repeat) || 1));
+  if (repeat > 1) args.push("--repeat", String(repeat));
+  evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
+  const child = require("child_process").spawn(process.execPath, args, {
+    cwd: appPath(),
+    env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
+  });
+  let buf = "";
+  const onData = (d) => {
+    buf += String(d);
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trimEnd(); buf = buf.slice(i + 1);
+      if (line) { evalState.lines.push(line); if (evalState.lines.length > 400) evalState.lines.shift(); }
+    }
+  };
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+  child.on("close", (code) => { evalState.running = false; evalState.exit = code; });
+  child.on("error", (e) => { evalState.running = false; evalState.exit = -1; evalState.lines.push("评测进程启动失败: " + e.message); });
+  res.json({ ok: true, model });
+});
+app.get("/api/eval/status", (_req, res) => {
+  res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines });
+});
+app.get("/api/eval/history", (_req, res) => {
+  const bl = store.readJson(dataPath("eval", "baseline.json"), null);
+  res.json({ runs: evalHistory(), baseline: bl ? { at: bl.at, commit: bl.commit || "", model: bl.model || "", source_dir: bl.source_dir || "" } : null });
+});
+// 钉基线：把某次跑批的各题通过率写进 eval/baseline.json，之后每次跑批自动逐题对比、退步点名
+app.post("/api/eval/baseline", (req, res) => {
+  const dir = String((req.body || {}).dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  const j = store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
+  if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  const bl = {
+    at: j.at, commit: j.commit || "", model: j.model, repeat: j.repeat || 1,
+    pass1_avg: j.pass1_avg != null ? j.pass1_avg : (j.tasks ? Math.round((j.full_pass / j.tasks) * 100) : 0),
+    score_pct: j.score_pct, source_dir: dir,
+    tasks: Object.fromEntries((j.results || []).map((r) => {
+      const k = r.k || 1;
+      const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
+      return [r.id, { pass_rate: r.pass_rate != null ? r.pass_rate : +(passes / k).toFixed(3) }];
+    })),
+  };
+  fs.mkdirSync(dataPath("eval"), { recursive: true });
+  fs.writeFileSync(dataPath("eval", "baseline.json"), JSON.stringify(bl, null, 2));
+  res.json({ ok: true, baseline: { at: bl.at, commit: bl.commit, model: bl.model, source_dir: dir } });
+});
+// 单次评测完整明细：每题 checks、AI 评委理由、人工分、最终回复摘录、产物清单
+app.get("/api/eval/run/:dir", (req, res) => {
+  const dir = String(req.params.dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  const j = store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
+  if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  res.json({ dir, ...j });
+});
+// 人工打分：写回该次评测的 results.json，与机器分 / AI 评委分并列保存，互不覆盖
+app.post("/api/eval/human", (req, res) => {
+  const b = req.body || {};
+  const dir = String(b.dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  const file = dataPath("eval", "runs", dir, "results.json");
+  const j = store.readJson(file, null);
+  if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  const r = (j.results || []).find((x) => x.id === String(b.task_id || ""));
+  if (!r) return res.status(404).json({ error: "没有这道题" });
+  const score = Math.round(+b.score);
+  if (!(score >= 1 && score <= 5)) return res.status(400).json({ error: "分数须是 1-5 的整数" });
+  r.human = { score, comment: String(b.comment || "").slice(0, 500), by: req.user ? req.user.username : "", at: new Date().toISOString() };
+  const scored = (j.results || []).filter((x) => x.human && x.human.score);
+  j.human = { scored: scored.length, avg: +(scored.reduce((s, x) => s + x.human.score, 0) / scored.length).toFixed(2) };
+  fs.writeFileSync(file, JSON.stringify(j, null, 2));
+  res.json({ ok: true, task_id: r.id, human: j.human });
+});
+
+// 给单个对话指定模型（null = 跟随全局默认）。只影响这一个对话，不动全局 active_model
+app.post("/api/session/:id/model", (req, res) => {
+  const name = (req.body || {}).model;
+  const s = guardSession(req, res);   // 别人的对话不许换模型——换掉之后他下一句话就烧在另一个模型上
+  if (!s) return;
+  if (name === null || name === undefined || name === "") {
+    delete s.model;
+  } else {
+    if (!Array.isArray(config.models) || !config.models.some((m) => m.name === name)) {
+      return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
+    }
+    s.model = String(name);
+    // 记住这次手动选择：开了「新对话沿用上次选的模型」时，下个新对话默认就用它。
+    // 多人服务器上按人记——不然 A 换一次模型，B 开的下一个新对话就跟着变了
+    if (ownPrefs(req)) prefs.write(req.user, { last_picked_model: s.model });
+    else if (config.last_picked_model !== s.model) { config.last_picked_model = s.model; saveConfig(); }
+  }
+  saveSession(req.params.id);
+  res.json({ ok: true, model: s.model || null });
+});
+
+/**
+ * 文件检查点：这条对话改过哪些文件、退回某一步之前。
+ * 只认本对话的账（别人对话的检查点拿着 id 也退不了）。跑着的时候不许退——
+ * 模型下一步就要在退回去的文件上接着写，两头一起动等于把文件撕成两半。
+ */
+app.get("/api/session/:id/checkpoints", (req, res) => {
+  if (!guardSession(req, res)) return;
+  res.json({ items: checkpoints.list(getWorkspaceDir(), req.params.id) });
+});
+app.post("/api/session/:id/rewind", (req, res) => {
+  if (!guardSession(req, res)) return;
+  if (activeRuns.has(req.params.id)) return res.status(409).json({ error: "任务还在跑，先停掉再回退" });
+  const id = String((req.body || {}).id || "");
+  if (!id) return res.status(400).json({ error: "缺 id" });
+  const r = checkpoints.rewind(getWorkspaceDir(), req.params.id, id);
+  if (!r.ok) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+
+// 助理模式没有会话 id（消息走 IM 的 local 通道），模型选择只能挂在配置上：选完就存，
+// 刷新页面、离开助理页再回来都还是它。不存的话标签会自己弹回全局默认，
+// 而下面真正跑任务用的又是标签上那个——那就成了另一种「标签说一套、实际跑一套」
+app.post("/api/assist/model", (req, res) => {
+  const name = (req.body || {}).model;
+  const val = name === null || name === undefined || name === "" ? "" : String(name);
+  if (val && !(Array.isArray(config.models) && config.models.some((m) => m.name === val))) {
+    return res.status(400).json({ error: `模型「${val}」不在模型列表里` });
+  }
+  // 「我在助理页用哪个模型」是个人的事。以前一律写 config，结果是多人服务器上谁都能
+  // 改掉所有人的助理模型——而且这条路径压根没被服务器级的闸盖住
+  if (ownPrefs(req)) {
+    prefs.write(req.user, { assist_model: val });
+    return res.json({ ok: true, model: val || null });
+  }
+  if (val) config.assist_model = val;
+  else delete config.assist_model;
+  saveConfig();
+  res.json({ ok: true, model: config.assist_model || null });
+});
+
+// 删除会话（内存 + 磁盘一起删）
+app.delete("/api/session/:id", (req, res) => {
+  if (!guardSession(req, res)) return;
+  forgetSession(req.params.id);
+  try { fs.unlinkSync(sessFile(req.params.id)); } catch {}
+  res.json({ ok: true });
+});
+
+// 停止正在运行的任务：中断当前模型调用，agent 循环在下一个检查点收尾
+app.post("/api/chat/stop", (req, res) => {
+  const sessionId = (req.body || {}).sessionId;
+  const run = activeRuns.get(sessionId);
+  if (!run) return res.json({ ok: false, error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, sessionId)) return;
+  run.ctrl.abort();
+  res.json({ ok: true });
+});
+
+let scheduler;
+
+// ---------- 定时任务管理 API ----------
+/**
+ * 「这次请求是谁」，交给 scheduler 当归属判据用。
+ *
+ * 排期表以前一条归属都不记，这九个接口全都是敞的：任何一个登录进来的人，
+ * 列表一拉就看见全公司的定时任务描述（那就是商业内容本身），还能改、能删、
+ * 能按一下「立即运行」——花的是公司的额度，结果推到的是原主人的通知渠道。
+ * 单机个人版 viewer 里两个字段都是空的，allowed() 一律放行，行为一字不差。
+ */
+function schedViewer(req) {
+  const u = req.user;
+  if (!u) return null;
+  return { username: u.username, admin: account.canAdmin(u), org: org.orgIdOf(u) };
+}
+app.get("/api/schedules", (req, res) => res.json(scheduler.list(schedViewer(req))));
+// 运行记录。只看 last_result 的话，昨天跑挂今天跑好就查无此事
+app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300), schedViewer(req))));
+app.post("/api/schedules", (req, res) => {
+  try {
+    const v = schedViewer(req);
+    // 归属只认服务端认出来的这个人，body 里传什么都不看——不然「帮别人建一条」就成了免费的甩锅口子
+    res.json(scheduler.add({ ...(req.body || {}), user: v ? v.username : "", org: v ? v.org : "" }));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.patch("/api/schedules/:id", (req, res) => {
+  try {
+    const t = scheduler.update(req.params.id, req.body || {}, schedViewer(req));
+    if (!t) return res.status(404).json({ error: "任务不存在" });
+    res.json(t);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.delete("/api/schedules/:id", (req, res) => res.json({ ok: scheduler.remove(req.params.id, schedViewer(req)) }));
+// 批量：一条条点太慢，但批量删是不可逆的，所以要求前端明确传 action
+app.post("/api/schedules/bulk", (req, res) => {
+  const { ids, action } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: "没选中任何任务" });
+  if (!["enable", "disable", "delete"].includes(action)) return res.status(400).json({ error: "未知操作" });
+  const v = schedViewer(req);
+  let n = 0;
+  for (const id of ids) {
+    if (action === "delete") n += scheduler.remove(id, v) ? 1 : 0;
+    else n += scheduler.toggle(id, action === "enable", v) ? 1 : 0;
+  }
+  res.json({ ok: true, count: n });
+});
+app.post("/api/schedules/:id/toggle", (req, res) =>
+  res.json({ ok: scheduler.toggle(req.params.id, !!(req.body || {}).enabled, schedViewer(req)) })
+);
+app.post("/api/schedules/:id/catchup", (req, res) =>
+  res.json({ ok: scheduler.setCatchUp(req.params.id, !!(req.body || {}).catch_up, schedViewer(req)) })
+);
+app.post("/api/schedules/:id/run", async (req, res) => {
+  const item = scheduler.get(req.params.id, schedViewer(req));
+  if (!item) return res.status(404).json({ error: "任务不存在" });
+  if (item.running) return res.status(409).json({ error: "这个任务正在跑，等它跑完再点" });
+  try {
+    // 传 id 不传对象：list() 给出去的是副本，拿副本去跑的话执行结果写在副本上，存不下来
+    const reply = await scheduler.runOne(item.id, "手动");
+    res.json({ ok: true, reply });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 无人值守那几条路（飞书 / 企微 / QQ / 定时任务）该用哪个模型。
+ *
+ * 助理页和 IM 是同一个助理的两张脸——助理页发的消息走的就是 /im/local，同一份日志、同一套会话。
+ * 可模型是各用各的：助理页每次请求把自己选的那个带在 body 里，IM 这条路一个字都不传，
+ * 直接落到全局默认上。于是电脑上标签写着 A，掏出手机在飞书里说话的是 B，B 还欠着费。
+ *
+ * IM 那头没有登录态，只能认管理员（掏 API 钱的那个人）名下的助理模型；他没单独选过就回全局默认。
+ * 选过、但那条模型后来被从列表里删了，也回全局默认：这条路是无人值守的，
+ * 宁可用一个能跑的，也别让手机上收到一句「模型不在列表里，去点输入框右下角」。
+ * 定时任务不跟：它跑的是批量活，该由全局默认（通常是便宜那档）扛，不该被助理页的临时选择带偏。
+ */
+function assistModelOf(owner) {
+  let name = "";
+  try { name = String((owner ? prefs.read(owner) : {}).assist_model || config.assist_model || ""); } catch { name = String(config.assist_model || ""); }
+  return name && Array.isArray(config.models) && config.models.some((m) => m.name === name) ? name : "";
+}
+
+/** 给 IM / 定时任务的 runtime 包一层记账：消耗记到管理员（首个用户）名下，开了积分闸门才在 0 分时拒跑 */
+function accountedRuntime(baseRuntime, source) {
+  return {
+    ...baseRuntime,
+    runTask: async (args) => {
+      const owner = account.defaultUser();
+      if (owner && account.creditsEnabled(owner) && account.balanceOf(owner) <= 0) {
+        throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
+      }
+      // 钱闸。定时任务这条路比界面那条更需要它：界面上是人在点，花得快了自己能看见；
+      // 定时任务是一个写错的 cron 可以每分钟跑一轮，没人看着，直到月底出账单。
+      if (owner) {
+        try {
+          const o = org.getOrg(org.orgIdOf(owner));
+          const hit = budget.exhausted({ org: org.settingsOf(o), orgId: o.id, user: owner });
+          if (hit) throw Object.assign(new Error(`${hit.message}预算在「企业管理 → API 中转站」里设，每月 1 号重置。`), { budget: hit });
+        } catch (e) {
+          if (e && e.budget) throw e;    // 真拦下来的那一句得原样往上抛
+          console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
+        }
+      }
+      // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession
+      // 返回的是会报错的桩，宁可当场报错也不许悄悄退回全局默认
+      const { modelName, user: caller, ...rest } = args || {};
+      // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
+      const want = modelName || (source === "im" ? assistModelOf(owner) : "");
+      const runLLM = want ? llmForSession({ model: want }) : llm;
+      // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱一律记在管理员头上（他才是掏 API 费的人），
+      // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
+      // 飞书 / 定时任务确实没有登录态，那才退回管理员。
+      // 注意 user 必须从 rest 里摘出来单独判：留在 rest 里的话，调用方传了个 undefined 也会把兜底覆盖掉
+      // IM 里每一条消息都是真人敲的，跟网页对话同一个判据（定时任务不算：那是 cron 在说话，
+      // 一分钟一轮地把断掉的渠道重撞一遍，正是这道闸当初要拦的东西）
+      const reopened = source === "im" ? (() => { try { return mediaHealth.reopen(); } catch { return []; } })() : [];
+      const r = await baseRuntime.runTask({
+        user: caller || (owner ? owner.username : undefined),
+        ...(reopened.length ? { mediaReopened: reopened } : {}),
+        taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
+        // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
+        baseDir:
+          path.resolve(getWorkspaceDir()) === dataPath("workspace")
+            ? source === "im" ? "IM_对话" : source === "schedule" ? "定时任务" : null
+            : null,
+        projectContext: projectContextOf(activeProject()),
+        ...rest,
+        ...(want ? { llmOverride: runLLM } : {}),
+      });
+      if (owner && r && r.usage && r.usage.calls > 0) {
+        const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
+        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source });
+      }
+      return r;
+    },
+  };
+}
+
+async function main() {
+  // config.json 里配的 + Agent Plugins 插件 mcp.json 里声明的，一起起。
+  // 插件那边坏一条只跳过一条（规范要求的失败隔离），不影响 config 里的服务器。
+  let pluginServers = [];
+  try {
+    pluginServers = pluginsMgr.pluginMcpServers();
+  } catch (e) {
+    console.warn("[插件] MCP 配置读取失败:", e.message);
+  }
+  // 用户在 ＋ 菜单里关掉的那几台，开机就别连。必须在 startAll 之前灌进去，
+  // 晚一步就是「关掉的连接器每次重启都自己活过来」。
+  mcpManager.setDisabled(config.mcp_disabled || []);
+  // MCP 连接不挡启动：窗口秒开，连接器在后台就绪（agent 每次跑任务都是现取 toolDefs，
+  // 晚几秒连上也不丢工具）。首个定时 tick 在 +20s，届时早已连完。
+  mcpManager
+    .startAll([...(config.mcp_servers || []), ...pluginServers])
+    .then(() => console.log(`MCP 工具就绪: ${mcpManager.toolDefs().length} 个`))
+    .catch((e) => console.warn("[MCP] 启动失败:", e.message));
+  const badPlugins = pluginsMgr.loadPlugins().filter((p) => !p.ok);
+  for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
+  runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
+
+  /**
+   * 把一次定时执行录成一段真会话。
+   *
+   * 以前定时任务调 runTask 时**既不给 emit
+   * 也不给 sessionId**——过程一个事件都没落下来，运行记录上只剩一句被截到 500 字的结果，
+   * 想知道「它到底调了什么工具、卡在哪一步、为什么这么久」一点痕迹都查不到。
+   *
+   * 这里把它录成跟手动对话**完全同构**的一段会话（同一个 recordingEmit、同一份 transcript 结构），
+   * 所以前端不用为定时任务另写一套回放：运行记录上那条「看执行过程」走的就是 openSession。
+   *
+   * 三条刻意的差别，都在 recordingEmit / sessionRow / sessionAllowed 那几处落地：
+   * - 不惊动桌面宠物（pet:false）——理由见 recordingEmit。
+   * - 不进侧栏任务历史（sessionRow 按 kind 挡掉）。
+   * - 归属跟着排期走（sess.user = item.user），判据跟 scheduler.allowed 是同一条：
+   *   别人的定时任务过程不该被同事顺手点开。
+   *
+   * ⚠️ opts 里只放 emit 和 sessionId。taskLabel / user / baseDir 一律不碰：那三样是
+   * accountedRuntime 在 ...rest 之前铺好的，从这儿传会把它们盖掉——盖掉 taskLabel 尤其致命，
+   * agent.js 就是靠它 === SCHEDULE_LABEL 才不许一条定时任务再去改排期表的。
+   */
+  const scheduleRecorder = ({ item }) => {
+    const sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+    const at = new Date().toISOString();
+    const sess = getSession(sessionId);
+    sess.title = item.name || String(item.task || "").slice(0, 24);
+    sess.user = item.user || "";
+    sess.kind = "schedule";
+    sess.schedule_id = item.id;
+    sess.history = [{ role: "user", content: item.task }];
+    const events = [];
+    sess.transcript = [
+      { type: "user", text: item.task, mode: "craft", at },
+      { type: "assistant", events, at },
+    ];
+    saveSession(sessionId, sess); // 先落一份空壳：任务跑一半崩了，那半截过程也还查得到（autosave 往同一份写）
+    // 这一趟从头到尾都攥着上面这个 sess（events 就长在它的 transcript 里），
+    // 所以得跟会话缓存打个招呼别清它。定时任务不走 activeRuns，光靠那道闸门盖不住：
+    // 一条跑十几分钟的定时任务，期间用户在界面上翻几十条历史会话就足以把它挤出去，
+    // 挤出去之后这一整趟的过程记录会写到一个没人认的对象上——回放点进去一片空白。
+    holdSession(sessionId);
+    return {
+      sessionId,
+      opts: { sessionId, emit: recordingEmit(() => {}, events, sessionId, { pet: false }) },
+      done: (ok, text) => {
+        // 这一句是给「整趟一个事件都没有」兜底：引擎没吐事件、或者刚开跑就抛了。
+        // 回放至少得看得见结论，不能点进去是一片空白。有事件时正文早在 events 里了，不重复贴。
+        if (!events.length) events.push({ type: "text", delta: String(text || (ok ? "完成" : "没有输出")) });
+        saveSession(sessionId, sess);   // 手里这份为准：哪怕真被清过，写盘也落在对的内容上
+        releaseSession(sessionId);
+      },
+    };
+  };
+  /** 运行记录被挤掉 / 任务被删时，把跟着的那几段会话也删了——不然后台 cron 会一直往盘上堆文件 */
+  scheduleRecorder.forget = (ids) => {
+    for (const id of ids || []) {
+      if (!id) continue;
+      forgetSession(id);
+      try { fs.rmSync(sessFile(id), { force: true }); } catch {}
+    }
+  };
+
+  /**
+   * 「跑绿之后再看一眼」：拿判断模型问一道是非题——这一轮到底办完了没有。
+   *
+   * 默认关。理由是它花钱：每一条**判据主动让路的绿**都要多发一道题（约两万分之一美金）。
+   * 这种花法很小，但它发生在后台、没人点确认，所以由用户自己在设置里打开，不替他挑。
+   *
+   * 开了也走三道门：没配判断模型不走、开关没开不走、判据已经查过的短正文不走
+   * （needsSecondOpinion 在 scheduler 里把最后一道守着）。
+   * 任何一步出岔子都返回 null 当没问过——定时任务的结果不许被这一问带挂。
+   */
+  const secondOpinion = async (item, text) => {
+    if (!(config.agent || {}).second_opinion) return null;
+    if (!jev.status(config).ready) return null;
+    const out = await jev.askMetered(
+      config,
+      { state: String(text || ""), questions: taskVerdict.deliveryQuestions(item.task) },
+      { meta: "定时任务第二意见" }
+    );
+    // 额度满 / 没配 / 上游挂：如实往上抛一句，由 scheduler 记在运行记录上，别装作问过了
+    if (!out.ok) throw new Error(out.error || "判断模型没回应");
+    const d = taskVerdict.readDelivery(out);
+    return d ? { msg: taskVerdict.doubtMessage(d), sure: d.sure } : null;
+  };
+
+  /**
+   * 「没变化就不推」：拿判断模型问一道是非题——这一轮跟上一次真推出去的那条比，有没有新东西。
+   *
+   * 默认关。跟第二意见一样，它花钱（约两万分之一美金一条），而且这钱花在后台、没人点确认；
+   * 更要紧的是它会「少发一条通知」，而少发的那一条用户是看不见的——这种开关得他自己点头。
+   *
+   * 一路上四道门：开关没开不走、没配判断模型不走、screen 里红的/挂了疑问的/没基线的不走
+   * （scheduler 里守着）、拿不准不走。任何一步出岁子都抹回去当没问过——结果不许被这一问带挂，
+   * 也不许被这一问吞掉。
+   */
+  const newsGate = async (item, { prev, text }) => {
+    if (!(config.agent || {}).push_gate) return null;
+    if (!jev.status(config).ready) return null;
+    const out = await jev.askMetered(
+      config,
+      { state: pushGate.newsState({ task: item.task, prev, text }), questions: pushGate.newsQuestions(item.task) },
+      { meta: "定时任务没变化就不推" }
+    );
+    // 额度满 / 没配 / 上游挂：如实往上抛一句，由 scheduler 记在运行记录上，别装作问过了
+    if (!out.ok) throw new Error(out.error || "判断模型没回应");
+    const d = pushGate.readNews(out);
+    return d ? { msg: pushGate.skipNote(d), sure: d.sure } : null;
+  };
+
+  scheduler = createScheduler({
+    runtime: accountedRuntime(runtime, "schedule"),
+    recorder: scheduleRecorder,
+    secondOpinion,
+    newsGate,
+    onResult: (item, text) =>
+      // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
+      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),
+  });
+  // 插上插座：agent 的 schedule_task / list_schedules 是靠这一句才看得见排期表的。
+  // 纯 CLI 里没人调它，那两个工具就不会出现——而不是出现了再报「用不了」。
+  setActiveScheduler(scheduler);
+
+  // 夜间复盘：**默认关**。开了之后每 10 分钟看一次表，到点且今天还没跑过就跑一轮。
+  // 它只生成提案，永远不会自己改提示词——第二天早上你在 设置→自进化 里决定要不要。
+  let evolveLastDay = "";
+  setInterval(async () => {
+    const ev = config.evolve || {};
+    if (!ev.auto) return;
+    const d = new Date();
+    const day = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    if (d.getHours() !== (ev.hour === undefined ? 3 : ev.hour) || evolveLastDay === day) return;
+    evolveLastDay = day;
+    try {
+      const r = await evolve.runReview({ llm, days: ev.days || evolve.CAPS.window });
+      evolve.recordRun({ ok: true, trigger: "夜间", turns: r.mined.turns, added: (r.added || []).length, gated: (r.gated || []).length, notes: r.notes || [] });
+      if ((r.added || []).length) {
+        notify.pushBots(config, `【OpenWorkBuddy·自进化】昨夜复盘：${r.mined.turns} 个回合，${r.added.length} 条改进提案等你审（设置→自进化）`);
+      }
+    } catch (e) {
+      // 后台飞轮吞掉异常，等于这条链早就停了而你还以为它在转。成败都落一行，界面上看得见
+      try { evolve.recordRun({ ok: false, trigger: "夜间", error: e.message }); } catch {}
+      console.warn("[自进化] 夜间复盘失败:", e.message);
+    }
+  }, 10 * 60 * 1000);
+
+  // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
+  imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions: imSessions, outputFiles, saveConfig });
+  app.use(imBridge.router);
+  imBridge
+    .startFeishuWs()
+    .then((s) => { if (s.state !== "off") console.log(`飞书长连接: ${s.state}`); })
+    .catch((e) => console.warn("[飞书] 长连接启动失败:", e.message));
+  imBridge
+    .startQQ()
+    .then((s) => { if (s.configured) console.log(`QQ 长连接: ${s.state}`); })
+    .catch((e) => console.warn("[QQ] 长连接启动失败:", e.message));
+  imBridge
+    .startIlink()
+    .then((s) => { if (s.configured) console.log(`微信 iLink 长轮询: ${s.state}`); })
+    .catch((e) => console.warn("[微信iLink] 长轮询启动失败:", e.message));
+
+  // 兜底：任何路由里没接住的异常都变成 JSON，别甩一整页 HTML 堆栈给前端
+  // （前端一律 r.json()，甩 HTML 的话界面只会显示「加载失败」，真正的原因谁也看不见）
+  app.use((err, req, res, next) => {
+    console.error(`[${req.method} ${req.path}]`, err.message);
+    // 这一条同时进日志和指标：500 是「程序自己出了 bug」，跟模型挂了不是一回事，
+    // 得能分开看。以前它只打在终端里，桌面用户那边等于从来没发生过
+    metrics.bump("http_5xx");
+    log.error("http", `${req.method} ${req.path} 未接住的异常`, { err, status: err.status || 500 });
+    if (res.headersSent) return next(err);
+    res.status(err.status || 500).json({ error: err.message || "服务器内部错误" });
+  });
+
+  // 每分钟滚一次指标快照，命中阈值就走 notify 推企业微信 / 钉钉。
+  // 定时器是 unref 的：它只是个旁观者，不该拖着进程不让退出
+  metrics.start({
+    getConfig: () => config,
+    gauges: () => ({
+      active_runs: activeRuns.size,
+      sessions: sessions.size,                                    // 内存里留着几条（不是一共有几条）
+      session_cache_mb: Math.round(sessCacheBytes() / 1048576),    // 这几条占多少
+    }),
+  });
+  log.info("boot", "服务起来了", { pid: process.pid, node: process.version, version: require("./package.json").version });
+
+  sweepInterruptedRuns(); // 上次没善终的任务先标注中断，再开门迎客
+  // 分身打扫：什么都没产出的收掉，放了两周没人管的只删目录留分支（提交都在 git 里，删的是磁盘不是成果）。
+  // 开机扫一次就够——分身只在任务撞车时才生，不会一天冒出几百个
+  try {
+    const done = worktree.sweep(WORKTREE_DIR, {});
+    if (done.length) log.info("worktree", `收掉了 ${done.length} 个没人管的分身`, { dirs: done.map((d) => d.branch).filter(Boolean) });
+  } catch (e) { log.warn("worktree", "分身打扫没做成", { err: e.message }); }
+
+  // config.json 是用户手改的文件，少一个顶层块很正常。以前这里直接 config.server.port，
+  // 结果是启动时抛 “Cannot read properties of undefined (reading 'host')”——
+  // 一条完全看不出跟配置有关的报错。缺就用默认值，别拿栈回溯糊用户一脸。
+  const srvCfg = config.server || {};
+  const port = resolvePort(process.env, config); // PORT=0 = 让内核挑一个空的，判据见 paths.js
+  // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。
+  // 要放出去（Docker / 服务器）必须显式 HOST=0.0.0.0，并且自己在前面套 HTTPS + 反代。
+  const host = process.env.HOST || srvCfg.host || "127.0.0.1";
+  /**
+   * 告诉权限层这是「一个人的桌面应用」还是「一台给多个人用的服务器」。
+   *
+   * 必须赶在第一个请求之前定下来（listen 之前就调，最稳）。判据和理由都写在 admin.js 的
+   * setDeployment 上面：Electron 壳 + 只听回环 = 屏幕前就一个人，服务器级的那道闸和凭证脱敏
+   * 一起关掉；只要绑到别的地址（Docker 走的 HOST=0.0.0.0 就是），两道全部照旧。
+   */
+  const solo = admin.setDeployment({
+    host,
+    // ELECTRON_RUN_AS_NODE：run_node 派生的子进程也带 electron 版本号，但它不是应用本体
+    shell: !!(process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE),
+  });
+  if (solo) console.log("个人桌面版：设置归你自己管，不分平台管理员");
+  const got = await listenWithFallback(app, host, port);
+  if (!got) return; // 不由这个进程提供服务了，为什么在 listenWithFallback 里已经交代过
+  const { server, bound } = got;
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
+  }
+  console.log(`OpenWorkBuddy 已启动: http://localhost:${bound}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
+  console.log(`模型: ${llm.provider} / ${llm.model}`);
+  console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
+  console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);
+  console.log(`MCP 工具: ${mcpManager.toolDefs().length} 个`);
+  const okPlugins = pluginsMgr.loadPlugins().filter((p) => p.ok);
+  if (okPlugins.length) console.log(`Agent Plugins: ${okPlugins.map((p) => p.name).join(", ")}`);
+  console.log(`工作目录: ${getWorkspaceDir()}`);
+  // 壳在等这个数。它自己也算过一个端口，但真正绑上的可能不是那个（被别人占了就换了一个），
+  // 不把真数告诉它，窗口就会去连一个没人在的口——白屏，而且日志里还写着「服务端就绪」。
+  tellShell(bound, { reused: false });
+  // 站住之后再出的错（网卡被拔、系统休眠醒来）不该把一个已经能用的应用换成报错页
+  server.on("error", (e) => console.error("[服务端] 监听出错:", (e && e.message) || e));
+}
+
+/** 把最终端口交给桌面壳。没有壳（node server.js）时这一步什么都不做。 */
+function tellShell(port, meta) {
+  const hook = global.__wbOnListen;
+  if (typeof hook !== "function") return false;
+  try { hook(port, meta); return true; } catch (e) {
+    console.error("[启动] 壳层没接住端口:", (e && e.message) || e);
+    return false;
+  }
+}
+
+/**
+ * 端口上坐着的是不是我们自己人。
+ *
+ * 这一问是「下载之后打不开」的分水岭。老写法在端口被占时只说一句「窗口将连接已运行的实例」，
+ * 就把窗口指过去了——可占着 3800 的很可能根本不是 OpenWorkBuddy：这个口太常见了，别人的
+ * 开发服务器、路由器后台、随手起的 http.server 都爱用。连过去的结果是一个陌生页面或者白屏，
+ * 而启动日志里还写着「服务端就绪」，用户手上一条能查的线索都没有。
+ * 所以先握一次手：/api/info 里那行 app: "openworkbuddy" 只有我们自己会写。
+ */
+async function portHeldByUs(host, port) {
+  const h = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 1500); // 占着口又不吭声的程序不少，别让启动卡死在这一问上
+  try {
+    // 走不需要登录的 /api/ping：对面很可能是一台还没人登录的实例，
+    // 问 /api/info 只会拿到 401，于是把自己人当陌生人，转头换个口又起一台。
+    const r = await fetch(`http://${h}:${port}/api/ping`, { signal: ctl.signal });
+    const j = await r.json();
+    return !!(j && j.app === "openworkbuddy");
+  } catch {
+    return false; // 不应答、回的不是 JSON——都当陌生人办：连过去一样是白屏
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * 绑端口；被占了就自己挪窝。
+ *
+ * 三种「端口被占」必须分开处理，混成一种就是那条「下载之后打不开」的 issue：
+ *   ① 口上是另一台 OpenWorkBuddy —— 不重复起服务。桌面壳连过去（本来就是这个意思）；
+ *      命令行下没有壳，把话说清楚再退出，别像以前那样进程活着、什么都不干、一直挂在那儿。
+ *   ② 口上是别的程序 —— 换一个口接着起。以前是直接把窗口指给人家。
+ *   ③ 绑的不是本机地址（Docker / 服务器）—— 端口是运维定死的，不许偷偷换，照常报启动失败。
+ * 返回真正绑上的 server 和端口；这个进程不打算自己提供服务时返回 null。
+ */
+async function listenWithFallback(expressApp, host, wanted) {
+  const server = require("http").createServer(expressApp);
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const tryOnce = (p) => new Promise((resolve) => {
+    const onErr = (e) => { server.removeListener("listening", onOk); resolve(e); };
+    const onOk = () => { server.removeListener("error", onErr); resolve(null); };
+    server.once("error", onErr);
+    server.once("listening", onOk);
+    server.listen(p, host);
+  });
+
+  const TRIES = 10;
+  for (let i = 0; i <= TRIES; i++) {
+    // 最后一次让内核挑：连着 10 个口全被占的机器确实存在（Windows 上 Hyper-V/WSL 会成片预留）
+    const p = i === 0 ? wanted : (i < TRIES && wanted + i <= 65535 ? wanted + i : 0);
+    const err = await tryOnce(p);
+    // PORT=0 是「你替我挑一个空的」，真正绑到哪只有系统知道，所以问 server 要，别印 0
+    if (!err) return { server, bound: (server.address() || {}).port || p };
+    // EACCES 在 Windows 上比 EADDRINUSE 还常见（保留端口段），它不是「被占」，换口也没用，直接报
+    if (err.code !== "EADDRINUSE" || !loopback) { bootFailed(err); return null; }
+    if (i === 0 && (await portHeldByUs(host, p))) {
+      if (tellShell(p, { reused: true })) {
+        console.log(`端口 ${p} 上已经有一台 OpenWorkBuddy 在跑，这个窗口直接连过去，不重复起服务。`);
+        return null;
+      }
+      console.error(`端口 ${p} 上已经有一台 OpenWorkBuddy 在跑了。`);
+      console.error(`  直接用它：http://localhost:${p}`);
+      console.error(`  非要再起一台：PORT=${p + 1} node server.js`);
+      try { mcpManager.stopAll(); } catch {} // 别把 MCP 那几个子进程扔在后台
+      process.exit(1);
+    }
+    console.warn(`端口 ${p} 被别的程序占着（应答的不是 OpenWorkBuddy），换一个再试。`);
+  }
+  bootFailed(new Error(`从 ${wanted} 起连试了 ${TRIES} 个端口都被占着，让系统随便挑一个也没成`));
+  return null;
+}
+
+/**
+ * 启动失败的唯一出口。
+ *
+ * 装成桌面应用时服务端是在 Electron 主进程里 require 起来的，在这儿 process.exit 等于
+ * 把整个应用连窗口一起带走，而且带走得悄无声息——electron-main.js 里那个「3 秒兜底亮窗」
+ * 的定时器都还没轮到就没进程了。所以有壳的时候把错误交回壳，让它把原因画在窗口里；
+ * 纯命令行（node server.js）没有壳，维持原来的退出码 1，行为一个字节不变。
+ */
+function bootFailed(e) {
+  console.error("启动失败:", e);
+  const toShell = global.__wbBootFail;
+  if (typeof toShell === "function") {
+    try {
+      toShell(e);
+      return; // 交出去了就别再退进程，窗口还要留着显示原因
+    } catch (e2) {
+      console.error("[启动] 壳层没接住，退回命令行行为:", e2 && e2.message);
+    }
+  }
+  process.exit(1);
+}
+
+process.on("SIGINT", () => {
+  mcpManager.stopAll();
+  process.exit(0);
+});
+
+main().catch(bootFailed);

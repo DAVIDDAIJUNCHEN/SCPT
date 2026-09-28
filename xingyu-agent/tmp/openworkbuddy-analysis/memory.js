@@ -1,0 +1,588 @@
+"use strict";
+/**
+ * 长期记忆。
+ *
+ * 原来这儿只有一个 data/memory.md：用户自己在设置里敲字，全局一份，所有账号共用，
+ * 整份原样塞进系统提示词。三个毛病：**agent 自己记不住任何东西**（每次任务从零开始，
+ * 用户说过"报告别写废话开场白"下次照写）、**多人共用一台机器时你的偏好会串到别人头上**、
+ * 以及**没有上限**，写长了每一条任务都要为它付一遍 token。
+ *
+ * 现在分成两层：
+ *   - 手写区（data/memory.md）：用户自己写的，全局共享，界面上原样编辑；
+ *   - 条目区（data/memories.json）：agent 用 remember 工具自己记的，一条一条带归属，
+ *     能去重、能删、能按账号隔离、超量丢最旧的（并且留痕，不闷声吞）。
+ *
+ * 注入提示词时只给「共享 + 当前这个账号自己的」，别人的记忆不会串过来。
+ */
+
+const fs = require("fs");
+const path = require("path");
+const { dataPath } = require("./paths");
+const store = require("./store");
+
+const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
+const ITEMS_FILE = path.join(DATA_DIR, "memories.json");
+const MANUAL_FILE = path.join(DATA_DIR, "memory.md");
+const VEC_FILE = path.join(DATA_DIR, "memory_vectors.json"); // 向量单独存：memories.json 保持人能读
+
+const SHARED = "*"; // 共享作用域：所有账号都看得到
+const MAX_TEXT = 400; // 单条上限：记忆是一句话结论，不是任务日志
+const MAX_PER_SCOPE = 120; // 每个作用域最多留多少条
+const MAX_PROMPT_CHARS = 6000; // 注入提示词的总预算，超了截断并明说
+const HIT_FLUSH_MS = 20000; // 命中回写的合并窗口：一次任务可能连着注入好几轮，没必要每轮写一次盘
+const DUP_IN_PROMPT = 0.62; // 同一段提示词里两条像到这个程度，就只留新的那条（见 dedupeForPrompt）
+
+/**
+ * 不该被记下来的东西。记忆文件是明文 JSON，还会原样进每一次请求的系统提示词——
+ * 密钥落进来等于既写盘又外发，而且用户根本不知道。宁可拒记。
+ */
+const SECRET_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{16,}/,
+  /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,
+  /\bAKIA[0-9A-Z]{12,}/,
+  /\bBearer\s+[A-Za-z0-9._~+/-]{20,}/i,
+  /(password|passwd|api[_-]?key|secret|token)\s*[:=]\s*\S{6,}/i,
+  /(密码|口令|密钥)\s*(是|为|:|：)\s*\S{4,}/,
+];
+
+function looksSecret(text) {
+  return SECRET_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * 「某个功能现在已经好了」这类对本机能力的断言，不许进长期记忆。
+ *
+ * 来历是一次真事故。生图工具有一条分支忘了关平台水印，agent 每次拿到带水印的图，
+ * 就自己造一堆中间文件去局部重绘擦掉，然后往记忆里写下这么一条：
+ *   「内置 generate_image 工具现已支持无水印出图，此前服务端强制加水印的问题已解决」
+ * ——代码里那个参数从头到尾没发过。它把一次推断当成事实钉死了，而记忆没有任何复核机制：
+ * 越往后它越确信，绕的圈越大，用户越查不出为什么图还是带印。
+ *
+ * 这类断言的共同点是**过期得最快、错得最贵、而且写下它的那一刻恰好是最自信的一刻**。
+ * 能力好没好，用的时候试一次就知道，不该靠记；真正值得记的是用户的偏好本身
+ * （「交付物一律不要水印」），偏好不会因为代码改了就失效。
+ *
+ * 判据要求主语和断言同时命中，才不会误伤「公司报销系统已经换成飞书了」这种真·世界事实。
+ */
+const CAPABILITY_SUBJECT = /(工具|接口|api|服务端|后端|内置|系统|代码|程序|bug|渠道|模型|generate_image|generate_video|run_node|write_file)/i;
+const FIXED_CLAIM = /(已解决|已修复|已修好|已经修|现已支持|现在已支持|已经支持|已支持|已生效|已经生效|已经可以|现在可以|已可用|已经正常|不再有|已经没有|问题不存在)/;
+function looksStaleClaim(text) {
+  return CAPABILITY_SUBJECT.test(text) && FIXED_CLAIM.test(text);
+}
+
+/**
+ * 命中回写：哪几条真被塞进过系统提示词。
+ *
+ * 为什么非要记这个——淘汰。老写法超量了丢最旧的，于是一条用了四十次的「报告别写开场白」
+ * 会因为它记得早而被一条昨天记下、一次都没派上用场的条目挤掉。「旧」和「没用」是两回事，
+ * 按错的那个丢，越用越难用。
+ *
+ * 写盘是合并的：promptBlock 每次只往 Map 里记一笔，20 秒内的合并成一次写。
+ * 计时器 unref 掉——统计这种事不配把进程吊着不让退出。
+ * add/remove/forget/renameScope 进来之前先同步冲一次：它们都是「load → 改 → save」，
+ * 中间要是插进来一次回写，后写的那个会把前一个的结果原样盖掉。
+ */
+const pendingHits = new Map(); // id → 这一窗口内被注入了几次
+let hitTimer = null;
+
+function noteUsed(ids) {
+  if (!ids || !ids.length) return;
+  for (const id of ids) pendingHits.set(id, (pendingHits.get(id) || 0) + 1);
+  if (hitTimer) return;
+  hitTimer = setTimeout(flushHits, HIT_FLUSH_MS);
+  if (hitTimer.unref) hitTimer.unref();
+}
+
+function flushHits() {
+  if (hitTimer) { clearTimeout(hitTimer); hitTimer = null; }
+  if (!pendingHits.size) return 0;
+  const items = load();
+  const now = new Date().toISOString();
+  let n = 0;
+  for (const x of items) {
+    const c = pendingHits.get(x.id);
+    if (!c) continue;
+    x.hits = (x.hits || 0) + c;
+    x.last_used = now;
+    n++;
+  }
+  pendingHits.clear();
+  // 一条都没对上说明这些 id 已经被删了，那就没什么可写的——别为了空转多写一次盘
+  if (n) save(items);
+  return n;
+}
+
+/**
+ * 超量时该先丢谁。分越低越先走。
+ *
+ * 四条尺子，按重要性排：
+ *   - **用过几次**：真被召回过的最值钱。封顶 20 次，免得一条老条目靠刷次数永远不死；
+ *   - **谁写的**：用户在设置里亲手敲的（source:"user"）不该被 agent 自己记的挤掉；
+ *   - **多久没用上**：闲置越久越先丢。从没用过的按「记下来到现在」算，等于给新条目一段观察期；
+ *   - **记了多久**：只用来在前三条打平时破局，权重压得很小——保持老行为「同等条件下旧的先走」。
+ */
+function keepScore(x, now = Date.now()) {
+  const born = Date.parse(x.created_at || "") || now;
+  const ageDays = Math.max(0, (now - born) / 86400000);
+  const idleDays = x.last_used ? Math.max(0, (now - (Date.parse(x.last_used) || now)) / 86400000) : ageDays;
+  return Math.min(x.hits || 0, 20) * 2
+    + (x.source === "user" ? 12 : 0)
+    - Math.min(idleDays, 90) / 10
+    - Math.min(ageDays, 365) / 120;
+}
+
+/** 去重用的归一化：大小写、空白、句末标点不同不算两条 */
+function normalize(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[。．.！!？?，,、；;：:"'"'（）()]/g, "");
+}
+
+function load() {
+  const raw = store.readJson(ITEMS_FILE, { items: [] });
+  const items = Array.isArray(raw) ? raw : Array.isArray(raw && raw.items) ? raw.items : [];
+  return items.filter((x) => x && typeof x.text === "string");
+}
+
+function save(items) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  store.writeJsonAtomic(ITEMS_FILE, { items }, { pretty: true });
+}
+
+// ---------- 向量召回层 ----------
+// embedder 由 server 启动时注入（llm.createEmbedder），可能是 null（没有可用的
+// embeddings 渠道）。null 时打分退回中文二元组关键词匹配，promptBlock 照常工作。
+let embedder = null;
+function setEmbedder(fn) { embedder = typeof fn === "function" ? fn : null; }
+
+function vecLoad() {
+  const raw = store.readJson(VEC_FILE, { model: "", vecs: {} });
+  return raw && typeof raw === "object" && raw.vecs ? raw : { model: "", vecs: {} };
+}
+function vecSave(v) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  store.writeJsonAtomic(VEC_FILE, v); // 不 pretty：一条向量上千个数，pretty 会把文件撑大三倍
+}
+
+let vecJobRunning = false;
+/**
+ * 给还没有向量的条目补算向量（启动时、换嵌入模型后、新记一条后都会被调）。
+ * 尽力而为：embeddings 挂了就下次再说，绝不阻塞记忆写入，也绝不抛出。
+ */
+async function ensureVectors() {
+  if (!embedder || vecJobRunning) return { computed: 0 };
+  vecJobRunning = true;
+  try {
+    const items = load();
+    let vs = vecLoad();
+    const alive = new Set(items.map((x) => x.id));
+    for (const id of Object.keys(vs.vecs)) if (!alive.has(id)) delete vs.vecs[id]; // 条目删了向量也别留
+
+    // 换了嵌入模型要把旧向量全部作废重算 —— 但「到底换没换」必须先真算成一次才算数。
+    // embedder 一上来报的是**首选**渠道的模型名，而首选渠道很可能一调就 4xx（欠费/没开通），
+    // 当场换到下一条、model 也跟着变。老写法是照这个还没验证过的名字先把整库清空再去算，于是：
+    // 首选渠道一直坏着 → 每次启动清一次库 → 一条也算不出来 → 语义召回常年是空的，
+    // 每次记忆读写还得先去撞一次死渠道。用户那边的表现就是「记忆越来越不准，而且越来越慢」。
+    // 所以名字对不上时先发一条探针：探不通就原样留着下次再说（宁可用着旧向量，也不能清空），
+    // 探通了名字还是对不上，才是真换了模型，这时候才作废。
+    if (vs.model !== embedder.model && Object.keys(vs.vecs).length) {
+      const probe = await embedder(["嵌入模型探针"]);
+      if (!probe) return { computed: 0 };
+      if (vs.model !== embedder.model) vs = { model: embedder.model, vecs: {} };
+    }
+    if (!Object.keys(vs.vecs).length) vs.model = embedder.model; // 空库贴个标签就行
+
+    const todo = items.filter((x) => !vs.vecs[x.id]);
+    let computed = 0;
+    for (let i = 0; i < todo.length; i += 16) {
+      const batch = todo.slice(i, i + 16);
+      const out = await embedder(batch.map((x) => x.text));
+      if (!out) break; // embedder 自己会记失败次数并停用，这里不重试
+      batch.forEach((x, j) => { vs.vecs[x.id] = out[j].map((n) => Math.round(n * 1e5) / 1e5); });
+      computed += batch.length;
+    }
+    if (computed || Object.keys(vs.vecs).length !== items.length) vecSave(vs);
+    return { computed };
+  } finally {
+    vecJobRunning = false;
+  }
+}
+
+/** 中文没有空格分词，二元组（bigram）是零依赖下最稳的召回单位 */
+function bigrams(text) {
+  const s = normalize(text);
+  const g = new Set();
+  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+  return g;
+}
+function keywordScore(hintGrams, text) {
+  if (!hintGrams.size) return 0;
+  const g = bigrams(text);
+  if (!g.size) return 0;
+  let hit = 0;
+  for (const x of g) if (hintGrams.has(x)) hit++;
+  return hit / Math.sqrt(g.size) / Math.sqrt(hintGrams.size); // 余弦式归一，长句不吃亏
+}
+function cosine(u, v) {
+  if (!Array.isArray(u) || !Array.isArray(v) || u.length !== v.length) return 0;
+  let dot = 0, nu = 0, nv = 0;
+  for (let i = 0; i < u.length; i++) { dot += u[i] * v[i]; nu += u[i] * u[i]; nv += v[i] * v[i]; }
+  return nu && nv ? dot / Math.sqrt(nu) / Math.sqrt(nv) : 0;
+}
+
+function scopeOf(user, shared) {
+  if (shared) return SHARED;
+  const u = String(user || "").trim();
+  return u || SHARED; // 没有登录态（CLI/IM/定时任务没传用户）就记到共享里，总比丢了强
+}
+
+/**
+ * 记一条。
+ * @returns { ok, id?, note, dropped? }  note 是给 agent 看的一句话回执——
+ *   去重了、超量丢了旧的、被拒了，都要在这句话里说清楚，不能让它以为记住了其实没有。
+ */
+/**
+ * 写之前那几道现成的尺子（空的 / 太长 / 像凭据 / 像能力断言）。
+ * 抽出来是为了让外面那道闸能先问一句「这条本来就会被拒吗」——
+ * 本来就拒的，用不着再花一道题的钱。两边必须走同一份判据，所以 add() 自己也调它。
+ * @returns { ok:false, note } 或 { ok:true, text }
+ */
+function preflight({ text, source = "agent" } = {}) {
+  const t = String(text || "").trim().replace(/\s+/g, " ");
+  if (!t) return { ok: false, note: "记忆内容是空的" };
+  if (t.length > MAX_TEXT) return { ok: false, note: `一条记忆最多 ${MAX_TEXT} 字，这条 ${t.length} 字。记结论，别记过程。` };
+  if (looksSecret(t)) {
+    return { ok: false, note: "这条像是密钥/密码/令牌，拒绝记入。记忆是明文存的、每次任务都会进系统提示词，凭据只该放在配置里。" };
+  }
+  if (source === "agent" && looksStaleClaim(t)) {
+    return {
+      ok: false,
+      note: "这条是在断言「某个功能现在已经好了」，不收。能力好没好，下次用的时候试一次就知道，"
+        + "记下来只会在它变了之后继续骗你自己。要记就记用户的偏好本身（比如「交付物一律不要水印」），偏好不会因为代码改了失效。",
+    };
+  }
+  return { ok: true, text: t };
+}
+
+function add({ text, user, shared = false, source = "agent" }) {
+  const pre = preflight({ text, source });
+  if (!pre.ok) return pre;
+  const t = pre.text;
+  const scope = scopeOf(user, shared);
+  flushHits(); // 先把攒着的命中写下去，不然下面这次 save 会把它们原样盖掉
+  const items = load();
+  const dup = items.find((x) => x.scope === scope && normalize(x.text) === normalize(t));
+  if (dup) return { ok: true, id: dup.id, note: "已经记过一模一样的了，没有重复写入" };
+  // 不一样但很像的：多半是同一件事的新说法（用户改口了）。**不自动替换**——实测词面相似度分不清
+  // 「改口」和「两件相关但不同的事」（真实数据里两种都落在 0.4~0.5），机器判不了，但调用这个工具的模型判得了。
+  // 所以只把最像的那条摆到回执里让它决定要不要 forget 掉旧的。放着不管的后果是两条一起进提示词、互相打架
+  const near = mostSimilar(t, items.filter((x) => x.scope === scope));
+
+  const id = "m_" + Date.now().toString(36) + "_" + Math.floor(Math.random() * 1e6).toString(36);
+  items.push({ id, text: t, scope, source, created_at: new Date().toISOString() });
+
+  // 超量了丢谁：按 keepScore 从低往高丢，不是按记入先后。
+  // 丢东西必须留痕：日志里写清楚丢了哪条、为什么是它，回执里也告诉 agent。
+  let dropped = 0;
+  const mine = items.filter((x) => x.scope === scope);
+  if (mine.length > MAX_PER_SCOPE) {
+    const now = Date.now();
+    const doomed = mine
+      .map((x) => ({ x, s: keepScore(x, now) }))
+      .sort((a, b) => a.s - b.s || String(a.x.created_at).localeCompare(String(b.x.created_at)))
+      .slice(0, mine.length - MAX_PER_SCOPE);
+    const kill = new Set(doomed.map((d) => d.x.id));
+    for (const d of doomed) {
+      console.warn(`[记忆] ${scope} 超过 ${MAX_PER_SCOPE} 条，丢弃价值最低的一条`
+        + `（用过 ${d.x.hits || 0} 次，${d.x.last_used ? "最近用于 " + String(d.x.last_used).slice(0, 10) : "从没用过"}）：${d.x.text.slice(0, 60)}`);
+    }
+    dropped = kill.size;
+    for (let i = items.length - 1; i >= 0; i--) if (kill.has(items[i].id)) items.splice(i, 1);
+  }
+  save(items);
+  if (embedder) setImmediate(() => ensureVectors().catch(() => {})); // 后台补向量，不拖慢写入
+  return {
+    ok: true,
+    id,
+    dropped,
+    similar: near ? { id: near.id, text: near.text } : null,
+    note: (dropped ? `记住了（${scope === SHARED ? "共享" : scope}）。这个作用域超过 ${MAX_PER_SCOPE} 条，已丢弃最旧最没派上用场的 ${dropped} 条（按「用过几次 + 多久没用上」排，不是单纯按记入先后）` : `记住了（${scope === SHARED ? "共享" : scope}）`)
+      + (near ? `。注意：跟已有的一条很像——「${near.text.slice(0, 80)}」。如果这是同一件事的新说法，再调 forget 把旧的那条删掉，别让两条一起进提示词打架` : ""),
+  };
+}
+
+/**
+ * 同一作用域里跟这条最像的一条（二元组包含度 ≥ 0.4）；太短的文本不比（几个字的重合说明不了什么）。
+ * 只用来提示，不用来自动删——阈值附近既有「改口」也有「相关但不同的事」，见 add() 里的说明
+ */
+function mostSimilar(text, items, threshold = 0.4) {
+  const A = bigrams(text);
+  if (A.size < 6) return null;
+  let best = null, bestScore = 0;
+  for (const x of items) {
+    const B = bigrams(x.text);
+    if (B.size < 6) continue;
+    let inter = 0;
+    for (const g of A) if (B.has(g)) inter++;
+    const score = inter / Math.min(A.size, B.size);
+    if (score >= threshold && score > bestScore) { best = x; bestScore = score; }
+  }
+  return best ? { ...best, score: +bestScore.toFixed(2) } : null;
+}
+
+/**
+ * 同一段提示词里，两条说的其实是一件事 —— 只留新的那条。
+ *
+ * add() 那儿对 0.4 以上的相似只提示、不自动删，理由在那儿写着：0.4~0.5 附近
+ * 「用户改口了」和「两件相关但不同的事」长得一样，机器分不出来。这儿门槛高得多（0.62），
+ * 到这个程度两条几乎一定是同一句话的两种说法。
+ *
+ * 为什么非删不可：留着的代价不是多费几十个 token 那么轻。
+ * 「周报别写开场白」和「周报开头先来一句结论」一起进系统提示词，模型只能挑一条听，
+ * 挑哪条全看运气 —— 而用户那边的感受是「我明明改过了，它有时候听有时候不听」。
+ * 这种随机不听话最难查，因为两条记忆分开看都是对的。
+ *
+ * 只在同一作用域内比：共享区和个人区撞车是另一回事（那是「组里的规矩 vs 我自己的偏好」），
+ * 不该在这儿悄悄吃掉一边。删不是真删，只是这一次不进提示词，记忆面板里两条都还在。
+ */
+function dedupeForPrompt(items) {
+  const byNew = items.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  const kept = [];
+  const keptG = [];
+  const shadowed = [];
+  for (const x of byNew) {
+    const g = judgeableGrams(x.text);
+    let clash = false;
+    if (g) {
+      for (let i = 0; i < kept.length && !clash; i++) {
+        if (kept[i].scope !== x.scope) continue;
+        const B = keptG[i];
+        if (!B) continue;
+        let inter = 0;
+        for (const q of g) if (B.has(q)) inter++;
+        if (inter / Math.min(g.size, B.size) >= DUP_IN_PROMPT) clash = true;
+      }
+    }
+    if (clash) shadowed.push(x);
+    else { kept.push(x); keptG.push(g); }
+  }
+  return { kept, shadowed };
+}
+
+/**
+ * 能不能拿这段文本的二元组去比相似度；不能就返回 null（这一条谁也不压、也不被压）。
+ *
+ * 两道门：
+ *  - 太短（不同二元组不足 6 个）：几个字重合说明不了什么，这条原来就有；
+ *  - 太重复（不同二元组不到字数的 15%）：这是后加的，因为二元组是**集合**，不记次数。
+ *    "占位偏好0：" 后面跟 180 个「字」，整段只有 7 个不同的二元组，
+ *    换成 "占位偏好1：" 也还是那 7 个里的 6 个 —— 相似度算出来 0.86，
+ *    于是四十条互不相同的条目会被压成一条。正常人话不会这样（不同二元组一般占到字数九成以上），
+ *    真长成这样的文本，它的「相似度」本身就没有意义，不如老实说判不了。
+ */
+function judgeableGrams(text) {
+  const g = bigrams(text);
+  const len = normalize(text).length;
+  if (g.size < 6) return null;
+  if (g.size < len * 0.15) return null;
+  return g;
+}
+
+/** 语义召回现在到底开没开、算出来几条：给记忆面板看的。向量一条都没有而嵌入模型「配了」，就是渠道没通 */
+function vectorStatus() {
+  const items = load();
+  const vs = vecLoad();
+  const have = items.filter((x) => Array.isArray(vs.vecs[x.id])).length;
+  return { enabled: !!embedder, model: embedder ? String(embedder.model || vs.model || "") : "", have, total: items.length };
+}
+
+/**
+ * 按 id 删。
+ *
+ * @param scopeTo 只许删这个作用域里的。不传（undefined）= 不限定，给平台管理员和单人桌面版用。
+ *   隔壁 forget（按内容删，agent 用的那条路）一开始就写着「别人的记忆不能被顺手删掉」，
+ *   这条按 id 删的路以前压根没认归属——一个 id 递进来就删，谁的都删。以前它只对平台管理员
+ *   开着所以没出事，现在普通成员也要能删自己那几条，这个洞就必须先堵上。
+ *   共享区（scope="*"）进了所有人的提示词，受限的人一样不许删。
+ *
+ * @returns { removed, forbidden? }  forbidden = 这条存在、但不是他的。
+ *   跟「本来就没有」分开报：前者要说出来，后者是正常竞态（别处已经删过）。
+ */
+function remove(id, scopeTo) {
+  flushHits();
+  const items = load();
+  const hit = items.find((x) => x.id === id);
+  if (!hit) return { removed: 0 };
+  if (scopeTo != null && hit.scope !== scopeTo) return { removed: 0, forbidden: true };
+  save(items.filter((x) => x.id !== id));
+  return { removed: 1 };
+}
+
+/**
+ * 按内容删（给 forget 工具用）：只在"共享 + 自己"这两个作用域里找，
+ * 别人的记忆不能被顺手删掉。
+ */
+function forget({ text, user }) {
+  const q = normalize(text);
+  if (!q) return { removed: 0, note: "要忘掉什么没说清楚" };
+  const scope = scopeOf(user, false);
+  flushHits();
+  const items = load();
+  const hit = items.filter((x) => (x.scope === scope || x.scope === SHARED) && (normalize(x.text) === q || normalize(x.text).includes(q)));
+  if (!hit.length) return { removed: 0, note: "没找到匹配的记忆条目（可以先用记忆面板看看都记了什么）" };
+  const kill = new Set(hit.map((x) => x.id));
+  save(items.filter((x) => !kill.has(x.id)));
+  return { removed: hit.length, note: `忘掉了 ${hit.length} 条：${hit.map((x) => x.text.slice(0, 40)).join("；")}` };
+}
+
+/** 改登录名时把归属搬过去，不然那个人的记忆当场变成孤儿 */
+function renameScope(from, to) {
+  flushHits();
+  const items = load();
+  let n = 0;
+  for (const x of items) if (x.scope === from) { x.scope = to; n++; }
+  if (n) save(items);
+  return n;
+}
+
+/** 列出某个账号看得到的（共享 + 自己）；不传 user 就是全部（给管理面板用） */
+function list(user) {
+  const items = load().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  if (user === undefined) return items;
+  const scope = scopeOf(user, false);
+  return items.filter((x) => x.scope === SHARED || x.scope === scope);
+}
+
+function manual() {
+  try {
+    return fs.readFileSync(MANUAL_FILE, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function saveManual(content) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(MANUAL_FILE, String(content || ""), "utf8");
+}
+
+/**
+ * 拼成系统提示词里的那一段。
+ * 装得下就全量注入，一条不筛；装不下才启动召回：按「与本次任务的相关度」挑条目，
+ * 而不是从尾巴上盲切——盲切吃掉的恰好是最新记的那些。挑没挑、挑了多少，都明说。
+ * @param hint 本次任务的线索（通常是用户最后一条消息的前几百字），用来算相关度
+ */
+/**
+ * 这一条是「规矩」还是「事实」。
+ *
+ * 记忆超预算时条目按跟本次任务的相关度挑，这对事实是对的（做公众号推文时用不着「公司报销走飞书」），
+ * 对规矩是错的：「交付时别用 open 替我打开文件」跟「写公众号推文」一个关键词都不重合，
+ * 相关度算出来是零，于是被挤掉——而它恰恰是任何任务都得守的那种。真踩过：用户被弹了一桌面窗口，
+ * agent 自己翻记忆才发现「我明明记着这条规矩」。规矩不看相关度，一律先放；相关度只用来挑事实。
+ *
+ * 认的是祈使措辞，宁多认不少认：多认一条只是让一条事实提前进了提示词，少认一条就是一条规矩被静默丢掉。
+ */
+const RULE_RE = /(不要|不许|不准|不得|不能|禁止|一律|必须|绝不|永远|从不|勿|别再|别用|别帮|别替|别自|别在|别把|别往|别给|每次都|任何时候|never|always|don'?t|do not|must|should not|shouldn'?t)/i;
+function isRule(text) { return RULE_RE.test(String(text || "")); }
+
+async function promptBlock(user, hint) {
+  let md = manual();
+  const all = list(user);
+  if (!md && !all.length) return "";
+  const { kept: items, shadowed } = dedupeForPrompt(all);
+  const line = (x) => `- ${x.text}${x.scope === SHARED && user ? "（共享）" : ""}`;
+
+  let body = "";
+  if (md) body += `${md}\n`;
+  if (items.length) body += (md ? "\n" : "") + items.map(line).join("\n");
+  let note = "";
+  let used = items; // 最后真进了提示词的那几条，出门前回写命中
+
+  if (body.length > MAX_PROMPT_CHARS) {
+    // 手写区是用户亲手敲的，优先级最高；但它自己超预算也得截，并明说
+    if (md.length > MAX_PROMPT_CHARS) {
+      const cut = md.length - MAX_PROMPT_CHARS;
+      md = md.slice(0, MAX_PROMPT_CHARS);
+      note = `\n（手写记忆太长，截掉了最后 ${cut} 字；条目区一条都没放进来。请去设置 → 记忆里精简一下）`;
+      body = md;
+      used = [];
+    } else {
+      // 条目按相关度排：有向量用「余弦为主 + 关键词兜底」，没向量纯关键词，连线索都没有就按新旧
+      let ranked;
+      if (hint) {
+        const hg = bigrams(hint);
+        let hintVec = null;
+        if (embedder) {
+          const vs = vecLoad();
+          if (Object.keys(vs.vecs).length) {
+            const r = await embedder([String(hint).slice(0, 500)]);
+            hintVec = (r && r[0]) || null;
+            if (hintVec) {
+              ranked = items
+                .map((x) => {
+                  const kw = keywordScore(hg, x.text);
+                  const v = vs.vecs[x.id];
+                  return { x, s: v ? 0.7 * cosine(hintVec, v) + 0.3 * kw : kw };
+                })
+                .sort((a, b) => b.s - a.s);
+            }
+          }
+        }
+        if (!ranked) ranked = items.map((x) => ({ x, s: keywordScore(hg, x.text) })).sort((a, b) => b.s - a.s);
+      } else {
+        ranked = items.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).map((x) => ({ x }));
+      }
+      const budget = MAX_PROMPT_CHARS - md.length;
+      const picked = [];
+      let usedChars = 0; // 别跟外面那个 used 重名：重名过一回，命中回写记到了没进提示词的条目头上
+      const take = (x) => {
+        const l = line(x);
+        if (usedChars + l.length + 1 > budget) return false; // 这条装不下，试试后面更短的
+        picked.push(x);
+        usedChars += l.length + 1;
+        return true;
+      };
+      // 规矩先进门、不看相关度（见 isRule）；剩下的预算再按相关度挑事实
+      const rules = items.filter((x) => isRule(x.text)).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      let rulesDropped = 0;
+      for (const x of rules) if (!take(x)) rulesDropped++;
+      const isRuleId = new Set(rules.map((x) => x.id));
+      for (const { x } of ranked) if (!isRuleId.has(x.id)) take(x);
+      // 展示按记入时间排，读起来稳定；挑选才按相关度
+      picked.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      body = (md ? md + "\n\n" : "") + picked.map(line).join("\n");
+      const ruleNote = rules.length ? `规矩类的 ${rules.length - rulesDropped} 条${rulesDropped ? `（还有 ${rulesDropped} 条规矩也装不下，去设置 → 记忆里精简）` : "全"}放进来了，其余` : "";
+      note = `\n（记忆条目共 ${items.length} 条装不下，这里${ruleNote}按${hint ? "与本次任务的相关度" : "新旧"}挑了 ${picked.length - (rules.length - rulesDropped)} 条；要看全部请去设置 → 记忆）`;
+      used = picked;
+    }
+  }
+  // 被同义压掉的那几条也说一句：不说的话，用户在记忆面板里看得见、在行为上却感觉不到，
+  // 只会以为记忆时灵时不灵。说清楚「同一件事只留了新的」，他才知道去把旧的那条删掉。
+  if (shadowed.length) note += `\n（另有 ${shadowed.length} 条和上面某条说的是同一件事，本次只用了较新的那条）`;
+  noteUsed(used.map((x) => x.id));
+  return `\n\n## 长期记忆（跨任务保留，优先级高于你的默认习惯）\n${body}${note}`;
+}
+
+module.exports = {
+  SHARED,
+  MAX_TEXT,
+  MAX_PER_SCOPE,
+  add,
+  preflight,
+  remove,
+  forget,
+  list,
+  renameScope,
+  manual,
+  saveManual,
+  promptBlock,
+  // 品牌档案存档/读档也要拦「像密钥的字符串」：同一把尺子，别各写一套正则各漏各的
+  looksSecret,
+  setEmbedder,
+  vectorStatus,
+  ensureVectors,
+  flushHits,
+  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad, mostSimilar, keepScore, dedupeForPrompt, judgeableGrams, noteUsed, isRule, MAX_PROMPT_CHARS, pendingHits: () => pendingHits },
+};

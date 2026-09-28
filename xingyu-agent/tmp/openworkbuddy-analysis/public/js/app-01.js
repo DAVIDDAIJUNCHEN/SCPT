@@ -1,0 +1,5166 @@
+
+// ================= 基础状态 =================
+let sessionId = null;
+let currentMode = "craft";
+let settingsCache = null;
+let projects = [];
+let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
+let projectsLocked = false;    // 服务端说「你这边没有项目这回事」（租户成员）：整块项目区不画，任务历史也不按项目过滤
+/**
+ * 两条工作线（lane）：侧栏上面那两个标签，管的是「这次是哪一种活儿」。
+ *   办公（office）→ 做表、写稿、出图、发消息。鼠标流，跑在这台机器的桌面办公 agent 上。
+ *   工程（cli）    → 写代码、跑脚本、查日志。键盘流，连的是本机的 openworkbuddy 命令行：
+ *                    终端里起的任务会出现在这条线上，看得见它在干什么，也插得上话。
+ * 分的是活儿，不是引擎——底层引擎（内置循环 / 本机 Claude Code / Codex）在设置里挑一次，两条线共用。
+ * 必须在任何 renderHistory() / renderLaneTabs() 之前声明（app-02 一加载就会用）。
+ */
+let activeLane = "office";
+let defaultLane = "office";  // 老会话没记过 lane 时归到这条线；服务端 /api/lanes 会确认一次
+let laneInfo = [];           // /api/lanes 回来的那两行；拉回来之前用 LANE_FALLBACK 先画着
+const LANE_FALLBACK = [
+  { id: "office", name: "办公", hint: "做表、写稿、出图、发消息——鼠标流" },
+  { id: "cli", name: "工程", hint: "写代码、跑脚本、查日志——键盘流；终端里 openworkbuddy 起的任务也在这儿" },
+];
+let cliLiveRows = []; // 终端里正在跑（或刚跑完）的那几趟，服务端从 data/cli-live/ 读来的
+let cliWatch = null;  // 正在跟的那趟终端任务 { id, es, ui, live }
+try { const v = localStorage.getItem("owb_lane"); if (v === "cli" || v === "office") activeLane = v; } catch {}
+let currentUser = null; // 登录后由 initAuth() 填充
+/** 内置猫标的哨兵值。不是 emoji 也不是 data URI，avatarBits 单独认它 */
+const ASSISTANT_MARK = "@cat";
+let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的名字/头像，可在设置里改；登录后拉真值
+let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
+let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
+// 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
+const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", multi_edit: "改", list_files: "列", search_files: "找", find_files: "找文件", run_shell: "命令", shell_output: "后台输出", shell_kill: "停后台", todo_write: "进度", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", render_motion: "出片", record_web_demo: "录屏", compose_video: "成片", delivery_page: "交付页", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记", forget: "忘", library_list: "库", library_read: "读库", library_import: "取素材", save_skill: "存技能", desktop_pet: "宠物", notify_user: "推群", schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件", explore: "探索", brand_kit_read: "品牌", brand_kit_save: "存品牌" };
+// 图标跟短名分家，各归各的表：短名要进翻译字典（英文界面得是 "Read"），图标是 sprite 里的 symbol id。
+// 以前两者揉成一句 "📄 读"，翻译表得连图一起抄一遍，加个工具就要改两处还容易抄漏。
+const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", write_file: "file-pen-line", edit_file: "pencil", multi_edit: "pencil", list_files: "folder", search_files: "file-search", find_files: "folder-tree", run_shell: "terminal", shell_output: "scroll-text", shell_kill: "square", todo_write: "list-checks", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", render_motion: "clapperboard", record_web_demo: "video", compose_video: "clapperboard", delivery_page: "package", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", transcribe_audio: "file-audio", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", library_import: "download", save_skill: "puzzle", desktop_pet: "app-window", notify_user: "send", schedule_task: "timer", list_schedules: "calendar-days", send_email: "mail", explore: "compass", brand_kit_read: "shield-check", brand_kit_save: "shield-check" };
+// 过程区每一步只挂一个图标，动词写在正文里（`读 报告.md`，不是 `run read_file`）
+const toolIcon = (n) => TOOL_ICON[n] || "settings";
+const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
+/** 过程区里那种「说一句」的提示行：一个图标 + 一句话。话是拼出来的，只走 textContent，不进 innerHTML */
+/**
+ * 上下文余量条。
+ *
+ * 数字不在这儿算——`used/budget/threshold` 全是后端 emitContext 播过来的，跟真正决定
+ * 「什么时候压缩」的是同一组值。前端自己再按 token 估一遍的话，界面说 45%、后端其实
+ * 已经压过一次了，这根条就从「提醒」退化成「误导」。
+ *
+ * 过半才露面：日常对话天天挂一根 12% 的条，看久了等于没有；真正要提醒的是
+ * 「快到自动压缩了，现在开个新会话比压完再聊干净」。
+ */
+function renderCtxMeter(ev) {
+  const bar = document.getElementById("ctx-bar");
+  if (!bar) return;
+  const budget = ev.budget || 0;
+  const pct = Math.max(0, Math.min(100, ev.pct || 0));
+  // 阈值本身是可配的（默认六成），所以「该不该露面」跟着阈值走，不写死 50
+  const showAt = budget && ev.threshold ? Math.max(30, Math.round((ev.threshold / budget) * 100) - 15) : 45;
+  if (pct < showAt) { bar.classList.remove("show"); return; }
+  bar.classList.add("show");
+  bar.classList.toggle("warn", !!ev.threshold && ev.used >= ev.threshold);
+  const fill = document.getElementById("ctx-fill");
+  if (fill) fill.style.width = pct + "%";
+  const t = document.getElementById("ctx-text");
+  if (!t) return;
+  const k = (n) => Math.round(n / 1000) + "k";
+  t.textContent = ev.compact === false
+    ? `上下文 ${pct}%（${k(ev.used)} / ${k(budget)} 字符）· 自动压缩关着，再长会被截断`
+    : ev.used >= (ev.threshold || Infinity)
+      ? `上下文 ${pct}%（${k(ev.used)} / ${k(budget)} 字符）· 下一轮开跑前会自动压一次，想留全文就另开会话`
+      : `上下文 ${pct}%（${k(ev.used)} / ${k(budget)} 字符）`;
+}
+
+/**
+ * 换会话就把余量条收回去。
+ *
+ * 这根条画在输入框上头，全界面共用一根，不跟着会话走；而它只在后端播 `context`
+ * 事件的时候才重画。于是切到一条还没开跑、或者短到播不出这条事件的对话，上一条
+ * 对话那句「上下文 87%…下一轮开跑前会自动压一次」就原封不动挂在那儿，指着一个
+ * 跟眼前这条对话毫不相干的数——用户会以为新开的对话一上来就快满了。
+ *
+ * 所以换会话的时候先收。回放里那条 `context` 事件是进存盘清单的（server.js 的
+ * recordingEmit 留着它），重播时会把本会话自己的数填回来；真没有这条事件的会话，
+ * 空着才是实话。
+ */
+function resetCtxMeter() {
+  const bar = document.getElementById("ctx-bar");
+  if (!bar) return;
+  bar.classList.remove("show", "warn");
+  const fill = document.getElementById("ctx-fill");
+  if (fill) fill.style.width = "0%";
+  const t = document.getElementById("ctx-text");
+  if (t) t.textContent = "";
+}
+
+function procNote(icon, text, cls) {
+  const n = document.createElement("div");
+  n.className = "proc-note" + (cls ? " " + cls : "");
+  n.innerHTML = ic(icon) + "<span></span>";
+  n.lastChild.textContent = text;
+  return n;
+}
+
+/**
+ * 「正在压…已等 12 秒」。
+ *
+ * 压缩就是一次 LLM 调用，没有真进度可报——硬画一根匀速爬的进度条是骗人。能说的实话只有
+ * 「已经等了多久」和「在压什么」，所以这行报秒数。秒数由过程区那根 1 秒的总计时器带着走，
+ * 不另开一个 setInterval：那根本来就在，也在这一轮收尾时被停掉，不会留下一个转到天荒地老的定时器。
+ */
+const compactRunText = (n, ms) => `正在把早前 ${n} 条消息压成摘要…已等 ${Math.round(ms / 1000)} 秒（压完再跑，原文不删）`;
+
+/** 「正在压」和「压完了」共用同一行：压完把这行的字换掉，而不是再摞一行。
+ *  摞两行的话，历史里会永远留着一句停在「正在压…」的话，看着像卡死在那儿 */
+function compactNote(proc) {
+  let note = proc.querySelector(".compact-note");
+  if (!note) { note = procNote("archive", "", "compact-note"); proc.appendChild(note); }
+  return note;
+}
+
+const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
+const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
+// 附件原名 -> /api/upload 回的工作区相对路径。这是最准的一份：上传那一刻服务端亲口说了
+// 「我把它放这儿了」，不用再靠 sessionDirs 去猜。只活在这一次开着的窗口里，
+// 刷新之后老回合走 attachRel 里后面两档兜底
+const attachPaths = new Map();
+const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
+const sessionGoals = new Map(); // sessionId -> 该对话的目标状态（Goal 模式的目标卡）
+let pendingModel; // 新对话还没发首条消息就选了模型：先记着，会话建好后再落到服务端
+// 助理模式（🤖 助理页）没有会话 id，模型另存一份，服务端落在 config.assist_model 里。
+// inAssistMode 由 app-03.js 的 openPageView/closeAssistView 维护——那边的 pageKind 是 let，
+// 在这个文件里读它会撞暂时性死区，所以状态放这边声明、那边赋值
+let assistModel;
+let inAssistMode = false;
+const sessionQueues = new Map();   // sessionId -> [{text, mode}] 同一会话内追加的消息才排队
+const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
+/** 当前开着的是「终端里那趟还在跑的活儿」：插得上话，但停不了——停它得回终端按 Ctrl+C */
+const cliBusy = () => !!(cliWatch && cliWatch.live && cliWatch.id === sessionId);
+const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
+/**
+ * 任务正跑着又发了一条，这条怎么算——两种都对，看人当时想干什么：
+ *   interject 插队：立刻注入当前这趟。适合「等等，标题用蓝色」这种就地纠偏。
+ *   queue     排队：不打断，等它做完再按顺序自己开始。适合「顺便再做个 B」这种新活儿。
+ * 以前只有插队一条路，代价是：一句补充说明能让 Agent 中途改道，前面几步白做，
+ * 而且用户根本没机会说「我这条不急」。
+ * 存本地而不是跟着会话走：这是个人的工作习惯，换个对话不该重选一遍。
+ */
+let busySendMode = (() => {
+  try { return localStorage.getItem("owb_busy_send") === "queue" ? "queue" : "interject"; }
+  catch { return "interject"; }
+})();
+function setBusySendMode(m) {
+  busySendMode = m === "queue" ? "queue" : "interject";
+  try { localStorage.setItem("owb_busy_send", busySendMode); } catch {}
+}
+let SESS_KEY = "owb_sessions"; // 登录后切换为 owb_sessions:<用户名>（每人一份任务历史）
+let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
+const chatCol = document.getElementById("chat-col");
+const chatScroll = document.getElementById("chat-scroll");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const mask = document.getElementById("modal-mask");
+const modalBox = document.getElementById("modal-box");
+const mTitle = document.getElementById("m-title");
+const mBody = document.getElementById("m-body");
+
+/**
+ * 跟用户要一句话（文件夹名、路径这种），返回 Promise<string|null>，取消给 null。
+ *
+ * 为什么不用 window.prompt：桌面版跑在 Electron 里，那儿的 prompt **存在、但一调用就抛**
+ * （实测报的是 "prompt() is not supported."）。typeof window.prompt 照样是 "function"，
+ * 所以想靠判断类型绕开根本挡不住；异常当场把整个 onclick 打断，按钮点下去什么都不发生、
+ * 界面上也不报错。资料库里「新建文件夹」失灵就是这么来的——用户原话「好像还是不能用哦」，
+ * 因为从他那一侧看，那颗按钮是哑的，连个错都没有。
+ * confirm() 是另一回事：实测它既不抛也不返回，而是**挂起**在一个原生模态框上（alert 同理）。
+ * 也就是说全站那些确认框对用户是好使的，不用跟着改；但它挂的是原生框，离屏测试里没人点得动，
+ * 所以新写的、撤不回来的操作走下面那个 askConfirm，要的是「测得了」和「框里说得出细节」。
+ *
+ * 自成一层浮在弹窗之上：资料库本身就开在弹窗里，借 #modal-box 会把它整个顶掉。
+ */
+function askText(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    // 同一时刻只留一个。前一个按「取消」收掉，不然它的 Promise 永远不 settle，
+    // 调用方 await 在那儿再也不往下走
+    if (askText._close) askText._close(null);
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    const title = o.title || "填一下";
+    wrap.innerHTML =
+      `<div class="ask-box" role="dialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div>` +
+      (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      `<input class="ask-in" type="text" autocomplete="off" spellcheck="false">` +
+      `<div class="ask-err" hidden></div>` +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">取消</button>` +
+      `<button type="button" class="btn-brand ask-ok">${esc(o.ok || "确定")}</button></div></div>`;
+    document.body.appendChild(wrap);
+    const input = wrap.querySelector(".ask-in");
+    const okBtn = wrap.querySelector(".ask-ok");
+    const errEl = wrap.querySelector(".ask-err");
+    if (o.placeholder) input.placeholder = o.placeholder;
+    input.value = o.value == null ? "" : String(o.value);
+
+    /** 名字合不合规当场就说。等服务端回 400 的话，用户已经点了确定、等了一个来回，
+     *  拿到的还是一句拿路径口吻讲的「路径不合法：..」，看了也不知道该改哪儿 */
+    function check() {
+      const v = input.value.trim();
+      const bad = !v ? "" : String((o.validate && o.validate(v)) || "");
+      errEl.textContent = bad;
+      errEl.hidden = !bad;
+      okBtn.disabled = !v || !!bad;
+      return !okBtn.disabled;
+    }
+    function done(val) {
+      if (askText._close !== done) return;   // 已经收过了，别收第二遍
+      askText._close = null;
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      // 焦点还回去。不还的话它掉到 body 上，用键盘的人得从头 Tab 一遍才回得到原处
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(val);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+      else if (e.key === "Enter") {
+        // 输入法正在选词时的那个回车不算提交——中文名字几乎每次都要选一次词，
+        // 认了的话用户刚打完拼音就被提交了一个半截的名字
+        if (e.isComposing || e.keyCode === 229) return;
+        e.preventDefault(); e.stopPropagation();
+        if (check()) done(input.value.trim());
+      }
+    }
+    input.oninput = check;
+    okBtn.onclick = () => { if (check()) done(input.value.trim()); };
+    wrap.querySelector(".ask-no").onclick = () => done(null);
+    // 用 mousedown 判空白处：在输入框里按下、拖到外面才松手，用 click 会被当成点空白而取消
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(null); };
+    document.addEventListener("keydown", onKey, true);
+    askText._close = done;
+    check();
+    input.focus();
+    input.select();
+  });
+}
+
+/**
+ * 跟用户确认一件**做完就撤不回来**的事，返回 Promise<boolean>。
+ *
+ * 为什么不直接用 window.confirm：它在桌面版里能用（见上面那段实测），但有两处够不着——
+ *   · 它挂的是原生模态框，离屏测试点不动，于是每一条走 confirm 的删除路径都验不了；
+ *   · 框里只摆得下一句话，说不出「这个文件夹里还有 3 样东西，先清空」这种决定人要不要点的细节。
+ * 删东西是撤不回来的，这两样都不该缺。
+ *
+ * 后来把全站另外 31 处 confirm() 也都换到了这儿，压死骆驼的是第三条：
+ * **原生框里的字永远翻不了**。翻译是走 DOM 的（文本节点 + MutationObserver），
+ * 而 confirm(`删除模型「x」？`) 那句话从头到尾只是个 JS 字符串，一秒钟都没进过 DOM。
+ * 于是英文用户每删一样东西，弹出来的都是中文——31 处，一处没落下。
+ * 顺带还了另外两笔：浏览器那边用户一旦勾上「不再显示对话框」，confirm() 从此静默返回 false，
+ * 所有删除按钮就变成了哑巴（跟当初 prompt() 那个 bug 一模一样的长相）；
+ * 以及每一条删除路径终于都能在离屏测试里点得动了。
+ *
+ * opts：title 问题 / hint 后果 / items 清单（自带滚动）/ note 清单后的一句 /
+ *       ok 按钮上的动词 / cancel / danger 红钮。
+ */
+function askConfirm(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    // 同一时刻只留一个。前一个按「取消」收掉，不然它的 Promise 永远不 settle
+    if (askConfirm._close) askConfirm._close(false);
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    const title = o.title || "确认一下";
+    wrap.innerHTML =
+      `<div class="ask-box" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div>` +
+      (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      ((o.items || []).length ? `<ul class="ask-li">${o.items.map((x) => `<li title="${esc(x)}">${esc(x)}</li>`).join("")}</ul>` : "") +
+      (o.note ? `<div class="ask-h ask-note">${esc(o.note)}</div>` : "") +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">${esc(o.cancel || "算了")}</button>` +
+      `<button type="button" class="btn-brand ask-ok${o.danger ? " is-danger" : ""}">${esc(o.ok || "确定")}</button></div></div>`;
+    document.body.appendChild(wrap);
+    function done(val) {
+      if (askConfirm._close !== done) return;   // 已经收过了，别收第二遍
+      askConfirm._close = null;
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(!!val);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
+    }
+    wrap.querySelector(".ask-ok").onclick = () => done(true);
+    wrap.querySelector(".ask-no").onclick = () => done(false);
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(false); };
+    document.addEventListener("keydown", onKey, true);
+    askConfirm._close = done;
+    // 焦点落在「算了」上，不落在「删掉」上：回车是这一步最容易被手快敲下去的键，
+    // 它该落在撤得回来的那一边。askText 那边焦点给输入框，是因为那儿本来就是要人打字
+    wrap.querySelector(".ask-no").focus();
+  });
+}
+
+// 本地只是缓存，权威列表在服务端 /api/sessions。留 300 条跟服务端一个量级，
+// 免得刚从服务端并回来的历史转头又被截成 50 条。
+function saveSessions() {
+  try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 300))); }
+  catch { try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); } catch {} } // 配额满了退回小份，别让整个保存链条炸掉
+}
+/**
+ * 往 HTML 里塞文字之前一律走这儿。
+ *
+ * 原来这个函数是拿 div.textContent 再读 innerHTML 实现的，浏览器那一步只转义 & < >，
+ * **引号原样留着**。而全站三百多处是 `attr="${esc(x)}"` 这种写法——只要 x 里有一个双引号，
+ * 属性就在那儿断掉了，后面的字被浏览器当成新属性解析。这不是理论上的：
+ * 审批条上 title="${esc(a.text)}" 装的是待批准的整条命令，`echo "hi"` 这种再普通不过的命令
+ * 就能踩中；renderMd 里 [文字](链接) 的链接直接进 href="$2"，那条路更是从模型输出一路通到属性里。
+ *
+ * 所以照 admin.js 那份的写法改成显式转义五个字符。& < > 的行为跟以前一字不差，
+ * 多出来的是 " 和 '，它们在正文里照样渲染成引号本身，在 <textarea> 里也照样解得回来。
+ */
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+}
+/**
+ * 长网址在正文里的**显示**形态 —— href 和 title 里始终是完整地址，一个字没少。
+ *
+ * 一条 https://…/RL%E7%8E%AF%E5%A2%83%E5%88%9B%E4%B8%9A… 原样铺出来有两个毛病：
+ * 百分号转义人看不懂；长度还把整张表格顶出横向滚动条
+ * 所以显示时先解码回中文，还长就掐中间——
+ * 鼠标一停看得到全的，复制粘贴拿到的也是全的。
+ *
+ * 入参是**已经 esc 过**的文本。decodeURI 不碰 %26 这类保留字符，但会把 %3C 解成 <，
+ * 所以解码之后 < > " ' 得再兜一道；& 不能再兜——它已经是 &amp; 了，再兜一次就成了 &amp;amp;。
+ */
+const PRETTY_URL_MAX = 68;
+function prettyUrl(u) {
+  let t = String(u);
+  try { t = decodeURI(t); } catch { t = String(u); }
+  if (t.length > PRETTY_URL_MAX) {
+    const m = t.match(/^([a-z][a-z0-9+.-]*:\/\/[^/]*)(\/.*)$/i);
+    const tail = m ? (m[2].split("/").filter(Boolean).pop() || "") : "";
+    t = m && tail && m[1].length + tail.length + 4 <= PRETTY_URL_MAX
+      ? m[1] + "/…/" + tail
+      : t.slice(0, PRETTY_URL_MAX - 26) + "…" + t.slice(-24);
+  }
+  return t.replace(/[<>"']/g, (c) => ESC_MAP[c]);
+}
+const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|<[a-zA-Z!/][^>]*>|(?<!["'`(\[=\w/])(https?:\/\/[^\s<>"'`\]、，。；！？：·…（）〈〉《》「」『』【】〔〕〖〗“”‘’—～]+)/g;
+// 网址末尾这些字符一律不算网址的一部分。正文是 esc 过的，所以 > " ' 这会儿长的是实体的样子，
+// 得整条实体一起剃——只剃掉那个分号会把查询串里的 &amp; 剃坏。右圆括号不在这儿，它另有算法（见下）
+const RE_URL_TAIL = /(?:&gt;|&lt;|&quot;|&#39;|[.,:!?*}\]）〉》」』】＞”’…])+$/;
+/**
+ * 正文里裸写的网址变成能点的链接。
+ *
+ * 只认 http(s)。file:// 的本地路径**故意**不碰：浏览器本来就不让页面跳 file://，
+ * 给个点不开的蓝链比没有链接更气人；那一串留着交给 linkifyOutputs，
+ * 变成「在应用右侧直接打开」的那种链接才是用户要的。
+ *
+ * 跑在 esc 和行内 <code> 之后、[text](url) 之前：代码块早被抽成占位符了，
+ * 行内代码这会儿已经是 <code>…</code>，交替式第一个分支原样放行；
+ * markdown 链接的 ( 和属性里的 =" 靠左边界一个字符挡掉。
+ */
+function autoLinkUrls(s) {
+  return String(s).replace(RE_AUTOLINK, (all, url) => {
+    // 前三个分支是「别碰」：行内代码里的网址是给人抄的，不是给人点的；已经成形的 <a> 再套一层
+    // 就成了嵌套链接，点下去谁也说不准跳哪；任何一个标签整个跳过，免得把 <img alt="见 https://…">
+    // 这种**属性里**的网址也变成链接——那会当场把属性撑破
+    if (url === undefined) return all;
+    let u = url, tail = "";
+    for (;;) {
+      const m = u.match(RE_URL_TAIL);
+      if (m) { tail = m[0] + tail; u = u.slice(0, -m[0].length); continue; }
+      // 末尾的右圆括号：成对的留着，落单的剃掉。维基、Confluence、飞书那类地址里
+      // .../Foo_(bar) 是正经路径的一部分，少剃一个字符就跳去另一个页面
+      if (u.endsWith(")") && (u.split("(").length) <= (u.split(")").length - 1)) { tail = ")" + tail; u = u.slice(0, -1); continue; }
+      break;
+    }
+    if (!/^https?:\/\/[^/\s]/.test(u)) return all;
+    return '<a href="' + u + '" target="_blank" rel="noopener" title="' + u + '">' + prettyUrl(u) + "</a>" + tail;
+  });
+}
+/**
+ * 「本该回一个数组，却回了个 { error }」的统一收口。
+ *
+ * fetch 遇上 403 / 500 **不会** reject——它只是把状态码放在 r.status 上，r.json() 照样解得出
+ * { error: "这块是服务器级设置，归平台管理员管" }。于是 `.catch(() => [])` 这一手一个都兜不住：
+ * 拿到的是个对象，下一行 list.filter(...) 当场 TypeError，整个渲染函数从中间断掉，
+ * 页面停在 <div class="assist-page"></div> ——用户看到的是一片空白，报错只在控制台里。
+ * 多人服务器上的普通成员点一下「自动化」就是这个下场。
+ *
+ * 所以：拿不到数组就给空数组，同时把服务端那句话原样带出来，让页面有话可说。
+ */
+async function getList(url) {
+  const d = await fetch(url).then(r => r.json()).catch(() => null);
+  if (Array.isArray(d)) return { list: d, error: "" };
+  return { list: [], error: (d && d.error) || "读取失败，请稍后重试" };
+}
+/**
+ * 这台服务器上「服务器级的那些东西」他动不动得了（= GET /api/settings 的 platform_owner）。
+ * 单机桌面版恒为真；多人服务器上只有默认组织的管理员为真。
+ * 界面拿它决定控件画不画——一颗点下去只会 403 的按钮，比不画更气人。
+ */
+function amPlatformOwner() { return !!(settingsCache && settingsCache.platform_owner); }
+/**
+ * 「在这台机器上打开」这类动作能不能做。
+ *
+ * 「用系统程序打开」「打开所在位置」「打开文件夹」开的都是**服务端那台机器**上的程序。
+ * 单机桌面版里那就是用户自己的电脑，天经地义；多人服务器上对成员既没有意义
+ * （开在别人机器上他也看不见），后端也归平台管理员管（admin.js 的写表）。
+ * 所以成员那边这些控件干脆不画——一颗必然 403 的按钮，点下去不是没反应就是假成功。
+ * 下载按钮一直都在，那才是 Web 部署下把文件拿到手的正路。
+ */
+function canOpenOnHost() { return amPlatformOwner(); }
+/** 一条工作区相对路径的目录部分（顶层文件就是空串） */
+function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i < 0 ? "" : name.slice(0, i); }
+/**
+ * 工作区相对路径 → URL 路径片段。**每一段单独编码，斜杠保持是斜杠。**
+ * 整条路径 encodeURIComponent 会把 / 变成 %2F，于是 iframe 里那张网页的地址栏只剩一段，
+ * <img src="fig.jpg"> 这种相对写法就会去工作区根目录找图 —— 用户看到的就是"预览时图片全裂"。
+ */
+function fpath(name) { return String(name == null ? "" : name).split("/").map(encodeURIComponent).join("/"); }
+/**
+ * 给文件接口的链接补上「这份成果属于哪个工作目录」。
+ *
+ * 成果在事件里存的是**工作区相对路径**，服务端一直按「当前工作目录」去解析它。
+ * 用户换一次目录，旧对话里的卡片就全指到新根下面不存在的位置——文件一个没少，
+ * 是坐标系换了而没人记得旧的那套。
+ *
+ * 带的是 sha1 前 8 位的指纹（服务端 workspaceKey），不是真路径：这串会出现在
+ * 截图、日志和分享出去的链接里，本机目录名不该跟着漏出去。服务端只在**自己用过的**
+ * 目录名单里反查这枚指纹，认不出来就当没带，读不到名单外的任何地方。
+ */
+function withRoot(url, root) {
+  const r = String(root || "");
+  return r ? url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(r) : url;
+}
+/** 顺着 DOM 往上问「这块是哪个根下的」。产出卡和清单行都挂在 .out-block 里，根记在它的 data-root 上 */
+function rootOf(el) {
+  const b = el && el.closest ? el.closest("[data-root]") : null;
+  return (b && b.dataset.root) || "";
+}
+/** 把文档里写的相对路径，按这份文档所在的目录拼成工作区相对路径（./ 和 ../ 都认） */
+function joinRel(base, rel) {
+  const p = String(rel || "");
+  if (p.startsWith("/")) return p.replace(/^\/+/, ""); // 开头的 / 当工作区根，不是磁盘根
+  const segs = String(base || "").split("/").filter(Boolean);
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") segs.pop(); else segs.push(seg);
+  }
+  return segs.join("/");
+}
+/**
+ * markdown 图片 ![alt](url) → <img>。以前整个 renderMd 根本不认这个语法，
+ * 模型写的报告里插的图在预览里只剩一行光秃秃的 ![封面](fig.jpg)。
+ * 相对路径必须按 base（文档自己所在的目录）算，否则又回到"去工作区根目录找图"的老问题。
+ * 安全：url 里出现引号/尖括号/空白一律丢掉（拼进属性会把标签撑破），
+ * 除 http(s) 和 data:image 之外的协议一律不认（挡 javascript:）。
+ *
+ * root 跟卡片上的下载/预览链接是同一枚指纹（见 withRoot）。少了它，切过一次文件夹之后
+ * 报告本身还打得开（那条链接带了 root），报告**里面**的插图却全裂——因为图走的是另一条
+ * 没带根的 URL，服务端只好按当前目录去找。用户看到的是「打开了但是图没了」，比整个打不开更费解。
+ */
+/**
+ * 一个文件**现在**这一版的版本号（右侧文件清单里记的 mtime），拿不到就返回空串。
+ *
+ * 对话里的图和右侧面板看的必须是同一份字节。面板每次点开都带 ?t=当前时间，永远是最新的；
+ * 对话里的卡片和 Markdown 内嵌图要是拿「事件里记的那一版」或者干脆不带版本号，
+ * 文件被 agent 原地改写一次之后，浏览器就把七天前那张缓存图一直摆在对话里——
+ * 用户看到的就是「对话里预览的图和右边打开的不一样」。所以版本号一律先问当前清单，
+ * 清单里没有（历史回放、清单还没拉到）才退回事件里那份。
+ *
+ * 只在这张卡的根就是当前清单的根时才问（root 空 = 老记录没记根，服务端本来也按当前根解析它）：
+ * 换过工作目录的话，同名文件在另一个根下是另一份东西，版本号不能串。
+ * typeof 那一道是给前端测试留的：它按段切真源码，切到这一段时清单变量可能还没声明。
+ */
+function curStamp(name, root) {
+  if (typeof filesCache === "undefined" || !Array.isArray(filesCache)) return "";
+  const fr = typeof filesRoot === "undefined" ? "" : String(filesRoot || "");
+  const r = String(root || "");
+  if (r && fr && r !== fr) return "";
+  const f = filesCache.find((x) => x && x.name === name);
+  return f ? String(f.mtime || f.size || "") : "";
+}
+/** 文件接口链接上的版本参数：当前清单优先，退回事件里记的 mtime / 大小 */
+function fileVer(f, root) { return curStamp(f.name, root) || String(f.mtime || f.size || ""); }
+function mdImg(alt, url, base, root) {
+  const u = String(url || "").trim();
+  if (!u || /["'<>\s\\]/.test(u)) return "";
+  const rel = joinRel(base, u), stamp = curStamp(rel, root);
+  const src = /^(https?:)?\/\//.test(u) || /^data:image\//.test(u) ? u
+    : /^[a-zA-Z][\w+.-]*:/.test(u) ? ""
+    : withRoot("/api/files/view/" + fpath(rel) + (stamp ? "?v=" + encodeURIComponent(stamp) : ""), root);
+  if (!src) return "";
+  return `<img class="md-img" src="${src}" alt="${String(alt || "").replace(/"/g, "")}" loading="lazy">`;
+}
+/**
+ * 单行文本里的 markdown 强调。**只** 认 `code` 和 **粗体** 这两样，别的原样留着。
+ *
+ * 为什么需要它：界面上很多字是模型写的（自进化的规则/提案/判据、记忆条目），
+ * 模型习惯性带 markdown；这些位置以前一律走 esc()，于是界面上直接印出一串星号。
+ * 用 renderMd() 又不合适——那是块级渲染，会把一行字包成 <p> 顶出一截空白。
+ *
+ * 顺序不能反：先 esc 再翻标记。反过来等于把模型输出当 HTML 执行。
+ */
+function escInline(s) {
+  return esc(s)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+}
+/** 头像内容：传了图就是 <img>，图标名画矢量图标，emoji 直接放字符，都没有就退回名字首字母。
+ *  返回 {html, cls}——cls 要挂到外层那个圆/方块上（emoji 得换中性底色）。 */
+function avatarBits(av, fallbackName) {
+  const s = String(av || "").trim();
+  if (s.startsWith("data:image/")) return { html: `<img class="ava-img" src="${esc(s)}" alt="">`, cls: "" };
+  // "@cat" 是内置的猫标——跟应用图标同一套几何（scripts/genlogo.py 生成同一份 symbol），
+  // 所以窗口图标、Dock 里那只、聊天里的头像是同一只猫，不是三张不相干的图。
+  // 走 <use> 而不是塞一张 png：矢量的，任何尺寸都清楚，也不用多一次网络请求。
+  if (s === ASSISTANT_MARK) return { html: `<svg class="ava-mk" aria-hidden="true"><use href="#owb-cat"></use></svg>`, cls: "mk" };
+  // 图标名（"brain"、"rocket"）：描边跟着 currentColor 走，压在品牌渐变上本来就是白的，不用换中性底
+  if (isIconName(s)) return { html: ic(s, "ava-ic"), cls: "" };
+  if (s) return { html: esc(s), cls: "emo" };
+  return { html: esc(String(fallbackName || "?").trim().slice(0, 1).toUpperCase()), cls: "" };
+}
+function paintAvatar(el, av, fallbackName) {
+  if (!el) return;
+  const { html, cls } = avatarBits(av, fallbackName);
+  el.innerHTML = html;
+  el.classList.toggle("emo", cls === "emo");
+  el.classList.toggle("mk", cls === "mk");
+}
+/** 界面上该怎么称呼当前用户：昵称优先，没设就用登录名 */
+function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
+/** 助理身份变了，把界面上所有露脸的地方一次性刷新（品牌位、侧栏、历史气泡头像） */
+function applyAssistantIdentity() {
+  document.title = assistant.name;
+  // 上面那行把「(n) 」前缀一起冲掉了，Dock 角标跟着清零；补回来（注意力那页在 app-01 之后加载）
+  if (typeof syncTitleCount === "function") syncTitleCount();
+  document.querySelector(".brand .name").textContent = assistant.name;
+  paintAvatar(document.querySelector(".brand .mark"), assistant.avatar, assistant.name);
+  const abIc = document.getElementById("ab-ic");
+  if (abIc) {
+    const a = avatarBits(assistant.avatar, assistant.name);
+    abIc.innerHTML = `<span class="ab-ava${a.cls ? " " + a.cls : ""}">${a.html}</span>`;
+  }
+  document.querySelectorAll(".a-msg .avatar").forEach(el => paintAvatar(el, assistant.avatar, assistant.name));
+  const h1 = document.querySelector("#empty h1");
+  if (h1) h1.textContent = "把事情交给我";
+}
+// ================= 长对话滚动引导 =================
+// 生成回复时用户往上翻，就不再往下拽（能安心看历史）；翻回底部附近才恢复跟随。
+// 长对话再补两样：往上翻远了给「回到最前」；人在上面看历史时下面来了新内容，「回到最新」上挂红点——
+// 不然几十轮的对话里，用户翻上去看一眼旧结论，回来根本不知道 agent 已经说完了。
+let chatStick = true;
+function syncScrollGuides() {
+  chatStick = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 80;
+  const toBottom = document.getElementById("to-bottom");
+  toBottom.classList.toggle("show", !chatStick);
+  if (chatStick) { toBottom.classList.remove("new"); toBottom.title = "回到最新"; }
+  // 翻过一屏半才算「远」——刚往上滚一点就冒出一个按钮，只会晃眼
+  document.getElementById("to-top").classList.toggle("show", chatScroll.scrollTop > chatScroll.clientHeight * 1.5);
+}
+chatScroll.addEventListener("scroll", syncScrollGuides);
+let scrollRaf = 0;
+function scrollBottom(force) {
+  if (force) chatStick = true;
+  if (!chatStick) {
+    // 人在上面看历史，新内容到了：不拽他，但让他知道
+    const toBottom = document.getElementById("to-bottom");
+    if (!toBottom.classList.contains("new")) { toBottom.classList.add("new"); toBottom.title = "有新内容，回到最新"; }
+    return;
+  }
+  if (scrollRaf) return;
+  // 事件流密集时每个事件都设 scrollTop 会逐次强制布局；合并到每帧一次
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0;
+    if (chatStick) chatScroll.scrollTop = chatScroll.scrollHeight;
+  });
+}
+document.getElementById("to-bottom").onclick = () => scrollBottom(true);
+document.getElementById("to-top").onclick = () => { chatScroll.scrollTo({ top: 0, behavior: "smooth" }); };
+
+// 执行过程里出错的步骤：以前每张出错卡都自动摊开，一个任务错个七八步整片全是红色长日志，
+// 用户找不到结论。现在出错卡也收起，只在标题挂「N 步出错」；点角标 → 展开过程区、只摊开出错的那几张、滚到第一张。
+function wireProcWarn(chip, procWrap) {
+  if (!chip || !procWrap) return chip;
+  chip.title = "点一下直达出错的步骤";
+  chip.onclick = (e) => {
+    e.stopPropagation();
+    procWrap.classList.add("open");
+    const failed = procWrap.querySelectorAll(".step-card.failed");
+    failed.forEach((c) => c.classList.add("open"));
+    if (failed[0] && failed[0].scrollIntoView) failed[0].scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+  return chip;
+}
+
+// ================= Markdown 渲染（先转义防注入） =================
+// 模型偶尔输出「裸语言名 + 无围栏代码」（DeepSeek 常见）：识别后补成 ``` 围栏再走正常渲染
+function repairBareCode(str) {
+  const LANG = /^(text|plaintext|javascript|js|typescript|ts|python|py|bash|sh|shell|zsh|json|html|xml|svg|css|scss|sql|yaml|yml|java|go|rust|cpp|csharp|ruby|php|swift|kotlin|jsx|tsx|markdown|md)$/i;
+  // 「像代码/命令/文件树/日志」的行（文本已 HTML 转义）：缩进、注释、树形符、路径、标记符号、常见命令与语法开头
+  const CODE = /^(\s+\S|[│├└─┌┬┴┼]|\/[\w.]|\/\/|#|&lt;|&gt;|["']|\{|\}|\(|\)|\[|`|[■□▶◆●]|[-*]\s|\d+[.)]\s|(const|let|var|function|import|export|from|class|def|async|await|print|python3?|node|npm|npx|pnpm|pip3?|git|cd|ls|cat|curl|wget|brew|docker|ffmpeg|mkdir|cp|mv|echo|source|ssh|chmod)\s|return\b|if\s*\(|for\s*\(|while\s*\(|console\.|\$|[A-Za-z_$][\w$.]*\s*[=({:.]|-{2,})/;
+  const lines = str.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const t = l.trim();
+    if (LANG.test(t)) {
+      // 语言名后允许隔 1-2 个空行再开始代码
+      let j = i + 1, blanks = 0;
+      while (j < lines.length && lines[j].trim() === "" && blanks < 2) { j++; blanks++; }
+      if (j < lines.length && CODE.test(lines[j])) {
+        const buf = [];
+        while (j < lines.length) {
+          const cur = lines[j];
+          if (cur.trim() === "") {
+            // 空行后若还是代码行则把空行收进块内，否则代码块到此结束
+            let k = j + 1;
+            while (k < lines.length && lines[k].trim() === "") k++;
+            if (k < lines.length && CODE.test(lines[k])) { while (j < k) buf.push(lines[j++]); continue; }
+            break;
+          }
+          if (!CODE.test(cur)) break;
+          buf.push(cur); j++;
+        }
+        if (buf.length >= 1) {
+          out.push("```" + t.toLowerCase(), ...buf, "```");
+          i = j - 1;
+          continue;
+        }
+      }
+    }
+    out.push(l);
+  }
+  return out.join("\n");
+}
+
+// 能当成工作区文件去点的扩展名。用白名单而不是「带个点就算」：模型写 `[详见](第 3.2 节)`、
+// 「升到 v1.2」这类文字里也有点号，给它们加上链接只会点出一句「文件不存在」——比不给链接更气人。
+const MD_FILE_RE = /\.(html?|pdf|svgz?|png|jpe?g|gif|webp|bmp|ico|avif|mp3|wav|m4a|aac|ogg|oga|flac|opus|mp4|webm|mov|m4v|ogv|mkv|avi|md|markdown|txt|log|csv|tsv|json|ya?ml|docx?|xlsx?|pptx?|zip)$/i;
+/**
+ * markdown 链接 `[文字](报告.md)` → 能点开预览的工作区文件链接。
+ *
+ * 以前这一路只认 https:——模型收尾写「详见 [调研报告](报告.md)」，屏幕上就原样印出一串
+ * 方括号圆括号，点哪儿都没反应。
+ * 图片那一路（mdImg）老早就按 base 解相对路径了，文字链接这一路一直缺着。
+ *
+ * 带协议头的一概不碰：https 上面那行已经接走了，javascript:/data:/mailto: 这些原样留着当文字。
+ * 点击不在这儿挂——renderMd 是拼字符串出来的，挂不上 onclick，由 app-02.js 那个事件委托统一接。
+ */
+function mdFileLink(label, url, base, root) {
+  const u = String(url || "").trim();
+  // 引号/尖括号/空白拼进属性会把标签撑破，跟 mdImg 同一条规矩
+  if (!u || /["'<>\s\\]/.test(u)) return "";
+  if (/^[a-zA-Z][\w+.-]*:/.test(u) || u.startsWith("//") || u.startsWith("#")) return "";
+  const clean = u.split(/[?#]/)[0];
+  if (!MD_FILE_RE.test(clean)) return "";
+  const name = joinRel(base, clean);
+  if (!name) return "";
+  // name 是从 esc 过的正文里切出来的，& 这会儿长的是 &amp; 的样子——正好是属性值该有的形态，
+  // 浏览器读 dataset 时会自己解回来。再 esc 一次就成了 &amp;amp;，文件名反而错了
+  return `<a class="file-ln" data-md="1" data-name="${name}" data-root="${esc(root || "")}" title="点击预览 ${name}" tabindex="0">${label}</a>`;
+}
+
+/**
+ * live=true 表示「这一段正在往外吐字」，只有流式那条路（paintStream）会传。
+ * 它一路传到 SVG 卡片那儿决定要不要说「绘制中」——停笔之后、回放历史的时候都不该再说。
+ */
+function renderMd(src, base, live, root, opts) {
+  if (!src) return "";
+  // 先把正文里的 <svg> 抠出来换成占位符（在 esc 之前——它们要当图渲染，不能被转义成文字）
+  const { text: pre, figs } = SvgFig.extractSvgFigures(src, live);
+  let s = esc(pre);
+  const codeBlocks = [];
+  const pushCode = (lang, code) => {
+    codeBlocks.push(`<div class="code-wrap"><div class="code-head"><span>${esc(lang || "")}</span><a class="code-copy" title="复制代码">复制</a></div><pre><code>${code.replace(/\n$/, "")}</code></pre></div>`);
+    return `\x00CODE${codeBlocks.length - 1}\x00`;
+  };
+  const extract = (str) => str.replace(/```(\w*)[^\S\n]*\n?([\s\S]*?)```/g, (_, lang, code) => pushCode(lang, code));
+  s = extract(s);
+  s = repairBareCode(s);
+  s = extract(s);
+  // 未闭合围栏（流式输出中 / 模型忘了闭合）：从 ``` 到文末也按代码块渲染
+  s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code));
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base, root));
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 资料库那一页把 fileLinks 关了：那儿的文件走的是 /api/library 那套路由，
+  // 指向工作区的预览面板对它没意义，链接得跟着那一页自己的预览走
+  if (!opts || opts.fileLinks !== false) {
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (all, label, url) => mdFileLink(label, url, base, root) || all);
+  }
+  // 裸网址放**最后**转。以前它排在加粗前面，于是 `**https://…/abc**` 里收尾的两个星号
+  // 被当成网址的一部分吞进了 href，紧接着加粗那一遍又在 href 属性中间插进一个 </strong>——
+  // 屏幕上链接后面凭空多出「<strong>」几个字，点下去跳的还是个带标签的烂地址。
+  // 换个顺序这条路就断了：这会儿 **…** 早成了 <strong>…</strong>，网址两边干干净净
+  s = autoLinkUrls(s);
+  const lines = s.split("\n");
+  const out = [];
+  let listType = null, inQuote = false, para = [], tableRows = null;
+  const flushPara = () => { if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; } };
+  const closeList = () => { if (listType) { out.push(listType === "ul" ? "</ul>" : "</ol>"); listType = null; } };
+  const closeQuote = () => { if (inQuote) { out.push("</blockquote>"); inQuote = false; } };
+  const closeTable = () => {
+    if (!tableRows) return;
+    const [head, ...rest] = tableRows;
+    out.push('<div class="md-table-wrap"><table><thead><tr>' + head.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>"
+      + rest.map(r => "<tr>" + r.map(c => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody></table></div>");
+    tableRows = null;
+  };
+  for (let raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    // 表格：| a | b | 行；分隔行 |---|---| 跳过
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      if (cells.every(c => /^:?-{3,}:?$/.test(c))) continue;
+      flushPara(); closeList(); closeQuote();
+      (tableRows = tableRows || []).push(cells);
+      continue;
+    }
+    closeTable();
+    // 代码块／SVG 占位符独立成块，不并进段落（<div> 不能进 <p>）
+    if (/^\s*\x00(?:CODE|SVG)\d+\x00\s*$/.test(line)) {
+      flushPara(); closeList(); closeQuote();
+      out.push(line.trim());
+      continue;
+    }
+    if ((m = line.match(/^(?:&gt;)\s?(.*)$/))) {
+      flushPara(); closeList();
+      let body = m[1] || "";
+      // 提示条 `> [!warn] 正文`：服务端统一发这个记号（callout.js），这里画成带图标的条。
+      // 只有一段引用的第一行认记号——后面几行是同一条的正文，不该各画一个图标
+      const mk = inQuote ? null : body.match(/^\[!(warn|wait|ok|stop)\]\s*/);
+      if (mk) {
+        body = body.slice(mk[0].length);
+        out.push(`<blockquote class="cal cal-${mk[1]}">${ic(CALLOUT_ICON[mk[1]], "cal-i")}`);
+        inQuote = true;
+      }
+      if (!inQuote) { out.push("<blockquote>"); inQuote = true; }
+      out.push("<p>" + body + "</p>");
+      continue;
+    }
+    closeQuote();
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+      flushPara(); closeList();
+      out.push(`<h${m[1].length}>${m[2]}</h${m[1].length}>`);
+    } else if (/^(-{3,}|\*{3,})$/.test(line)) {
+      flushPara(); closeList(); out.push("<hr>");
+    } else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      flushPara();
+      if (listType !== "ul") { closeList(); out.push("<ul>"); listType = "ul"; }
+      out.push("<li>" + m[1] + "</li>");
+    } else if ((m = line.match(/^\s*\d+[.、]\s+(.*)$/))) {
+      flushPara();
+      if (listType !== "ol") { closeList(); out.push("<ol>"); listType = "ol"; }
+      out.push("<li>" + m[1] + "</li>");
+    } else if (line.trim() === "") {
+      flushPara(); closeList();
+    } else {
+      closeList();
+      para.push(line);
+    }
+  }
+  flushPara(); closeList(); closeQuote(); closeTable();
+  return out
+    .join("\n")
+    .replace(/\x00CODE(\d+)\x00/g, (_, i) => codeBlocks[+i])
+    .replace(/\x00SVG(\d+)\x00/g, (_, i) => figs[+i]);
+}
+
+/**
+ * 流式正文的「已定稿 + 正在写」分段渲染。
+ *
+ * 以前每 100ms 一句 el.innerHTML = renderMd(全文)：一条十万字的回复要把整棵 DOM
+ * （实测一万两千个节点）推倒重建八百多次，光重建就 19.7 秒，最卡的一帧 66ms——
+ * 用户那边看到的是「越写到后面越卡，滚动发涩，想选一段字复制，选中每 100ms 被清一次」。
+ *
+ * 现在只重写还在长的那一小截：前面已经定稿的那部分 DOM 一个节点都不动。
+ * 敢定稿的判据只有一条——**整份重渲的结果必须正好以这一段为前缀**。
+ * （后来的 ``` 会把前面的排版整个改掉，所以不能只看局部；这一条不成立就整块重来，宁可慢不许错。）
+ */
+// 提示条四种口径，跟 callout.js 的 LABEL 一一对应
+const CALLOUT_ICON = { warn: "triangle-alert", wait: "clock", ok: "circle-check", stop: "circle-x" };
+const BAL_TAG = /<(\/?)(ul|ol|blockquote|table|div|pre|p)\b/g;
+/** 这段 HTML 里的块级标签是否首尾成对——不成对就不能拿去 insertAdjacentHTML（浏览器会替你瞎闭合） */
+function balancedHtml(h) {
+  const n = {};
+  BAL_TAG.lastIndex = 0;
+  let m;
+  while ((m = BAL_TAG.exec(h))) n[m[2]] = (n[m[2]] || 0) + (m[1] ? -1 : 1);
+  for (const k in n) if (n[k] !== 0) return false;
+  return true;
+}
+const STREAM_TAIL = 2000; // 尾巴超过这么长就试着把前面固化掉
+function paintStream(el) {
+  let sp = el._split;
+  if (!sp) {
+    el.innerHTML = "";
+    const done = document.createElement("div"), live = document.createElement("div");
+    done.className = "md-done"; live.className = "md-live";
+    el.append(done, live);
+    sp = el._split = { done, live, html: "", raw: "", live_html: null };
+  }
+  const html = renderMd(el._raw, null, true);
+  if (!html.startsWith(sp.html)) { // 后来的字改了前面的排版：认赔，整块重来
+    sp.done.innerHTML = ""; sp.html = ""; sp.raw = ""; sp.live_html = null;
+  }
+  // 尾巴长了就把「空行之前、围栏闭合」的那一段固化进 done，之后每帧不再碰它
+  if (el._raw.length - sp.raw.length > STREAM_TAIL) {
+    const cut = el._raw.lastIndexOf("\n\n", el._raw.length - 400);
+    if (cut > sp.raw.length && (el._raw.slice(0, cut).match(/```/g) || []).length % 2 === 0) {
+      const cand = el._raw.slice(0, cut + 1);
+      const candHtml = renderMd(cand, null, true);
+      if (html.startsWith(candHtml) && candHtml.startsWith(sp.html) && balancedHtml(candHtml)) {
+        sp.done.insertAdjacentHTML("beforeend", candHtml.slice(sp.html.length));
+        sp.html = candHtml; sp.raw = cand; sp.live_html = null;
+      }
+    }
+  }
+  const tail = html.slice(sp.html.length);
+  if (tail !== sp.live_html) { sp.live.innerHTML = tail; sp.live_html = tail; }
+}
+/**
+ * 这一段不再长了，把两截合回一整块。
+ *
+ * 复制、导出、innerText、计划清单这些下游都按「.a-text 底下直接就是内容」来读，
+ * 分段是流式期间的内部结构，不许漏给它们。合回去只花一次整份重渲（十万字实测 3.5ms）。
+ */
+function sealStream(el) {
+  if (!el || el._sealed) return false;
+  // _split 是「已经画过至少一帧」才有的。合帧是 100ms 一次，模型经常说半句话就去调工具
+  // （"我先看看这个文件" → tool_use），这一段还没轮到第一帧就被 endText 打断——
+  // 以前这里直接 return false，那句话就永远停在 _raw 里，屏幕上是个空 div：话说了，用户没看见。
+  // 所以只要写过字就得落屏，画没画过第一帧不作数。
+  if (!el._split && !el._raw) return false; // 真的一个字都没有：空壳，没什么可合的
+  el._sealed = true;
+  el._split = null;
+  el.innerHTML = renderMd(el._raw);
+  return true;
+}
+// 【任务类型：X】跟「（已上传文件：×××）」一样，是发给模型的协议前缀，不是用户自己写的话。
+// 气泡和任务历史标题里一律洗掉；原文照旧发给模型，「复制我的输入」复制的也还是原文
+// 侧栏标题只留用户自己那句话。委派标签那行也得摘：不摘的话历史列表整排都是
+// 「【交给专家团：…】把下面这件事整体委派给…」，24 个字全被同一句模板占满，谁是谁分不出来
+const BUBBLE_ATT_ICON = { "图片": "image", "视频": "film", "音频": "volume-2", "文本摘录": "file-text", "文件": "paperclip" };
+// 气泡上面那排缩略图只画图。视频不画：preload=metadata 会去拉每条片子的文件头，
+// 一屏历史里十几条就是十几个连接，而用户发视频本来就少
+const BUBBLE_PIC_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
+/**
+ * 用户发进来的那份素材，现在躺在工作区的哪个相对路径上。三档，越靠前越准：
+ * ① 这次开着的窗口里刚传的 —— 服务端回过确切路径，直接用；
+ * ② 老回合：这条对话有成果子文件夹，素材就在里面；
+ * ③ 连子文件夹都没有：那就是工作区根上。
+ *
+ * ② 还留了个 alt：**修好上传落点之前传的那批，人确实躺在工作区根上**
+ * （当时前端还没给会话 id，服务端没地方放，只能落根）。所以②读不出来时自动改试③，
+ * 老会话里那些图才不会整排变成灰方块。
+ */
+function attachRel(name, sid) {
+  const memo = attachPaths.get(name);
+  if (memo) return { rel: memo, alt: "" };
+  const dir = sessionDirs.get(sid);
+  return dir ? { rel: dir + "/" + name, alt: name } : { rel: name, alt: "" };
+}
+/** 缩略图地址。跟产出卡共用一套口径：一律 ?thumb=320，svg 除外（矢量栅格化反而更大更糊） */
+function attachThumb(rel) {
+  const stamp = curStamp(rel, "");
+  const q = [/\.svg$/i.test(rel) ? "" : "thumb=320", stamp ? "v=" + encodeURIComponent(stamp) : ""].filter(Boolean).join("&");
+  return "/api/files/view/" + fpath(rel) + (q ? "?" + q : "");
+}
+function stripSceneTag(t) {
+  return String(t == null ? "" : t)
+    .replace(/^\s*【任务类型：[^】]*】\s*/, "")
+    .replace(/^\s*【(?:交给专家团|交给专家|使用技能)：[^】]*】[^\n]*\n*/, "");
+}
+
+/**
+ * 引用一条回复去追问。
+ *
+ * 引用**不落进输入框**。飞书、ChatGPT、Claude 三家都是同一种做法：输入框上面钉一张小卡片，
+ * 框里永远只有人自己要说的话。以前这里是把 400 字的 `> ` 块整段塞进 textarea——输入框当场
+ * 被顶成半屏，人得先翻过自己引的那一坨才能开始打字；编辑时手一滑还会把引用改成半句，
+ * 发出去的东西和他以为引的那段对不上。卡片是一件东西：要么整条在，要么整条不在。
+ *
+ * 发出去的协议一个字节没动，还是消息开头那个 `> ` 块——模型看到的还是原来那样，
+ * 老会话回放出来也还是原样，只是气泡里折成了一张卡（见 createTurnUI）。
+ *
+ * 选中了就只引选中的那截：一条回复常常好几屏，整段引过去等于什么都没指。
+ */
+function quoteTextOf(turn) {
+  const sel = window.getSelection ? window.getSelection() : null;
+  const body = turn.querySelector(".body");
+  // 光标必须落在**这一条**回复里：不加这个判断，在别处随手选中的字会被引到这条底下来
+  if (sel && !sel.isCollapsed && body && body.contains(sel.anchorNode) && body.contains(sel.focusNode)) {
+    const picked = String(sel).trim();
+    if (picked) return picked;
+  }
+  // 没选就取正文。只取 .a-text（渲染后的回复本体）——过程卡片、按钮条、token 统计都不在里面
+  return [...turn.querySelectorAll(".body .a-text")].map((n) => n.innerText.trim()).filter(Boolean).join("\n\n").trim();
+}
+// 再长就不是「引用」而是「复述」了，模型也会被这一大坨带偏。想引更多的人会自己先选中
+const QUOTE_MAX = 400;
+// 这一条消息引着谁：{ text, label, turn }。turn 是那条回复的 DOM，点卡片就滚回去找它
+let pendingQuote = null;
+const quoteBarEl = () => document.getElementById("quote-bar");
+/** 发给模型的样子：每行一个 `> `。漏一行，后面几行在 markdown 里就掉出引用块了 */
+function quoteBlock(text) {
+  return String(text).split("\n").map((l) => "> " + l).join("\n");
+}
+function clearQuote() {
+  pendingQuote = null;
+  renderQuoteBar();
+}
+/** 滚回某一条回合并让它亮一下。引用卡片、气泡上的引用都靠它带人回去看原文 */
+function flashTurn(el) {
+  if (!el || !el.isConnected) return false;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("turn-jumped");
+  void el.offsetWidth; // 逼一次重排，否则连点两次第二下不会再亮
+  el.classList.add("turn-jumped");
+  clearTimeout(flashTurn._t);
+  flashTurn._t = setTimeout(() => el.classList.remove("turn-jumped"), 2600);
+  return true;
+}
+function renderQuoteBar() {
+  const bar = quoteBarEl();
+  if (typeof syncSendBtn === "function") syncSendBtn(); // 只挂了一条引用也算「有话要说」
+  if (!bar) return;
+  if (!pendingQuote) { bar.innerHTML = ""; bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.innerHTML = `<div class="quote-card">
+      <button type="button" class="quote-jump" title="回到被引用的那条回复">
+        <span class="quote-src">${ic("text-quote", "i-sm")}<b></b><span class="quote-hint">回到原文</span></span>
+        <span class="quote-text" data-i18n-skip></span>
+      </button>
+      <button type="button" class="quote-x" title="不引用了（Esc）" aria-label="不引用这一段了">${ic("x", "i-sm")}</button>
+    </div>`;
+  // 文本走 textContent：引用的是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
+  bar.querySelector(".quote-src b").textContent = pendingQuote.label;
+  bar.querySelector(".quote-text").textContent = pendingQuote.text;
+  bar.querySelector(".quote-jump").onclick = () => {
+    if (!flashTurn(pendingQuote && pendingQuote.turn)) toast("那条回复不在眼前这个对话里了（多半是换了会话）", "circle-x");
+  };
+  bar.querySelector(".quote-x").onclick = () => { clearQuote(); inputEl.focus(); };
+}
+/** 同一段再点一次「引用」：闪一下卡片告诉他「已经引着了」，而不是默默什么都不做 */
+function flashQuoteBar() {
+  const card = quoteBarEl() && quoteBarEl().querySelector(".quote-card");
+  if (!card) return;
+  card.classList.remove("quote-flash");
+  void card.offsetWidth;
+  card.classList.add("quote-flash");
+  setTimeout(() => card.classList.remove("quote-flash"), 700);
+}
+function quoteReply(turn) {
+  let t = quoteTextOf(turn);
+  if (!t) return toast("这条回复还没有可引用的正文", "circle-x");
+  if (t.length > QUOTE_MAX) t = t.slice(0, QUOTE_MAX).trimEnd() + "…";
+  const again = !!(pendingQuote && pendingQuote.text === t);
+  // 一条消息只引一段：再点别处就是改引那一段（飞书就是这个规矩）。
+  // 攒成一摞的话，人发出去之前根本不知道自己带了几段别人的话
+  pendingQuote = { text: t, label: (typeof assistant === "object" && assistant && assistant.name) || "助理", turn };
+  renderQuoteBar();
+  if (again) flashQuoteBar();
+  hideSelQuote();
+  inputEl.focus();
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+}
+
+/**
+ * 在回复里拖选一段，就地冒出一颗「引用」——ChatGPT 和 Claude 都是这一下。
+ *
+ * 没有它的话，「只引这一句」这个能力等于不存在：按钮在回复最底下那条操作条上，
+ * 人得选中、再把鼠标挪到底下去找那颗按钮，中途在别处点一下选区就没了。
+ * 所以按钮要长在选区旁边，手不用走。
+ */
+const selQuoteBtn = (() => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "sel-quote";
+  b.hidden = true;
+  b.innerHTML = `${ic("text-quote", "i-sm")}<span>引用这段</span>`;
+  b.title = "只把选中的这段引过去追问";
+  // mousedown 里就得拦掉默认行为：不拦的话按下去的这一下先把选区清了，
+  // 等到 click 触发时 quoteTextOf 看到的是一个空选区，「只引这一段」当场退回整段引用
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  document.body.appendChild(b);
+  return b;
+})();
+function hideSelQuote() {
+  selQuoteBtn.hidden = true;
+  selQuoteBtn._turn = null;
+}
+/** 选区在不在某条回复的正文里；在的话这颗按钮该摆哪儿 */
+function selQuoteSpot() {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount || !String(sel).trim()) return null;
+  const node = sel.focusNode || sel.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const text = el && el.closest && el.closest(".body .a-text");
+  const turn = text && text.closest(".turn");
+  // 只认回复正文：用户自己的气泡、过程卡片、代码块的工具条里选中了不冒这颗按钮
+  if (!turn || !turn.contains(text)) return null;
+  const rects = [...sel.getRangeAt(0).getClientRects()].filter((r) => r.width || r.height);
+  const last = rects[rects.length - 1];
+  if (!last) return null;
+  return { turn, x: last.right, y: last.bottom };
+}
+function showSelQuote() {
+  const spot = selQuoteSpot();
+  if (!spot) return hideSelQuote();
+  selQuoteBtn._turn = spot.turn;
+  selQuoteBtn.hidden = false;
+  // 先显形再量宽：hidden 的元素 offsetWidth 是 0，量出来会把按钮顶到窗口右边缘外面去
+  const w = selQuoteBtn.offsetWidth || 96, h = selQuoteBtn.offsetHeight || 30;
+  const x = Math.max(8, Math.min(spot.x - w / 2, window.innerWidth - w - 8));
+  // 选区在屏幕最底下时，按钮翻到选区上方去，否则它被挡在输入框底下点不着
+  const below = spot.y + 8 + h <= window.innerHeight - 8;
+  selQuoteBtn.style.left = x + "px";
+  selQuoteBtn.style.top = (below ? spot.y + 8 : spot.y - h - 24) + "px";
+}
+selQuoteBtn.onclick = () => { if (selQuoteBtn._turn) quoteReply(selQuoteBtn._turn); };
+// mouseup 而不是 selectionchange：后者在拖选过程中每动一个字符就触发一次，
+// 按钮跟着鼠标乱飞。松手才是「我选好了」这个意思
+document.addEventListener("mouseup", (e) => {
+  if (e.target === selQuoteBtn || selQuoteBtn.contains(e.target)) return;
+  setTimeout(showSelQuote, 0); // 等这一下的选区落定（Chromium 在 mouseup 之后才更新）
+});
+document.addEventListener("mousedown", (e) => {
+  if (e.target !== selQuoteBtn && !selQuoteBtn.contains(e.target)) hideSelQuote();
+});
+document.addEventListener("selectionchange", () => {
+  // 选区被清掉（在别处点了一下、按了方向键）就收起来；这里只做「收」，不做「摆位置」
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!selQuoteBtn.hidden && (!sel || sel.isCollapsed)) hideSelQuote();
+});
+// 按钮是 position:fixed 的：对话一滚，选中的字走了它还钉在原地，指着一句不相干的话
+(document.getElementById("chat-col") || document).addEventListener("scroll", hideSelQuote, { passive: true });
+// ================= 回合渲染（实时流式与历史回放共用） =================
+// shown：气泡里该显示的「人说的那句」。画布发起的任务，发给模型的 userText 前面拼着一大段操作说明，
+// 气泡、复制都用 shown；重新生成、反馈仍用完整的 userText，模型那边一个字不能少
+function createTurnUI(userText, turnMode, forSid, shown) {
+  const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
+  const turn = document.createElement("div");
+  turn.className = "turn";
+  const av = avatarBits(assistant.avatar, assistant.name);
+  // 气泡外面套一层 .u-stack：右对齐那一列里，除了气泡还要竖着摞「我发的图」那一排缩略图。
+  // 宽度限制（78%）从气泡挪到了这一列身上，气泡和缩略图排现在共用同一条右边线
+  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="u-stack"><div class="bubble" translate="no"></div></div></div>
+    <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
+  // 气泡里不许出现给模型看的协议原文。两样东西要折起来：
+  // ① 开头那一坨 `> `：那是「我引了它上一条里的哪句话」。原样糊出来，人得先翻过一屏
+  //    别人的话才看得见自己问了什么——飞书/ChatGPT 都是折成一张小卡压在气泡顶上，这里照做。
+  // ② `【图片 1：×××】`、「（已上传文件：×××）」：那是「这条消息带了哪几份素材」。
+  //    折成气泡底下那排附件，名字和类型都在，谁是第一张也还看得出来。
+  // 两样都只动**显示**：发给模型的原文一个字节没改，「复制我的输入」复制的也还是原文。
+  const attList = [];
+  const addAtt = (name, label) => {
+    const n = String(name || "").trim();
+    if (!n) return;
+    const had = attList.find((x) => x.name === n);
+    if (had) { if (label && !had.label) had.label = label; return; }
+    attList.push({ name: n, label: label || "" });
+  };
+  let bodyText = stripSceneTag(shown || userText)
+    .replace(/（已上传文件：([^）]+)）/g, (_, names) => {
+      for (const n of String(names).split("、")) addAtt(n);
+      return "";
+    })
+    // 独占一行的素材锚点才折：写在句子中间的（「把【图片 1：a.png】放左边」）是人自己在指东西，
+    // 折掉的话那句话就成了「把放左边」
+    .replace(/^【(图片|视频|音频|文本摘录|文件)\s+\d+：([^】]+)】[ \t]*$/gm, (_, label, n) => { addAtt(n, label); return ""; })
+    .trim();
+  let quoteText = "";
+  const qm = bodyText.match(/^((?:>[^\n]*(?:\n|$))+)/);
+  if (qm) {
+    quoteText = qm[1].split("\n").map((l) => l.replace(/^>[ \t]?/, "")).join("\n").trim();
+    if (quoteText) bodyText = bodyText.slice(qm[1].length).replace(/^\s+/, "");
+  }
+  let bubbleHtml = quoteText ? `<div class="bubble-quote">${ic("text-quote", "i-sm")}<span></span></div>` : "";
+  bubbleHtml += hlTokens(bodyText, "tk-b");
+  // 图单拎出来画成真缩略图，摞在气泡上面（其余素材还是气泡底下那排名字条）。
+  // 为什么图要特殊对待：用户发的就是这张图，气泡里却只有一行 `IMG_8037.JPG`——
+  // 他自己都认不出刚发的是哪张，更别说回头再找到那个文件。用户原话是
+  // 「输入图片…让我能找到输入图片文件啥的」。现在两种都点得开：走的是产出卡同一个预览面板，
+  // 里面就带着「下载」和「打开所在位置」
+  const picList = attList.filter((a) => BUBBLE_PIC_RE.test(a.name));
+  const docList = attList.filter((a) => !BUBBLE_PIC_RE.test(a.name));
+  const attSpot = (a) => attachRel(a.name, turnSid);
+  if (docList.length) {
+    bubbleHtml += `<div class="bubble-attach">${docList.map((a) => {
+      const sp = attSpot(a);
+      return `<button type="button" class="batt" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" title="${esc(a.name)} · 点击预览">${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</button>`;
+    }).join("")}</div>`;
+  }
+  turn.querySelector(".bubble").innerHTML = bubbleHtml;
+  if (picList.length) {
+    const pics = picList.map((a) => {
+      const sp = attSpot(a);
+      // 名字条平时藏着，只在图读不出来的时候顶上来：一个空灰方框谁都看不出是哪份素材
+      return `<button type="button" class="bpic" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" title="${esc(a.name)} · 点击预览">`
+        + `<img src="${attachThumb(sp.rel)}" alt="${esc(a.name)}" loading="lazy" decoding="async">`
+        + `<span class="bpic-nm">${ic("image")}${esc(a.name)}</span></button>`;
+    }).join("");
+    turn.querySelector(".u-stack").insertAdjacentHTML("afterbegin", `<div class="bubble-pics">${pics}</div>`);
+    for (const img of turn.querySelectorAll(".bubble-pics .bpic img")) {
+      img.onerror = () => {
+        const btn = img.closest(".bpic");
+        const alt = btn.dataset.alt;
+        if (alt) { btn.dataset.rel = alt; btn.dataset.alt = ""; img.src = attachThumb(alt); return; } // 老会话：改试工作区根
+        btn.classList.add("gone");
+        btn.title = btn.title.replace(" · 点击预览", " · 这份素材读不出来了：可能已被改名、移走或删掉");
+      };
+    }
+  }
+  // 素材点开就是产出卡那个预览面板（带下载 / 打开所在位置）。root 留空 = 当前工作目录：
+  // 用户发的素材一直跟着他现在这个工作区走，不像产出那样要记住当年是在哪个根下生成的
+  for (const el of turn.querySelectorAll(".bubble-pics .bpic, .bubble-attach .batt")) {
+    el.onclick = () => previewFile(el.dataset.rel, "");
+  }
+  // 引用的正文走 textContent：那是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
+  if (quoteText) {
+    const bq = turn.querySelector(".bubble-quote");
+    bq.querySelector("span").textContent = quoteText;
+    // 默认折三行。引用本来就是「我指的是这句」，不该在自己的问题上面占半屏；
+    // 但也不能把它藏死——点一下就整段摊开，原文一个字没少
+    bq.title = "点一下展开/收起这段引用";
+    bq.onclick = () => bq.classList.toggle("open");
+  }
+  turn.querySelector(".u-copy").onclick = (e) => {
+    navigator.clipboard?.writeText(shown || userText).then(() => {
+      e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
+    }).catch(() => toast("复制失败", "circle-x"));
+  };
+  // 只有"正在看的会话"的回合才上屏；后台会话的回合先游离着更新，切回来时再接上
+  if (turnSid === sessionId) {
+    document.getElementById("empty")?.remove();
+    chatCol.appendChild(turn);
+  }
+  // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）
+  chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
+  const body = turn.querySelector(".body");
+  turn._userText = userText;
+  turn._shown = shown || "";
+  turn._mode = turnMode;
+  let currentText = null;
+
+  // 执行过程折叠区（仿官方「已完成 12s ›」）：过程卡片都收进去，正文文本在外面
+  let procWrap = null, procBody = null, procTimer = null;
+  const t0 = Date.now();
+  // 长跑徽章：步数/续跑轮次/产出件数实时挂在「运行中」计时旁，长任务不再只有一个转圈
+  let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0, liveErr = 0;
+  const liveOutFiles = []; // 这一趟改过的文件（收尾时拿它做正文链接 + 决定预览开哪一件）
+  let outRoot = ""; // 这一趟的文件事件是哪个工作目录的（服务端 workspaceKey）；没来过文件事件就是空
+  const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
+  const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
+  // 单步耗时得带小数：fmtDur 最小档就是 1s，可工具里一大半是几百毫秒的本地读写，
+  // 全印成「1s」等于没印——用户要的是「哪一步慢」，不是「每一步都一样」。
+  // 10s 往上小数位没意义了，交回 fmtDur 统一成 12s / 1m3s
+  const fmtStep = (ms) => (ms < 100 ? "<0.1s" : ms < 10000 ? (ms / 1000).toFixed(1) + "s" : fmtDur(ms));
+  // 「此刻在干什么」那一行的状态：actNarr 是模型旁白的缓冲，actLine 是当前该显示的话
+  let actNarr = "", actLine = "", actIcon = "", actPend = false;
+  const paintAct = () => {
+    const el = procWrap && procWrap.querySelector(".act-live");
+    if (!el || el._line === actLine) return;
+    el._line = actLine;
+    el.innerHTML = ic(actIcon || "circle-dot") + `<span class="al-t"></span>`;
+    el.lastChild.textContent = actLine;
+    el.title = actLine;
+  };
+  /** @param {boolean} stream 正文旁白是逐字来的，按帧合并（跟正文渲染同一个节奏），别逐 chunk 写 DOM */
+  const setAct = (line, icon, stream) => {
+    actLine = line; actIcon = icon;
+    if (!stream) { paintAct(); return; }
+    if (actPend) return;
+    actPend = true;
+    setTimeout(() => { actPend = false; paintAct(); }, 100); // 尾帧靠这次超时补上，不会停在半句话
+  };
+  // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——
+  // 大段大段的中间步骤堆在正文里，人要找的那句结论就被埋了。
+  // 想盯着看的人点一下就展开，这个选择记在本机，下次直接按你上次的来。
+  const PROC_OPEN_KEY = "owb_proc_open";
+  const procOpenPref = () => { try { return localStorage.getItem(PROC_OPEN_KEY) === "1"; } catch { return false; } };
+  const ensureProc = () => {
+    if (!procBody) {
+      procWrap = document.createElement("div");
+      procWrap.className = "proc-wrap running" + (procOpenPref() ? " open" : "");
+      // ms-live 独占一行跟着折叠条一起钉在顶上：过程区收着也一直看得到「几件做完了、现在在做哪件」
+      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">${ic("chevron-right")}</span><span class="ms-live" hidden></span><span class="act-live"></span></div><div class="proc-body"></div>`;
+      if (actLine) paintAct(); // 过程区是第一个工具来了才建的，在它之前播过的动作要补上，别开天窗
+      procBody = procWrap.querySelector(".proc-body");
+      onActivate(procWrap.querySelector(".proc-head"), () => {
+        procWrap.classList.toggle("open");
+        try { localStorage.setItem(PROC_OPEN_KEY, procWrap.classList.contains("open") ? "1" : "0"); } catch {}
+      });
+      // 追加（不是 prepend）：开场白留在折叠区上方可见，仿官方「先说在做什么 → 过程收起 → 结论在外」
+      body.appendChild(procWrap);
+      procTimer = setInterval(() => {
+        const pt = procWrap.querySelector(".pt");
+        if (pt) pt.textContent = `运行中 ${fmtDur(Date.now() - t0)}` + liveBadge();
+        // 还没回来的卡自己也走秒。一个 setInterval 管全部，不给每张卡各开一个；
+        // 用 .spinner 筛「还在跑的」，跑完的卡早就写死了最终耗时，不会被这里改回去
+        const now = Date.now();
+        // 压缩那行也跟着走秒：它卡在「按下发送」和「第一个字」中间，是全场最容易被当成卡死的一段
+        const cn = procWrap.querySelector(".compact-note.running");
+        if (cn) cn.lastChild.textContent = compactRunText(cn._n || 0, now - (cn._t0 || now));
+        procWrap.querySelectorAll(".step-card .spinner").forEach((sp) => {
+          const c = sp.closest(".step-card");
+          const d = c && c._at && c.querySelector(".dur");
+          if (d) d.textContent = fmtStep(now - c._at);
+        });
+      }, 1000);
+    }
+    return procBody;
+  };
+
+  // 轨迹条：每个工具在折叠条上挂一枚小徽章，连续同名合并成 ×N，跑着的亮蓝、栽了的标红。
+  // 不用展开过程区就看得见这一轮走了哪几步、哪步出了事；点徽章直达那张卡
+  const TRAIL_MAX = 12;
+  const trailAdd = (card, name) => {
+    const tr = procWrap && procWrap.querySelector(".trail");
+    if (!tr) return;
+    const last = tr.lastElementChild;
+    if (last && last.classList.contains("more")) { last._n++; last.textContent = `+${last._n}`; return; }
+    if (last && last.dataset.name === name && !last.classList.contains("err")) {
+      last.classList.add("run"); // 上一张同名卡已经回来了，这张新的又在跑
+      last._n++;
+      last.querySelector("b").textContent = `×${last._n}`;
+      last._cards.push(card);
+      card._chip = last;
+      return;
+    }
+    if (tr.childElementCount >= TRAIL_MAX) {
+      const more = document.createElement("span");
+      more.className = "tc more";
+      more._n = 1;
+      more.textContent = "+1";
+      tr.appendChild(more);
+      return;
+    }
+    const chip = document.createElement("span");
+    chip.className = "tc run";
+    chip.dataset.name = name;
+    chip._n = 1;
+    chip._cards = [card];
+    chip.innerHTML = `${ic(toolIcon(name))}${esc(shortTool(name))}<b></b>`;
+    chip.title = name;
+    chip.onclick = (e) => { // 点徽章：展开过程区并跳到最近那张卡（不触发折叠条自己的开合）
+      e.stopPropagation();
+      procWrap.classList.add("open");
+      const c = chip._cards[chip._cards.length - 1];
+      c.classList.add("open");
+      c.scrollIntoView({ block: "center", behavior: "smooth" });
+    };
+    tr.appendChild(chip);
+    card._chip = chip;
+  };
+  const trailMark = (card, state, at) => {
+    const chip = card && card._chip;
+    if (!chip) return;
+    // 合并徽章里还有没回来的卡就继续转；全回来了才落定。出过错的整枚标红，不被后来的成功盖掉
+    if (state === "err") chip.classList.add("err");
+    const stillRun = chip._cards.some((c) => c.querySelector(".spinner"));
+    if (!stillRun) chip.classList.remove("run");
+    if (state === "abort") chip.classList.add("abort");
+    const dur = at && card._at ? at - card._at : 0;
+    if (dur > 0) chip.title = `${chip.dataset.name} · ${fmtDur(dur)}`;
+  };
+
+  /**
+   * 收尾时在过程区底下记一笔时间账：这一趟的时间到底花在哪了。
+   *
+   * Langfuse 那条路要先去
+   * 搭一个实例、填两把钥匙；而「这趟慢在哪」这种最常问的问题，本地就该当场答得上来。
+   *
+   * 两个数怎么算，得说实话：
+   *   工具时间不是各步相加——只读工具是并发跑的，相加会算出比总耗时还长的荒唐数。
+   *   这里把每步的 [开始, 结束] 区间**合并重叠**后再求和，得到「确实有工具在跑」的那段墙钟时间。
+   *   剩下的那段没有任何工具在跑，就是模型在想 + 等网络往返，如实写成这句，不叫「模型耗时」——
+   *   网络那一截也在里面，硬安在模型头上是编的。
+   */
+  const renderTiming = (host, totalMs) => {
+    const cards = [...host.querySelectorAll(".step-card")].filter((c) => c._dur > 0);
+    if (!cards.length) return; // 一步都没记过时间（老会话）就不记这笔账，别拿 0 当事实
+    const spans = cards.map((c) => [c._at, c._end]).sort((a, b) => a[0] - b[0]);
+    let busy = 0, s = spans[0][0], e = spans[0][1];
+    for (const [a, b] of spans.slice(1)) {
+      if (a > e) { busy += e - s; s = a; e = b; } else if (b > e) e = b;
+    }
+    busy += e - s;
+    const think = Math.max(0, totalMs - busy);
+    const slow = cards.slice().sort((a, b) => b._dur - a._dur).slice(0, 3);
+
+    const box = document.createElement("div");
+    box.className = "proc-sum";
+    const r1 = document.createElement("div");
+    r1.className = "ps-row";
+    r1.innerHTML = ic("timer") + "<span></span>";
+    // 剩下那截不到 1 秒就别硬凑一句：「其余 <0.1s 是模型在想」读着像凑字数
+    r1.lastChild.textContent =
+      `共 ${fmtDur(totalMs)}：工具占了 ${fmtStep(busy)}（${cards.length} 步，并发的已按重叠合并）` +
+      (think >= 1000 ? `，其余 ${fmtStep(think)} 是模型在想 + 等网络` : "");
+    box.appendChild(r1);
+    // 只有一步时不摆这个榜：上一行已经写了「工具占了 2.0s（1 步）」，再来一句「最慢」是废话
+    if (cards.length >= 2 && slow[0]._dur >= 1000) {
+      const r2 = document.createElement("div");
+      r2.className = "ps-row ps-slow";
+      r2.innerHTML = "<span></span>";
+      r2.lastChild.textContent = "最慢：" + slow.map((c) => `${(c._label || "").slice(0, 24)} ${fmtStep(c._dur)}`).join(" · ");
+      box.appendChild(r2);
+    }
+    // 更细的记录去哪看。开了 Langfuse 就直接给这一趟在那边的地址；没开也有得看——
+    // 本地那本账是一直在记的，指到「更多 → 执行追踪」那一页去。
+    // 只在这儿说一次（得先展开过程区才看得见），不往对话里插横幅，那是骚扰
+    if (turn._trace || amPlatformOwner()) {
+      const a = document.createElement("a");
+      a.className = "link ps-more";
+      if (turn._trace) {
+        a.href = turn._trace; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = "每次模型调用的输入输出 →";
+      } else {
+        a.href = "#";
+        a.textContent = "这一趟调了哪些工具、动了哪些文件？打开执行追踪 →";
+        a.onclick = (ev) => { ev.preventDefault(); openPageView("trace"); };
+      }
+      box.appendChild(a);
+    }
+    host.appendChild(box);
+  };
+
+  // ---- 结论在折叠区外面长 ----
+  // 过程区一出现，后面的正文先进折叠区：这时候说的大多是「我先看下配置」这种旁白，说完就去调工具。
+  // 可结论要是也在折叠区里写完、等 finish() 才提出来，用户盯着一行「运行中…」干等，
+  // 回复写完了才整段蹦出来——流式等于白做。所以最新那段写够 TAIL_MIN_CHARS 字、又持续了 TAIL_MIN_MS
+  // 还没停，就当它是结论，挪到过程区下面接着流；猜错了（后面又去调工具）由 foldTail 收回原位。
+  // 两道门槛缺一不可：只看字数，一口气吐出来的一句旁白也会蹦出去再缩回来，一闪一闪
+  let tailText = null;
+  const TAIL_MIN_CHARS = 80, TAIL_MIN_MS = 1200;
+  const reducedMotion = () => !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const promoteTail = (el) => {
+    // 回放不挪：回放是一口气同步跑完的，结论本来就由 finish() 提出来，直播和回放得是同一个 DOM
+    if (el !== tailText || el._folded || isReplaying || !procBody || el.parentNode !== procBody) return;
+    if (el._raw.length < TAIL_MIN_CHARS || Date.now() - el._t0 < TAIL_MIN_MS) return;
+    // 原位留个注释节点当记号，收回去时插回同一个位置，过程区的先后顺序不乱。
+    // 注释不算 childElementCount，finish() 判「过程区空了没」不受影响
+    el._anchor = document.createComment("tail");
+    el.before(el._anchor);
+    body.appendChild(el);
+  };
+  /** 挪出去的那段其实是旁白（后面又有真活要干了）：收回折叠区原位。收回过的不再挪，免得来回跳 */
+  const foldTail = () => {
+    const el = tailText;
+    if (!el || !procBody || el.parentNode !== body) return;
+    el._folded = true;
+    // 直接收走，下面的东西会一下子往上窜一大截。留一块同高的空壳原地缩成 0，看着是「收进去了」。
+    // 空壳不许带 .a-text：复制 / 导出 / finish() 都按 .a-text 找正文，混进来就是一段空回复
+    let ghost = null;
+    if (turn.isConnected && !reducedMotion()) {
+      ghost = document.createElement("div");
+      ghost.className = "a-text-ghost";
+      ghost.setAttribute("aria-hidden", "true");
+      ghost.setAttribute("translate", "no");
+      ghost.style.height = el.offsetHeight + "px";
+      el.before(ghost);
+    }
+    if (el._anchor && el._anchor.parentNode === procBody) el._anchor.replaceWith(el);
+    else procBody.appendChild(el);
+    el._anchor = null;
+    if (ghost) {
+      ghost.getBoundingClientRect(); // 先让浏览器把起始高度排出来，不然下一行直接落定、过渡不播
+      ghost.style.height = "0px";
+      ghost.style.opacity = "0";
+      setTimeout(() => ghost.remove(), 200);
+    }
+  };
+
+  const ensureText = () => {
+    if (!currentText) {
+      currentText = document.createElement("div");
+      currentText.className = "a-text";
+      currentText.setAttribute("translate", "no"); // AI 正文是内容不是界面，语言开关不碰
+      currentText._raw = "";
+      currentText._split = null;
+      currentText._t0 = Date.now();
+      // 过程区还没出现：这段是开场白，留在正文里。出现了：先进折叠区当旁白，
+      // 写长了由 promoteTail 挪出去；上一段挪出去的这时该回原位——结论只能是最新那段
+      if (procBody) {
+        foldTail();
+        procBody.appendChild(currentText);
+        tailText = currentText;
+      } else body.appendChild(currentText);
+    }
+    return currentText;
+  };
+  const appendText = (delta) => {
+    const el = ensureText();
+    el._raw += delta;
+    // 流式回复不逐字重排版：每 100ms 渲一次，而且只重写还在长的那一小截（见 paintStream）
+    if (el._pend) return;
+    el._pend = true;
+    el._timer = setTimeout(() => {
+      el._pend = false; el._timer = null;
+      promoteTail(el); // 挪位置跟着渲染帧走，不在逐 chunk 的路上判
+      paintStream(el);
+      if (turnSid === sessionId) scrollBottom(); // 后台并行会话的增量不许滚动当前看的对话
+    }, 100);
+  };
+  /** 这一段正文写完了：撤掉待渲的帧，把分段合回一整块 */
+  const endText = () => {
+    const el = currentText;
+    currentText = null;
+    if (!el) return;
+    if (el._timer) { clearTimeout(el._timer); el._timer = null; el._pend = false; }
+    if (sealStream(el) && turnSid === sessionId) scrollBottom();
+  };
+
+  // ---- 上游重试倒计时条 ----
+  // 上游 429/5xx 时后端会等几秒自动重试。以前界面上只有底下那行转圈的字，
+  // 说不清「在等什么、还要等多久」，看着像卡死。status 事件带了 retry 字段
+  // （{ attempt, total, delayMs }，attempt 从 1 数；agent.js 的 retryField 不转 kind，带了 kind 也只认 "retry"）
+  // 就在这一轮顶上挂一条倒计时。
+  // 没带 retry 的老后端照旧只走思考提示那一行，所以前后端谁先合入都不坏。
+  // 数字各占一个 <b>：词典按文本节点整句匹配，数字拼进句子中间就翻不了了。
+  let retryTimer = null;
+  let retryMuted = false; // 用户点了 ×：同一段重试里后面几次也不再弹，等上游回话才作废
+  const dropRetryBar = () => {
+    if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+    body.querySelector(":scope > .retry-bar")?.remove();
+  };
+  /** 上游回话了（正文 / 工具调用）或这一轮收尾：倒计时条撤掉，「关掉」也就此作废——下回再重试是另一件事 */
+  const endRetry = () => { dropRetryBar(); retryMuted = false; };
+  const showRetryBar = (ev) => {
+    const r = ev.retry;
+    const nth = Math.max(1, Math.round(Number(r.attempt) || 1));
+    const total = Math.max(nth, Math.round(Number(r.total) || nth));
+    const end = Date.now() + Math.max(0, Number(r.delayMs) || 0);
+    dropRetryBar();
+    if (retryMuted) return;
+    const bar = document.createElement("div");
+    bar.className = "retry-bar";
+    bar.setAttribute("role", "status");
+    bar.title = ev.text || ""; // 后端那句原话带着真实报错，悬停看得到；条上只说在等什么、等多久
+    bar.innerHTML = ic("refresh-cw") + `<span class="rb-txt"></span>`
+      + `<button type="button" class="icon-btn rb-x" title="关闭">${ic("x")}</button>`;
+    const txt = bar.querySelector(".rb-txt");
+    const n = `<b class="rb-n">${nth}/${total}</b>`;
+    let shown = null;
+    const paint = () => {
+      const left = Math.ceil((end - Date.now()) / 1000);
+      if (left > 0) {
+        if (shown === null) txt.innerHTML = `上游繁忙，<b class="rb-sec"></b> 秒后第 ${n} 次重试`;
+        if (left !== shown) { shown = left; txt.querySelector(".rb-sec").textContent = String(left); }
+        return;
+      }
+      // 倒计时走完、正文还没来：这一次已经发出去了，在等回话
+      txt.innerHTML = `上游繁忙，正在第 ${n} 次重试…`;
+      if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+    };
+    bar.querySelector(".rb-x").onclick = () => { retryMuted = true; dropRetryBar(); };
+    // 钉在这一轮最上面（引擎小牌子之下）；样式里是 sticky，长回合滚到底也看得见
+    const eng = body.querySelector(":scope > .run-eng");
+    body.insertBefore(bar, eng ? eng.nextSibling : body.firstChild);
+    paint();
+    if (Date.now() < end) retryTimer = setInterval(paint, 250); // 250ms 一跳：整秒 setInterval 会漂，数字会卡在同一个数上两秒
+  };
+
+  function handleEvent(ev) {
+    // 进度只认还开着的卡：收过尾的那一步晚到一条（或 id 对不上），不能把卡和折叠条拉回「渲染 899/900」
+    if (ev.type === "tool_progress" && !(ev.id && (body._openCards || []).some((c) => c._tid === ev.id))) return;
+    // 折叠条上那行「此刻在干什么」：每条事件都先过一遍它，再走各自的渲染分支
+    const act = liveActivity(ev, actNarr);
+    actNarr = act.narr;
+    if (act.line) setAct(act.line, act.icon, ev.type === "text");
+    if (ev.type === "step_start") {
+      // 重试都在同一步的那次模型调用里；新的一步开了，上一次调用已经收场。
+      // 回话为空直接续跑、睡醒后重跑本步这两条路上既没有正文也没有工具调用，不在这撤就会一直挂着「正在重试」
+      endRetry();
+      if (ev.depth > 0) return;
+      liveStep = ev.step || liveStep;
+      body.querySelector(".thinking-hint")?.remove();
+      const hint = document.createElement("div");
+      hint.className = "thinking-hint";
+      hint.style.cssText = "font-size: 13px;color:var(--owb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
+      hint.innerHTML = `<span class="spinner"></span> 第 ${ev.step} 步 · 思考规划中…`;
+      // 又开了一步 = 刚才挪出去的那段不是结论，收回折叠区（下面几处 foldTail 同理：后面有真活要干）
+      foldTail();
+      // 首步的提示放正文（此时还没有过程区，别为它建一个）；后续步的提示进过程区
+      (procBody || body).appendChild(hint);
+      endText();
+    } else if (ev.type === "status") {
+      // 引擎启动那一条是「这趟活谁在跑、花不花钱」，是事实不是进度：
+      // 挂成一枚常驻小牌子钉在这一轮开头，别用会转的思考提示——转了半天其实早就跑起来了，
+      // 而且下一段正文一来它就被抹掉，用户回头再也找不到「刚才那次到底走的哪条路」
+      if (ev.starting || ev.model || /已启动|正在启动/.test(ev.text || "")) {
+        let chip = turn.querySelector(".run-eng");
+        if (!chip) {
+          chip = document.createElement("div");
+          chip.className = "run-eng";
+          body.insertBefore(chip, body.firstChild);
+        }
+        // 本机 CLI 冷启动要好几秒（claude 实测 3.8~7.2 秒），这几秒里界面本来一片空白，
+        // 看着像"发送没点上"。引擎在 spawn 前先推一条 starting，这里挂同一枚牌子占住位置，
+        // 转个圈说清楚在等什么；等 init 到了，**原地**换成带模型名和工具数的正式版——
+        // 认的是同一个 .run-eng 节点，所以不会闪成两枚，也不会有布局跳动
+        const m = /^(.+?)(?:已启动|正在启动)（(.+?)）/.exec(ev.text || "");
+        const booting = !!ev.starting;
+        chip.classList.toggle("re-boot", booting);
+        chip.innerHTML = `<span class="re-ic">${booting ? '<span class="spinner"></span>' : ic("monitor")}</span>`
+          + `<span class="re-name">${esc(m ? m[1].trim() : (ev.text || "").slice(0, 24))}</span>`
+          + (m ? `<span class="re-sub">${esc(m[2])}</span>` : "")
+          + `<span class="re-free">不花 API 额度</span>`;
+        chip.title = ev.text || "";
+        return;
+      }
+      // 带 retry 的重试播报换成顶上那条倒计时，不再往思考提示里塞同一句话（原话在倒计时条的悬停里）。
+      // 回放不挂：那几秒早过去了，再倒数一遍是假的
+      // kind 只认 retry（没写也当 retry）：以后别的种类借这个字段，不能被当成倒计时
+      if (ev.retry && typeof ev.retry === "object" && (ev.retry.kind == null || ev.retry.kind === "retry")) {
+        if (!isReplaying) showRetryBar(ev);
+        return;
+      }
+      // 运行状态直播（重试中/模型长时间没输出）：复用思考提示那一行，别让界面看起来像卡死
+      let hint = body.querySelector(".thinking-hint");
+      if (!hint) {
+        hint = document.createElement("div");
+        hint.className = "thinking-hint";
+        hint.style.cssText = "font-size: 13px;color:var(--owb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
+        (procBody || body).appendChild(hint);
+      }
+      hint.innerHTML = `<span class="spinner"></span> ${esc(ev.text || "")}`;
+    } else if (ev.type === "text") {
+      endRetry(); // 上游开口了就不用再等：专家内层的正文也算
+      if (ev.depth > 0) return;
+      body.querySelector(".thinking-hint")?.remove();
+      appendText(ev.delta);
+    } else if (ev.type === "expert_start") {
+      endText();
+      foldTail();
+      const banner = document.createElement("div");
+      banner.className = "step-card";
+      banner.innerHTML = `<div class="head"><span class="tag">${ic("users")}${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
+      ensureProc().appendChild(banner);
+    } else if (ev.type === "parallel") {
+      // 这一批同时开跑。说一句，免得用户看到好几张卡一起转以为卡住了。
+      // 两类分开讲：搜索抓页面是「等网络」，出图出片是「等上游出货还要花钱」，
+      // 用户看到三张图一起转，第一反应是「这是不是要收我三份钱」——得当场说明白各写各的。
+      foldTail();
+      ensureProc().appendChild(procNote("zap", ev.kind === "gen"
+        ? `${ev.count} 条生成任务一起跑（各写各的文件，互不影响）`
+        : `${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`));
+    } else if (ev.type === "tool_use") {
+      endRetry(); // 重试成功、模型直接调工具不说话：没有正文来撤它，这里撤
+      body.querySelector(".thinking-hint")?.remove();
+      endText();
+      foldTail();
+      const card = document.createElement("div");
+      card.className = "step-card";
+      const who = ev.expert ? `${esc(ev.expert)} · ` : "";
+      // 一行说清「在干什么」，不是「传了什么参数」：`📄 读 报告.md`。
+      // title 由服务端算好（老会话回放没有这个字段，退回工具名 + purpose，别开天窗）。
+      const line = ev.title || (ev.name + (ev.purpose ? " " + ev.purpose : ""));
+      card.innerHTML =
+        `<div class="head"><span class="tag">${ic(toolIcon(ev.name))}</span>` +
+        // .dur 这一格跑着的时候就开始走秒：一步卡了两分钟和一步刚开始，光看转圈是一模一样的
+        `<span class="desc">${who}${esc(line)}</span><span class="out"></span><span class="dur"></span><span class="spinner"></span></div>` +
+        `<pre>${esc(ev.input_preview || "")}</pre>`;
+      card.querySelector(".head").onclick = () => card.classList.toggle("open");
+      ensureProc().appendChild(card);
+      card._at = ev.at || Date.now();
+      card._stamped = !!ev.at; // 服务端存盘时盖的戳；没有就说明这是直播（或没记过时间的老会话）
+      card._label = line; // 收尾算「最慢的几步」时拿它当名字，比 read_file 这种工具名好认
+      trailAdd(card, ev.name);
+      // 未完成卡片入栈；专家的内层工具卡与协调者的委派卡按 depth 区分，防止张冠李戴
+      card._depth = ev.depth || 0;
+      card._tid = ev.id || "";
+      (body._openCards = body._openCards || []).push(card);
+    } else if (ev.type === "tool_result") {
+      const stack = body._openCards || [];
+      let card = null;
+      // 只读工具是并发跑的，谁先回来不一定——认调用 id 才不会把 A 的结果贴到 B 的卡上
+      if (ev.id) {
+        const i = stack.findIndex((c) => c._tid === ev.id);
+        if (i >= 0) card = stack.splice(i, 1)[0];
+      }
+      if (!card) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i]._depth === (ev.depth || 0)) { card = stack.splice(i, 1)[0]; break; }
+        }
+      }
+      if (!card) card = stack.pop();
+      if (card) {
+        card.querySelector(".spinner")?.remove();
+        // 结果一行说清：成功报「拿回来多少」，失败直接把原因摆在行上——
+        // 只写个红色「失败」不说为什么，用户还得展开一张张点，那就是没用的过程
+        const out = card.querySelector(".out");
+        // 跑着时那格是进度（「渲染 899/900」），收尾了就撤：结果有话由结果接手，没话就空着，别停在半截的数上
+        if (out && out.classList.contains("prog")) { out.classList.remove("prog"); out.textContent = ""; out.title = ""; }
+        if (out && ev.outcome) { out.textContent = "· " + ev.outcome; out.title = ev.outcome; if (ev.isError) out.classList.add("err"); }
+        const tag = document.createElement("span");
+        tag.className = "tag " + (ev.isError ? "err" : "ok");
+        tag.textContent = ev.isError ? "失败" : "完成";
+        card.querySelector(".head").appendChild(tag);
+        card.querySelector("pre").textContent += "\n\n── 执行结果 ──\n" + (ev.preview || "");
+        // 改文件那几步：diff 直接摆在卡上，旁边一颗「回退到这步之前」。
+        // 看见改坏了不用去翻 .history，按一下就退；退错了再按一下就回来
+        if (ev.diff) {
+          const d = document.createElement("pre");
+          d.className = "step-diff";
+          d.innerHTML = paintDiff(ev.diff);
+          card.appendChild(d);
+        }
+        if (ev.ckpt && turnSid) card.appendChild(rewindButton(turnSid, ev.ckpt));
+        // 出错卡默认也收起（失败一多整片摊开太乱），靠红标 + 标题角标提示，点角标直达
+        if (ev.isError) { card.classList.add("failed"); liveErr++; }
+        // 这一步花了多久，写死在卡上。回放的新会话两头都有 at（服务端存盘时盖的戳），
+        // 所以翻历史也看得见每步耗时，不是只有直播才有。
+        // 但没盖过戳的老会话不能跟着印：回放是一个同步循环跑完的，两头差几毫秒，
+        // 印出来的「<0.1s」不是「这步很快」，是「这步根本没记过时间」——那是编的。
+        // 所以只有「两头都盖了戳」或者「真量到 100ms 以上」（活着跑的那趟）才算数
+        card._end = ev.at || Date.now();
+        const d = card._end - card._at;
+        card._dur = d > 0 && ((card._stamped && ev.at) || d >= 100) ? d : 0;
+        const durEl = card.querySelector(".dur");
+        if (durEl) durEl.textContent = card._dur ? fmtStep(card._dur) : "";
+        trailMark(card, ev.isError ? "err" : "ok", ev.at || Date.now());
+      }
+    } else if (ev.type === "tool_progress") {
+      // 进度写在卡上结果那一格：跟「· 120 行」同一个位置，收尾时原地被结果换掉。
+      // 只直播不存盘，回放里没有这条；id 对不上的上面已经挡掉了
+      const out = (body._openCards || []).find((c) => c._tid === ev.id)?.querySelector(".out");
+      const txt = progressText(ev);
+      if (out && txt) { out.textContent = "· " + txt; out.title = ev.label || txt; out.classList.add("prog"); }
+    } else if (ev.type === "limit") {
+      endText();
+      // 手动停止是用户自己按的，别再跟着说一句「任务强制收尾」——那是撞上限才有的话
+      const lnote = ev.note || "已达执行上限";
+      ensureProc().appendChild(procNote("timer", /^已手动停止/.test(lnote) ? lnote : `${lnote}，任务强制收尾`, "err"));
+      procWrap?.classList.add("open");
+      turn._limited = true;
+    } else if (ev.type === "auto_continue") {
+      endText();
+      foldTail();
+      liveRound = ev.round || 0; liveRoundTotal = ev.total || 0;
+      ensureProc().appendChild(procNote("refresh-cw", `${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`));
+      procWrap?.classList.add("open");
+    } else if (ev.type === "sleep") {
+      // 本机睡了一觉又醒了：任务时限已顺延，跟用户说一声免得对不上「怎么跑了这么久」
+      endText();
+      ensureProc().appendChild(procNote("moon", ev.note || "检测到本机睡眠，任务时限已顺延"));
+    } else if (ev.type === "failover") {
+      // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
+      endRetry(); // 主渠道那几次重试已经翻篇了，倒计时条别再挂着
+      endText();
+      ensureProc().appendChild(procNote("shuffle", ev.note || "已切换到备用渠道", "err"));
+      procWrap?.classList.add("open");
+    } else if (ev.type === "trim") {
+      // 历史太长，较早的工具原文被截短了。一条任务只留一行提示，累计数字滚动更新
+      const proc = ensureProc();
+      let note = proc.querySelector(".trim-note");
+      if (!note) { note = procNote("scissors", "", "trim-note"); proc.appendChild(note); }
+      note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调上下文上限`;
+    } else if (ev.type === "compact_start") {
+      // 压缩要跟模型说一次话，长会话十几秒是常事，而它正卡在「他按下发送」和「第一个字」中间。
+      // 只转圈不说话，他只能猜是模型卡了还是网断了——先把「在压什么、压多少、等了多久」摆出来
+      foldTail();
+      const note = compactNote(ensureProc());
+      note.classList.add("running");
+      note._n = ev.entries || 0;
+      note._t0 = Date.now();
+      note.lastChild.textContent = compactRunText(note._n, 0);
+      procWrap?.classList.add("open");
+    } else if (ev.type === "compact") {
+      // 会话超长时后端自动把早期轮次压成一条摘要，这里留一行告知，免得用户觉得"它忘了前面"
+      const note = compactNote(ensureProc());
+      note.classList.remove("running");
+      note.lastChild.textContent = ev.failed
+        ? `压缩失败：${ev.failed}。原内容未动（可在 设置→智能体设置 调大预算）`
+        : `已把早前 ${ev.removed || 0} 条消息压成摘要（原文存 data/compact-archive）`;
+      if (ev.failed) note.classList.add("err");
+    } else if (ev.type === "context") {
+      // 后台并行会话的余量不许画到当前这条对话头上：这根条全界面就一根
+      if (turnSid === sessionId) renderCtxMeter(ev);
+    } else if (ev.type === "usage") {
+      // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
+      if (!turn._usage) turn._usage = { ...ev };
+      else {
+        turn._usage.prompt += ev.prompt || 0;
+        turn._usage.completion += ev.completion || 0;
+        turn._usage.cached = (turn._usage.cached || 0) + (ev.cached || 0);
+        turn._usage.calls += ev.calls || 0;
+        turn._usage.elapsed_ms += ev.elapsed_ms || 0;
+      }
+    } else if (ev.type === "trace") {
+      // 这趟任务在 Langfuse 上的地址，开了执行追踪才会来。来了就挂在回复下面——
+      // 不然用户还得自己去 Langfuse 的列表里翻，猜哪条 trace 是刚才那趟
+      if (/^https?:\/\//i.test(String(ev.url || ""))) turn._trace = String(ev.url);
+    } else if (ev.type === "dir") {
+      // 本对话的成果子文件夹（只发直播不进回放；回放/续接场景由 /api/session 的 dir 字段补上）
+      if (ev.dir && sessionDirs.get(turnSid) !== ev.dir) {
+        sessionDirs.set(turnSid, ev.dir);
+        openDirs.add(ev.dir); // 第一次知道就默认展开；用户手动折叠后不再打扰
+        if (turnSid === sessionId) renderFiles(filesCache);
+      }
+    } else if (ev.type === "goal") {
+      // 目标卡状态直播（拆解完成/每轮验收后各推一次）；不进回放记录，回放由 /api/session 的 goal 字段补上
+      if (ev.goal) {
+        sessionGoals.set(turnSid, ev.goal);
+        if (turnSid === sessionId) renderGoalCard();
+      }
+    } else if (ev.type === "title") {
+      // 服务端给首轮任务起的短标题（截断标题太丑）；不进 transcript，回放不经过这里
+      const s = sessions.find((x) => x.id === turnSid);
+      if (s && ev.title) { s.title = ev.title; saveSessions(); renderHistory(); }
+      if (turnSid === sessionId && ev.title) document.getElementById("session-title").textContent = ev.title;
+    } else if (ev.type === "interject") {
+      endText();
+      // 插队时前端已经放了「等待注入」占位（服务端按 FIFO 注入，转正最早那个就是它）
+      const pend = body.querySelector(".interject-note.pending");
+      if (pend) {
+        pend.classList.remove("pending");
+        pend.querySelector(".lb").innerHTML = ic("zap") + "已并入当前任务";
+      } else {
+        const note = document.createElement("div");
+        note.className = "interject-note";
+        note.innerHTML = `<div class="lb">${ic("zap")}已并入当前任务</div>${esc(ev.text || "")}`;
+        body.appendChild(note);
+      }
+    } else if (ev.type === "worktree") {
+      // 这条必须留在正文里，不能只当一行状态：合回去的 git 命令就在这儿，
+      // 用户是任务跑完半小时后才想起来找它的——那时候状态行早滚没了
+      endText();
+      const note = document.createElement("div");
+      note.className = "wt-note";
+      const head = ev.phase === "done" ? (ev.empty ? "分身已收掉" : "改动在这根分支上") : "这趟在独立分身里跑";
+      note.innerHTML = `<div class="lb">${ic("git-branch")}${esc(head)}</div>${esc(ev.text || "")}`;
+      body.appendChild(note);
+    } else if (ev.type === "ask_user") {
+      endText();
+      body.appendChild(makeAskCard(ev, turnSid, undefined, {
+        outFiles: liveOutFiles, root: ev.root || "",
+        replaying: isReplaying, otherSession: turnSid !== sessionId,
+      }));
+      // 回放里的题早就过期了，不进注意力的账
+      if (!isReplaying) attnAsk(turnSid, ev.ask_id, { text: ev.question, depth: ev.depth || 0 });
+    } else if (ev.type === "ask_answer") {
+      attnAnswered(turnSid, ev.ask_id);
+      const card = body.querySelector(`.ask-card[data-ask-id="${cssEsc(ev.ask_id || "")}"]`);
+      if (card && card._mark) card._mark(ev.answer, ev.timeout, ev.summary, ev.estimate);
+      else if (card) card.classList.add("done");
+    } else if (ev.type === "credits") {
+      turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
+      if (currentUser) { currentUser.credits = ev.balance; renderUserChip(); }
+    } else if (ev.type === "files") {
+      // ev.changed 是服务端在任务开头打的快照上算出来的，历史回放也还原得出来；
+      // 老版本存下来的记录里没有这个字段，退回本地 mtime 差异
+      const pool = outPool(ev); // files ∪ turn_files：第 4 层往下的产出只在后者里
+      const turnOut = ev.changed
+        ? pool.filter(f => ev.changed.includes(f.name))
+        : changedFiles(ev.files);
+      liveOuts += turnOut.length;
+      for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
+      if (ev.root) outRoot = ev.root;
+      renderTurnOutputs(body, turnOut, pool, ev); // 先算差异，快照要等 applyOutputArrival 才推进
+      // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
+      if (!isReplaying) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
+      // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，又抢版面又难看。
+      // 现在结论在正文里、产出是一排 chip，右侧只在用户本来就开着预览看这个文件时原地刷新。
+      // 该做什么由 outputArrivalPlan 这个纯函数决定，前端 harness 直接验它的输入输出
+      applyOutputArrival(outputArrivalPlan({
+        turnOut,
+        replaying: isReplaying,
+        otherSession: turnSid !== sessionId, // 用户已经切到别的会话：这个后台回合只推进快照
+        pvOpen: pvPanel.classList.contains("show"),
+        pvCurrent,
+        filesOpen: document.getElementById("files-panel").classList.contains("show"),
+        listed: ev.files, // 角标只数面板里点得到的
+      }), ev.files);
+    } else if (ev.type === "sweep") {
+      // 只在「刚跑完的这一趟」结束时出现一次；回放历史记录时不再问——
+      // 那批文件多半早就被清过或早就不在了，再问一遍只会得到一堆「已经不在了」
+      if (!isReplaying) { endText(); body.appendChild(makeSweepCard(ev)); }
+    } else if (ev.type === "sources") {
+      renderSources(body, ev.items || []);
+    } else if (ev.type === "milestones" || ev.type === "todos") {
+      // 里程碑时间线：agent 每更新一次 PROGRESS.md（或 todo_write 发一张新清单），这张卡就在过程区原地刷新打勾状态
+      const todo = ev.type === "todos";
+      if (todo) ev = { items: (ev.items || []).map((t) => ({ text: t.content, done: t.status === "done", doing: t.status === "in_progress" })) };
+      const proc = ensureProc();
+      let card = proc.querySelector(".ms-card");
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "ms-card";
+        proc.appendChild(card);
+      }
+      const items = ev.items || [];
+      const doneN = items.filter((i) => i.done).length;
+      card.innerHTML = `<div class="ms-head">${ic("map-pin")}${todo ? "进度" : "里程碑"} ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
+        items.map((i) => `<div class="ms-item${i.done ? " done" : ""}${i.doing ? " doing" : ""}">${ic(i.done ? "circle-check" : i.doing ? "circle-dot" : "circle")}${esc(String(i.text || ""))}</div>`).join("");
+      // 常驻那一行：折叠着也看得到进度和「现在在做哪件」——用户要的就是这个
+      const live = procWrap && procWrap.querySelector(".ms-live");
+      if (live && items.length) {
+        const next = items.find((i) => i.doing) || items.find((i) => !i.done);
+        live.innerHTML = ic("map-pin") + "<span></span>";
+        live.lastChild.textContent = `${doneN}/${items.length}` + (next ? ` · 正在做：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
+        live.hidden = false;
+      }
+    } else if (ev.type === "error") {
+      endRetry();
+      endText();
+      const t = document.createElement("div");
+      t.className = "a-text";
+      t.setAttribute("translate", "no");
+      t.style.color = "var(--owb-err-text)";
+      t.textContent = "出错了：" + (ev.message || "");
+      body.appendChild(t); // 错误必须留在正文可见，不进折叠区
+      if (!isReplaying) attnFlag(turnSid, "error"); // 人不在这条上：侧栏那行亮红点
+    }
+    if (turnSid === sessionId) scrollBottom(); // 已切走的会话在后台跑，别拽当前视图的滚动条
+  }
+
+  // opts.interrupted：这一轮没有收尾事件（跑到一半进程没了、服务重启了）。
+  // 不给它一个终点的话，历史记录里这一轮会永远转着「运行中…」，而那时早就没有东西可停了
+  function finish(opts) {
+    endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
+    endRetry(); // 收尾了还在倒数「3 秒后重试」就是骗人，计时器也得停
+    const 断了 = !!(opts && opts.interrupted);
+    body.querySelector(".thinking-hint")?.remove();
+    // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
+    turn.querySelectorAll(".step-card .spinner").forEach(s => {
+      const card = s.closest(".step-card"); // 先拿卡再摘转圈：摘掉之后 closest 就找不到了，徽章会一直转
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "中止";
+      s.closest(".head")?.appendChild(tag);
+      s.remove();
+      trailMark(card, "abort");
+    });
+    turn.querySelectorAll(".spinner").forEach(s => s.remove());
+    // 压到一半这一轮就断了（连接掉了、被停了）：这行不能永远停在「正在压…已等 8 秒」，
+    // 那看着像还在跑。后端每条早退路径都会补一条 compact，所以走到这儿基本只剩「断了」这一种
+    procWrap?.querySelectorAll(".compact-note.running").forEach((n) => {
+      n.classList.remove("running");
+      n.lastChild.textContent = `压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）`;
+    });
+    // 过程折叠区收尾：停计时、写「已完成 Xs」、默认折叠（出错/被截断则保持展开）
+    if (procTimer) { clearInterval(procTimer); procTimer = null; }
+    if (procWrap) {
+      // 最后一段正文是最终结论 → 提出折叠区保持可见（开场白在上、结论在下、过程收起）。
+      // 流的时候已经挪出去了（promoteTail）就认它，再往最后挪一下，排到报错那行后面——跟回放出来的一样
+      const out = tailText && tailText.parentNode === body ? tailText : [...procBody.querySelectorAll(":scope > .a-text")].pop();
+      if (out) { out._anchor?.remove(); out._anchor = null; body.appendChild(out); }
+      if (!procBody.childElementCount) {
+        procWrap.remove();
+      } else {
+        const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
+        const n = procBody.querySelectorAll(".step-card").length;
+        const pt = procWrap.querySelector(".pt");
+        pt.textContent = (断了 ? "中断了" : `已完成 ${fmtDur(ms)}`) + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
+        // 出过错以前靠"保持展开"提示，结果一个四十步的任务只要中间错过一次就整片摊开，
+        // 用户要往下滚半天才够得着结论。改成收起 + 标题挂红角标：信号一个字没少，点开就直达过程
+        const marks = [];
+        const nErr = procBody.querySelectorAll(".tag.err").length;
+        if (nErr) marks.push(`${nErr} 步出错`);
+        if (turn._limited) marks.push("未跑完");
+        if (断了) marks.push("没收到结束，这一轮是断的");
+        if (marks.length) {
+          const chip = document.createElement("span");
+          chip.className = "proc-warn";
+          chip.innerHTML = ic("triangle-alert") + "<span></span>";
+          chip.lastChild.textContent = marks.join(" · ");
+          pt.after(wireProcWarn(chip, procWrap));
+        }
+        renderTiming(procBody, ms);
+        procWrap.classList.remove("open"); // 回合结束一律收起
+      }
+      procWrap.classList.remove("running"); // 不跑了就别再钉在视口顶上占地方
+    }
+    // 来源、产出卡片都是回合的结论物，挪到最后——否则会卡在中途正文和最终结论之间
+    const srcBlock = body.querySelector(":scope > .src-block");
+    if (srcBlock) body.appendChild(srcBlock);
+    const outBlock = body.querySelector(":scope > .out-block");
+    if (outBlock) body.appendChild(outBlock);
+    addActionsBar();
+    // 正文里提到的文件名变成可点的链接：这一趟的产出，加上工作目录里本来就有的文件。
+    // 放在收尾做而不是边流边做：流式那截正文每 100ms 就整段重渲一次，边渲边插链接会被自己抹掉。
+    // 右侧清单这会儿可能还没拉到（刚打开页面就回放历史）——拉到以后 renderFiles 会再补一遍，
+    // 所以把根记在回合上，补的时候认得出这张回答是不是同一个工作目录的
+    turn.dataset.outRoot = outRoot;
+    linkTurn(turn, fileLinkTargets(liveOutFiles, listingFor(outRoot)), outRoot);
+    // 跑完了把成果直接摊开——中途一律不弹（见 outputArrivalPlan），收尾这一下才开
+    const fpv = finishPreviewPlan({
+      turnOut: liveOutFiles,
+      replaying: isReplaying,
+      otherSession: turnSid !== sessionId,
+      userClosedPreview: pvClosedAt > t0,
+      pvOpen: pvPanel.classList.contains("show"),
+      pvCurrent,
+      filesOpen: document.getElementById("files-panel").classList.contains("show"),
+      narrow: window.innerWidth <= 900,
+    });
+    if (fpv.preview) previewFile(fpv.preview);
+    if (turnMode === "plan") renderPlanChecklist();
+  }
+
+  // 官方式回复操作条：复制 / 引用 / 👍👎 / 重新生成 + 共消耗 tokens · 模型
+  function addActionsBar() {
+    if (turn.querySelector(".turn-actions")) return;
+    const bar = document.createElement("div");
+    bar.className = "turn-actions";
+    bar.innerHTML =
+      `<button class="ta-btn" data-a="copy" title="复制回复">${ic("copy")}</button>` +
+      `<button class="ta-btn" data-a="quote" title="引用这条回复来追问（先选中一段就只引那一段）">${ic("text-quote")} 引用</button>` +
+      `<button class="ta-btn" data-a="up" title="有帮助">${ic("thumbs-up")}</button>` +
+      `<button class="ta-btn" data-a="down" title="没帮助">${ic("thumbs-down")}</button>` +
+      `<button class="ta-btn" data-a="regen" title="重新生成">${ic("refresh-cw")} 重新生成</button>` +
+      `<span class="ta-meta"></span>`;
+    const u = turn._usage;
+    const meta = bar.querySelector(".ta-meta");
+    if (u && (u.prompt || u.completion)) {
+      meta.innerHTML = "共消耗 " + ic("sparkles") + "<span></span>";
+      meta.lastChild.textContent = ` ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
+      // 命中缓存那部分便宜约一个数量级。不写出来的话，长任务里"输入 160 万 token"
+      // 看着像一笔巨款，实际可能九成是缓存读；反过来命中率掉到 0 也没人察觉
+      // 封顶 100%：老账本里有几笔按 Anthropic 口径记的（输入不含缓存读），不封会显示成 3209%
+      const hit = u.cached ? Math.min(100, Math.round((u.cached / Math.max(1, u.prompt)) * 100)) : 0;
+      meta.title =
+        `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用` +
+        (u.cached ? `\n其中命中缓存 ${u.cached.toLocaleString()}（${hit}%），这部分按约 1/10 计费` : "");
+      if (hit) meta.textContent += ` · 缓存命中 ${hit}%`;
+    } else if (u) {
+      meta.textContent = `${u.provider || ""}（${u.model || ""}）`;
+    }
+    if (turn._credits) {
+      meta.textContent += `${meta.textContent ? " · " : ""}扣 ${turn._credits.spent} 积分（余 ${(+turn._credits.balance).toLocaleString()}）`;
+    }
+    if (turn._trace) {
+      // 用 textContent/href 赋值而不是拼 innerHTML：这条 URL 来自配置里的自建域名，不经过 esc
+      const a = document.createElement("a");
+      a.className = "link";
+      a.href = turn._trace;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.style.marginLeft = "8px";
+      a.title = "在 Langfuse 查看这次任务每一步的调用和 token";
+      a.textContent = "看执行过程";
+      bar.appendChild(a);
+    }
+    bar.querySelector("[data-a=quote]").onclick = () => quoteReply(turn);
+    bar.querySelector("[data-a=copy]").onclick = async (e) => {
+      // 复制"渲染后"的内容而不是 markdown 源码：贴到飞书/Word 里保留格式，
+      // 贴到纯文本框里也不会出现 **、<br> 这类原始标记
+      const parts = [...body.querySelectorAll(".a-text")].map(t => {
+        const c = t.cloneNode(true);
+        c.querySelectorAll(".code-head").forEach(h => { // 代码块的「复制」小工具条不进剪贴板
+          const lang = h.querySelector("span")?.textContent || "";
+          h.replaceWith(Object.assign(document.createElement("div"), { textContent: lang, style: "font-size:12px;color:#888" }));
+        });
+        return c;
+      });
+      const html = parts.map(c => c.innerHTML).join("<br>");
+      // innerText 需要元素在文档里才有正确换行，挂到屏外拿完就删
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:fixed;left:-99999px;top:0;width:600px";
+      parts.forEach(c => probe.appendChild(c));
+      document.body.appendChild(probe);
+      const plain = parts.map(c => c.innerText.trim()).filter(Boolean).join("\n\n");
+      probe.remove();
+      const done = () => { e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200); };
+      try {
+        if (navigator.clipboard && window.ClipboardItem) {
+          await navigator.clipboard.write([new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([plain], { type: "text/plain" }),
+          })]);
+          return done();
+        }
+      } catch {}
+      navigator.clipboard?.writeText(plain).then(done).catch(() => toast("复制失败", "circle-x"));
+    };
+    // 👍👎 以前点了只是换个高亮色，一个字节都没往外送——按了等于没按。
+    // 现在它是自进化那条链的第一环：反馈落盘 → 归类成信号 → 提改进 → 人审 → 复盘看数字有没有降。
+    // 👎 之后补一行「哪儿不对」是可选的：点击当场就已经记下了，写不写都不耽误，摩擦要够小
+    const sendFeedback = (verdict, note) => fetch("/api/feedback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session: turnSid, turn: [...chatCol.querySelectorAll(".turn")].indexOf(turn),
+        verdict, note: note || "",
+        task: turn._userText || "",
+        reply: [...body.querySelectorAll(".a-text")].map(t => t.innerText).join("\n").slice(0, 800),
+        // 这一轮是谁、怎么跑的，一起带走：评测页才能按模型/模式切着看好评率
+        model: (turn._usage && turn._usage.model) || "", provider: (turn._usage && turn._usage.provider) || "",
+        mode: turn._mode || "",
+        elapsed_ms: (turn._usage && turn._usage.elapsed_ms) || 0,
+        tokens: turn._usage ? (turn._usage.prompt || 0) + (turn._usage.completion || 0) : 0,
+        calls: (turn._usage && turn._usage.calls) || 0,
+        steps: turn.querySelectorAll(".step-card").length,
+        errors: turn.querySelectorAll(".step-card .tag.err").length,
+      }),
+    }).catch(() => {});
+    const clearNote = () => bar.parentNode && bar.parentNode.querySelectorAll(".fb-note").forEach(n => n.remove());
+    // 回放时把之前点过的 👍👎 亮回来：反馈早落库了，重开对话不该看着像没点过
+    const prior = typeof replayFeedback !== "undefined" && replayFeedback && replayFeedback.get([...chatCol.querySelectorAll(".turn")].indexOf(turn));
+    if (prior && (prior.verdict === "up" || prior.verdict === "down")) {
+      bar.querySelector(`[data-a=${prior.verdict}]`).classList.add("on");
+      if (prior.note) bar.querySelector("[data-a=down]").title = `没帮助：${prior.note}`;
+    }
+    bar.querySelector("[data-a=up]").onclick = (e) => {
+      const btn = e.currentTarget;
+      const on = !btn.classList.contains("on");
+      btn.classList.toggle("on", on); bar.querySelector("[data-a=down]").classList.remove("on");
+      clearNote();
+      if (on) sendFeedback("up");
+    };
+    bar.querySelector("[data-a=down]").onclick = (e) => {
+      const btn = e.currentTarget;
+      const on = !btn.classList.contains("on");
+      btn.classList.toggle("on", on); bar.querySelector("[data-a=up]").classList.remove("on");
+      clearNote();
+      if (!on) return;
+      sendFeedback("down");
+      const box = document.createElement("div");
+      box.className = "fb-note";
+      box.innerHTML = `<input placeholder="哪儿不对？一句话就行（可以不写）" maxlength="200"><button>记下</button>`;
+      const input = box.querySelector("input");
+      const done = () => { const v = input.value.trim(); if (v) sendFeedback("down", v); box.innerHTML = '<span class="fb-thanks">记下了，会进下一轮复盘。</span>'; setTimeout(clearNote, 2000); };
+      box.querySelector("button").onclick = done;
+      input.onkeydown = (ev) => { if (ev.key === "Enter") done(); if (ev.key === "Escape") clearNote(); };
+      bar.after(box);
+      input.focus();
+    };
+    bar.querySelector("[data-a=regen]").onclick = () => {
+      if (curBusy()) return;
+      const text = turn._userText, mode = turn._mode, shown = turn._shown;
+      turn.remove();
+      doSend(text, mode, true, shown);
+    };
+    body.appendChild(bar);
+  }
+
+  // Plan 模式：把执行计划解析成任务列表卡片（test/frontend.js 拿这一行当切片锚点，别改字）。
+  // 步骤摆成编号列表，底下两颗真按钮——「开干」当场切 Craft 发出去，「接着改」留在 Plan 等他说改哪步。
+  // 以前是一排勾选框加一颗「把整份计划抄进输入框」的按钮：勾了什么模型根本收不到，
+  // 抄进去的一大段还得他自己再按一次发送。两颗按钮的字、开干时发出去的那句，跟终端 Plan 跑完那张单子
+  // 是同一份（modes.js PLAN_HANDOFF，经 /api/modes 取回），不在这儿抄第二份
+  function renderPlanChecklist() {
+    const texts = body.querySelectorAll(".a-text");
+    const raw = texts.length ? texts[texts.length - 1]._raw || "" : "";
+    if (!raw.trim()) return; // 只剩一行报错、一个字没写出来：没有计划可开干
+    let steps = [...raw.matchAll(/^\s*\d+[.、)]\s+(.+)$/gm)].map(m => m[1]);
+    if (steps.length < 2) steps = [...raw.matchAll(/^\s*[-*]\s+(.+)$/gm)].map(m => m[1]);
+    steps = steps.map(s => s.replace(/\*\*/g, "").trim()).filter(s => s.length > 2).slice(0, 20);
+    // 计划没写成编号列表也照样给按钮：开干发的是「按上面这份计划」，认的是整段回复，不靠这里解析出几步。
+    // /api/modes 没取到（planHandoff 为空）就只画步骤——按钮上没字、点了不知道发什么，不如不画
+    const hand = typeof planHandoff !== "undefined" && planHandoff ? planHandoff : null;
+    if (steps.length < 2 && !hand) return;
+    const card = document.createElement("div");
+    card.className = "plan-list";
+    card.innerHTML = (steps.length >= 2
+      ? `<div class="pl-head">${ic("list-ordered")}计划 ${steps.length} 步</div><ol class="pl-steps">${steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol>`
+      : "")
+      + (hand ? `<div class="pl-acts"><button type="button" class="pl-run pl-go">${ic("play")}<span></span></button><button type="button" class="pl-more">${ic("pencil")}<span></span></button></div>` : "");
+    if (hand) {
+      const go = card.querySelector(".pl-go"), more = card.querySelector(".pl-more");
+      go.lastChild.textContent = hand.goLabel;
+      more.lastChild.textContent = hand.moreLabel;
+      go.onclick = () => {
+        // 「上面这份计划」指的是对话里最近那份。还在跑、或者后面已经聊过别的，这时候开干，
+        // 模型拿去执行的就不是他点的这张卡——宁可不发，说清楚为什么
+        if (curBusy()) { toast("这条还在跑，等它停了再开干"); return; }
+        if (turnSid !== sessionId || [...chatCol.querySelectorAll(":scope > .turn")].pop() !== turn) { toast("这份计划后面已经有新的对话了，按最新的来"); return; }
+        go.disabled = more.disabled = true; // 发出去了，再点一次就是同一份计划跑两遍
+        go.lastChild.textContent = hand.doneLabel;
+        setMode("craft");
+        // 模型收到的是 PLAN_HANDOFF.go 原话（跟终端一字不差）；英文界面下气泡里放它的译文。
+        // 气泡是 translate="no"，这儿不换的话，他会在自己的历史里看见一句自己没打过的中文
+        const lang = typeof I18N !== "undefined" ? I18N.getLang() : "zh";
+        doSend(hand.go, "craft", false, lang === "zh" ? undefined : I18N.lookup(hand.go, lang) || I18N.t(hand.goLabel));
+      };
+      more.onclick = () => {
+        setMode("plan");
+        planAskEdit(hand.morePlaceholder);
+      };
+    }
+    body.appendChild(card);
+    if (turnSid === sessionId) scrollBottom();
+  }
+  /** 插队请求已被服务端受理但还没到注入间隙：先在对话里放个占位，用户立刻看得到自己说了什么 */
+  function markPendingInterject(text) {
+    const note = document.createElement("div");
+    note.className = "interject-note pending";
+    note.innerHTML = `<div class="lb">${ic("zap")}收到，做完这一步就看这句</div>${esc(text)}`;
+    body.appendChild(note);
+    if (turnSid === sessionId) scrollBottom();
+  }
+  const stats = () => ({
+    dur: fmtDur((turn._usage && turn._usage.elapsed_ms) || Date.now() - t0),
+    steps: turn.querySelectorAll(".step-card").length,
+    rounds: liveRound,
+    outs: liveOuts,
+  });
+  return { handleEvent, finish, turn, body, sid: turnSid, markPendingInterject, stats };
+}
+
+// ---- 折叠条上那行「此刻在干什么」 ----------------------------------------
+// 真毛病不是没信息，是信息全锁在折叠区里：模型自己的旁白、⚡ 并发那条、🗜️ 压缩那条、
+// 每一步用了什么工具——全在 .proc-body，而它默认是收着的。外面只剩「运行中 3m20s · 第 7 步」，
+// 那说的是「跑了多久」，不是「在干什么」。
+// 所以另开一行常驻：过程区收着也照样播报当前动作，想看细节再点开。
+// 纯函数，好让前端测试直接喂事件验。narr 是上一次留下的旁白缓冲，随返回值一起往下传。
+const ACT_MAX = 60;
+// 长工具（渲染 / 配音 / 合成）跑着时报的进度：阶段词 + 做到第几 / 共几，没数目退回百分比，再没有才用工具写的那句。
+// 阶段词单独成词、后面只跟数字，英文界面按「词 + 数字」整句翻得动；工具自己写的 label 不保证翻得动，所以排最后
+const PROG_STAGE = { load: "加载", render: "渲染", encode: "编码", tts: "配音", shot: "截图", step: "步骤", compose: "合成", upload: "上传", transcode: "转码" };
+function progressText(ev) {
+  const w = ev && Object.prototype.hasOwnProperty.call(PROG_STAGE, ev.stage) ? PROG_STAGE[ev.stage] : ""; // stage 叫 constructor 也不能印出一段函数源码
+  const label = String((ev && ev.label) || "").replace(/\s+/g, " ").trim();
+  if (w && ev.total > 0 && ev.done >= 0) return `${w} ${Math.round(ev.done)}/${Math.round(ev.total)}`;
+  if (w && Number.isFinite(ev.pct)) return `${w} ${Math.round(ev.pct)}%`;
+  return label || w;
+}
+function liveActivity(ev, narr) {
+  const cut = (s, n = ACT_MAX) => {
+    const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  };
+  const keep = { line: null, icon: "", narr: narr || "" }; // 不值得改这行的事件（usage / files 这类记账）
+  // 图标和话分开返：话要能翻译、能截断、能进 textContent，图标是 sprite 里的 id。两者拼成一个
+  // 字符串的话，这一行就只能走 innerHTML，模型吐的字会直接当 HTML 解析。
+  const say = (icon, line) => ({ line, icon, narr: "" }); // 非正文事件：旁白缓冲清空，免得下一段接到上一段的尾巴上
+  switch (ev && ev.type) {
+    case "text": {
+      if ((ev.depth || 0) > 0) return keep; // 专家内层的正文不抢主线这一行
+      // 只取最后一句。模型的旁白常有好几行，整段塞进一行会被截得只剩开头，
+      // 而「我抓几份原文确认细节」这种真说明在干嘛的话恰恰在末尾。
+      // 缓冲只留尾部 400 字，长任务不会越滚越沉。
+      const buf = ((narr || "") + (ev.delta || "")).slice(-400);
+      const parts = buf.split(/(?<=[。！？!?\n])/).filter((s) => s.trim());
+      // 刚好写完一句时末段是空的，退一句显示，免得这行闪成空白
+      const tail = cut(parts[parts.length - 1]) || cut(parts[parts.length - 2]);
+      return tail ? { line: tail, icon: "pen-line", narr: buf } : { line: null, icon: "", narr: buf };
+    }
+    case "tool_use": {
+      const who = ev.expert ? ev.expert + " · " : "";
+      // 老会话回放没有 title 字段，退回「短名 + purpose」
+      const what = ev.title || (shortTool(ev.name) + (ev.purpose ? " " + ev.purpose : ""));
+      return say(toolIcon(ev.name), cut(who + what));
+    }
+    case "tool_result":
+      // 成功不改：那一步「在干什么」的话立着更有用。栽了必须说——
+      // 过程区收着的时候，失败原本是完全隐形的，用户只会看到最后突然没了下文
+      return ev.isError
+        ? say("triangle-alert", cut(shortTool(ev.name) + " 没成：" + (ev.outcome || ev.preview || "出错了")))
+        : keep;
+    // 渲染十分钟，这行一直挂着「渲染 a.html」跟卡死了看不出区别；跟卡上那格说同一句话。
+    // 卡已经收尾（id 对不上）的那条由 handleEvent 挡掉，这里只管说什么
+    case "tool_progress": {
+      const t = progressText(ev);
+      return t ? say(toolIcon(ev.name), cut((ev.expert ? ev.expert + " · " : "") + t)) : keep;
+    }
+    case "parallel": return say("zap", ev.kind === "gen" ? `${ev.count} 条生成任务一起跑` : `${ev.count} 个只读工具一起跑`);
+    case "step_start": return (ev.depth || 0) > 0 ? keep : say("brain", `第 ${ev.step} 步 · 在想下一步怎么做`);
+    case "expert_start": return say("users", `专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
+    // failed 的那条也是历史的一部分：回放时说成「压成了摘要」，等于把一次没成的事说成成了
+    case "compact": return ev.failed
+      ? say("archive", `这一轮没压成：${ev.failed}（早前的内容一条没动）`)
+      : say("archive", `会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);
+    case "trim": return say("scissors", "历史太长，较早的工具输出已截短");
+    case "failover": return say("shuffle", cut(ev.note || "主渠道不行，已切到备用渠道"));
+    case "auto_continue": return say("refresh-cw", `没做完，自动续跑第 ${ev.round}/${ev.total} 轮`);
+    case "limit": return say("timer", cut(ev.note || "到执行上限了", 40) + "，正在收尾");
+    case "worktree": return say("git-branch", ev.phase === "done"
+      ? (ev.empty ? "分身没留下改动，已收掉" : `改动都在分支 ${cut(ev.branch, 28)} 上`)
+      : `另有任务在改这个仓库，这趟进了分身 ${cut(ev.branch, 28)}`);
+    case "sleep": return say("moon", "本机睡过一觉，任务时限已顺延");
+    case "ask_user": return say("circle-help", "有事要问你，在等你回答");
+    // 带 retry 的是「等几秒自动重试」：换成重试图标，跟回合顶上那条倒计时对得上
+    case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : ev.retry && (ev.retry.kind == null || ev.retry.kind === "retry") ? "refresh-cw" : "loader-circle", cut(ev.text)) : keep;
+    default: return keep;
+  }
+}
+
+// ================= 空状态（场景 tab + 分类胶囊） =================
+// 每个胶囊是 [图标 id, 文案]。文案得单独一格：点一下是把它挂成「任务类型」标签
+// （setSceneTag），发送时拼成「【任务类型：X】」交给模型，所以这格里只能是干净的词，
+// 前面粘个表情的话模型收到的第一个字符就是 emoji。
+// 这份表重排过两次。
+// 第一次是从 日常办公 / 代码开发 / 设计创意 / 内容与增长 改成按**你要交出什么东西**分，
+// 治的是「同一件事两个入口」（幻灯片制作 vs PPT 设计）和「第一个 tab 是个筐」。
+// 第二次就是现在这版：分类从五个并到三个。上一版每个 tab 分得都对，但**加起来太多了**——
+// 空态第一屏顶着五个标签页，用户得先做一道「我这件事算哪一类」的选择题，
+// 才轮到真正要做的那件事。而这道题本来就不该出：模型不看分类，分类只影响
+// 挂上去的那枚「任务类型」标签。分得再细也不会让结果更好，只会让第一步更慢。
+// 三类的尺子还是「交出什么」：一份能交上去的文档 / 一个想清楚的结论或一条要发出去的内容 /
+// 一个能跑能看的东西。顺手去掉了「PPT 美化」——它和「做幻灯片」是同一件事的两个入口，
+// 正是上一版明令要治的毛病，上次漏网了。
+const SCENES = {
+  "文档与汇报": [["notebook-pen", "会议纪要"], ["calendar-days", "周报月报"], ["presentation", "做幻灯片"], ["folder-open", "调研报告"], ["file-text", "长文档整理"], ["scale", "合同审阅"], ["mail", "商务邮件"], ["languages", "翻译校对"]],
+  "数据与内容": [["chart-column", "数据分析"], ["table", "表格处理"], ["brain", "深度研究"], ["target", "竞品分析"], ["trending-up", "行情与财报"], ["newspaper", "公众号推文"], ["book-open", "小红书图文"], ["film", "短视频成片"], ["megaphone", "营销方案"]],
+  "代码与设计": [["code", "日常开发"], ["bug", "找 Bug"], ["file-search", "代码审查"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"], ["monitor", "界面设计"], ["palette", "海报与封面"], ["rocket", "落地页"], ["smartphone", "移动端 App"]],
+};
+// 老用户的 localStorage 里存着已经不存在的分类名（比如「写作与传播」）。
+// 下面读的时候有 SCENES[s] 这一道判，读不到就退回第一个，不用专门写迁移
+const SCENE_ICON = ["file-text", "chart-column", "code"];
+let sceneTag = null; // 选中的任务类型标签
+/**
+ * 「用这个专家 / 专家团 / 技能」点下去之后，挂在输入框上方的那枚标签。
+ *
+ * 以前点一下是把一整句话灌进输入框：「请把下面这个任务整体委派给专家团「调研出报告」
+ * （用 delegate_to_team）：」。
+ * 两个毛病：
+ *   1. 它跟用户自己打的字长得一模一样——选中了什么没有任何视觉交代，想反悔还得一个字一个字删；
+ *   2. delegate_to_team 是给模型看的内部工具名，不该出现在人的屏幕上。
+ * 现在界面上只留一枚能一键摘掉的标签，那句指令在**发送的一瞬间**才拼进正文（见 useDirective）。
+ */
+let useTag = null; // { kind: "team" | "expert" | "skill", name }
+const USE_TAG_META = { team: ["users", "专家团"], expert: ["user", "专家"], skill: ["puzzle", "技能"] };
+/** 任务类型标签和委派标签共用输入框上方那一条，一起重画，免得两边各自 innerHTML 把对方抹了 */
+function renderComposerTags() {
+  const box = document.getElementById("scene-tag-box");
+  if (!box) return;
+  let h = sceneTag ? `<span class="scene-tag">${esc(sceneTag)} <b data-clr="scene" title="去掉这个任务类型">${ic("x", "i-sm")}</b></span>` : "";
+  if (useTag) {
+    const [icon, label] = USE_TAG_META[useTag.kind] || USE_TAG_META.expert;
+    h += `<span class="use-tag" data-kind="${esc(useTag.kind)}">${ic(icon, "i-sm")}<i>${esc(label)}</i>${esc(useTag.name)} <b data-clr="use" title="这次不用它">${ic("x", "i-sm")}</b></span>`;
+  }
+  box.innerHTML = h;
+  box.querySelectorAll("[data-clr]").forEach((b) => { b.onclick = () => (b.dataset.clr === "scene" ? setSceneTag(null) : setUseTag(null)); });
+}
+function setSceneTag(label) { sceneTag = label; renderComposerTags(); inputEl.focus(); }
+/** 挂上（或摘掉）委派标签。kind 取 team / expert / skill，传 null 就是摘掉 */
+function setUseTag(tag) {
+  useTag = tag && tag.name ? { kind: tag.kind || "expert", name: String(tag.name) } : null;
+  renderComposerTags();
+  inputEl.focus();
+}
+/**
+ * 标签 → 真正发出去的那句指令。界面上是一枚标签，模型收到的仍是一句说明白的话，
+ * 两边各拿各该拿的那一半。摆在正文最前面而不是末尾：模型读第一句就该知道这活派给谁。
+ */
+function useDirective(t) {
+  if (!t || !t.name) return "";
+  if (t.kind === "team") return `【交给专家团：${t.name}】把下面这件事整体委派给这个专家团（delegate_to_team），拿回结果后自己核一遍再交给我。\n\n`;
+  if (t.kind === "skill") return `【使用技能：${t.name}】按这份技能说明书的步骤，做下面这件事。\n\n`;
+  return `【交给专家：${t.name}】把下面这件事委派给这位专家（delegate_to_expert）。\n\n`;
+}
+function buildEmpty() {
+  const tpl = document.createElement("div");
+  tpl.className = "empty"; tpl.id = "empty";
+  // 记住用户在空态里最后浏览的场景分类，回空态时仍在原处（少一次切换）
+  let startScene = Object.keys(SCENES)[0];
+  try { const s = localStorage.getItem("owb_last_scene"); if (s && SCENES[s]) startScene = s; } catch {}
+  tpl.innerHTML = `<h1>把事情交给我</h1>
+    <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
+      `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
+    <div class="chips" id="scene-chips"></div>`;
+  const chipsEl = tpl.querySelector("#scene-chips");
+  const renderChips = (scene) => {
+    chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
+  };
+  renderChips(startScene);
+  tpl.querySelector(".scene-tabs").addEventListener("click", (e) => {
+    if (e.target.tagName !== "BUTTON") return;
+    tpl.querySelectorAll(".scene-tabs button").forEach(b => b.classList.toggle("active", b === e.target));
+    try { localStorage.setItem("owb_last_scene", e.target.dataset.scene); } catch {}
+    renderChips(e.target.dataset.scene);
+  });
+  chipsEl.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (b) setSceneTag(b.textContent.trim());
+  });
+  return tpl;
+}
+chatCol.appendChild(buildEmpty());
+
+// ================= @ 引用文件 / 调用技能 自动补全 =================
+let filesCache = [], skillsCache = [];
+// filesCache 属于哪个工作目录（服务端 workspaceKey 指纹）。产出卡拿它判断「这张卡说的文件，
+// 是不是就在当前清单里」——同名文件在别的目录里有另一份，不能拿那份的版本号盖这张卡
+let filesRoot = "";
+let skillsFetchAt = 0;
+// 装完一个技能要刷新页面才在 / 里看得见，是因为这份名单只在开页面那一下拉过一次。
+// 不能只在「本机点了安装」那一下去补：技能进来的路有好几条——技能中心装的、
+// 插件一包带进来的、命令行直接往目录里扔的、别人在同一台服务器上装的。
+// 所以改成「要用的时候顺手对一遍」，哪条路进来的都算。
+// 节流 3 秒：/ 后面每敲一个字都会走一趟这儿，不拦的话一个词能打十几次接口。
+function refreshSkillsCache(force) {
+  if (!force && Date.now() - skillsFetchAt < 3000) return;
+  skillsFetchAt = Date.now();
+  return fetch("/api/skills").then(r => r.json()).then(l => {
+    const next = Array.isArray(l) ? l : [];
+    const changed = next.map((s) => s.name).join("\u0000") !== skillsCache.map((s) => s.name).join("\u0000");
+    skillsCache = next;
+    if (!changed) return; // 名单跟刚才一样就别动屏幕：人正挑着行，白闪一下比不刷还糟
+    if (mentionState && mentionState.trigger === "/") renderMentionMenu();
+    syncInputHl(); // 高亮那层认技能名，新装的也该当场变色
+  }).catch(() => {});
+}
+refreshSkillsCache(true);
+const mentionMenu = document.getElementById("mention-menu");
+let mentionState = null; // {trigger:'@'|'/', start, query}
+
+function detectMention() {
+  const pos = inputEl.selectionStart;
+  const before = inputEl.value.slice(0, pos);
+  const m = before.match(/(?:^|[\s（(])([@/])([^\s@/]*)$/);
+  if (!m) { mentionState = null; mentionMenu.classList.remove("show"); return; }
+  mentionState = { trigger: m[1], query: m[2], start: pos - m[2].length - 1 };
+  if (m[1] === "@") refreshFilesCache(); else refreshSkillsCache();
+  renderMentionMenu();
+}
+let filesFetchAt = 0;
+function refreshFilesCache() {
+  if (Date.now() - filesFetchAt < 3000) return; // 3 秒内不重复拉
+  filesFetchAt = Date.now();
+  fetch("/api/files").then(r => r.json()).then(f => {
+    filesCache = f || [];
+    if (mentionState && mentionState.trigger === "@") renderMentionMenu();
+  }).catch(() => {});
+}
+function renderMentionMenu() {
+  const { trigger, query } = mentionState;
+  // 记下人现在挑的是哪一行。技能名单是异步对回来的，对回来就得重画；
+  // 不记的话，人刚按了两下 ↓，名单一落地选中被拽回第一行，上下键等于白按。
+  // 只在菜单正开着的时候算：关掉了的那一次挑到哪儿，下一次再打 / 不该还认——
+  // 那是人看不见的旧状态，带过来就成了“回车没拿第一个”
+  const selNow = mentionMenu.classList.contains("show") ? mentionMenu.querySelector(".mi.sel") : null;
+  const keep = selNow ? selNow.dataset.insert : "";
+  let items = [];
+  if (trigger === "@") {
+    // 名字只显示最后一段，目录名让给说明那一行——插进正文的仍然是完整相对路径。
+    // 整条路径当名字是不行的：任务目录名本身就有二十几个字，一屏十二行全叫
+    // 「任务_0918_帮我做一个『openwor…」，谁也认不出哪行是哪个文件；而「工作空间文件」
+    // 那句说明十二行一模一样，等于白占一行。
+    items = filesCache.filter(f => f.name.toLowerCase().includes(query.toLowerCase()))
+      .slice(0, 12).map(f => {
+        const seg = f.name.split("/"), base = seg.pop();
+        return { icon: fileIcon(f.name), label: base, insert: "@" + f.name,
+          sub: (seg.length ? seg.join("/") : "工作空间根目录") + " · " + fmtSize(f.size || 0) };
+      });
+    if (!items.length) items = [{ icon: "folder", label: "工作空间还没有文件", insert: null, sub: "点输入框左边的 ＋ 传一个，或直接把文件拖进窗口" }];
+  } else {
+    items = skillsCache.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) || s.description.includes(query))
+      .slice(0, 12).map(s => ({ icon: s.plugin ? "puzzle" : "wrench", label: "/" + s.name, insert: "/" + s.name, sub: s.description }));
+    if (!items.length) items = [{ icon: "search", label: "没有匹配的技能", insert: null, sub: "＋ 菜单里的「技能」能搜全部，也能去装新的" }];
+  }
+  // 名字必须自己包一层 .mi-name：裸文本节点在 grid 里是匿名盒子，拿不到 text-overflow，
+  // 长文件名只能硬折。CSS 那边 .mention-menu .mi 是两行的 grid，见 index.html 里那段注释。
+  // 图标一律给（取不到就用通用的那个）：有的行有图标有的没有，名字的左边缘会错开一截。
+  // 上下键和「回车是填进去不是发出去」都是看不见的规矩，不写在这儿没人猜得到；
+  // 一行都挑不了的时候不写，免得指一条走不通的路。
+  const kept = items.findIndex((it) => it.insert && it.insert === keep);
+  const selIdx = kept >= 0 ? kept : items.findIndex((it) => it.insert);
+  const hint = selIdx >= 0 ? `<span class="mh-k">↑↓ 挑 · 回车填进输入框 · Esc 关掉</span>` : "";
+  mentionMenu.innerHTML = `<div class="mh"><span>${trigger === "@" ? "引用工作空间文件" : "调用技能"}</span>${hint}</div>` +
+    items.map((it, i) => `<div class="mi ${i === selIdx ? "sel" : ""}" data-insert="${esc(it.insert || "")}" title="${esc(it.label + (it.sub ? " — " + it.sub : ""))}">${ic(it.icon || "file-text")}<span class="mi-name">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
+  mentionMenu.classList.add("show");
+  mentionMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => applyMention(mi.dataset.insert));
+}
+function applyMention(insert) {
+  if (!insert || !mentionState) { mentionMenu.classList.remove("show"); return; }
+  const pos = inputEl.selectionStart;
+  inputEl.value = inputEl.value.slice(0, mentionState.start) + insert + " " + inputEl.value.slice(pos);
+  const newPos = mentionState.start + insert.length + 1;
+  inputEl.setSelectionRange(newPos, newPos);
+  mentionState = null;
+  mentionMenu.classList.remove("show");
+  inputEl.focus();
+  syncInputHl();
+}
+
+// ---------- @文件 /技能 /素材锚点高亮：镜像层与 textarea 逐字对齐，只画底色不碰文字 ----------
+const inputHl = document.getElementById("input-hl");
+// 这里以前是开页面时把 textarea 的字号字体抄一份到镜像层的内联样式上。抄一次就再也不更新了，
+// 用户去设置里改字号，底色就永远停在开页那一刻的尺寸上。现在两层在 CSS 里吃同一个 var，不用抄。
+function hlTokens(text, cls) {
+  // `【图片 1：xxx】` 是粘贴/拖拽素材的可见引用，和 @文件一样是“发给模型也让人看得见”的协议。
+  // 必须先命中整块锚点，再认 @/技能；不然锚点里带 @ 或 / 时会把一截标记拆成两种颜色。
+  return esc(text).replace(/(【(?:图片|视频|音频|文本摘录|文件)\s+\d+：[^】]+】)|(^|[\s（(：:，,])(@[^\s@，。！？；：、（）()<>"']+|\/[^\s@/，。！？；：、（）()<>"']+)/g, (m, ref, pre, tok) => {
+    if (ref) return `<span class="${cls} ${cls}-ref">${ref}</span>`;
+    if (tok[0] === "/" && !skillsCache.some(s => tok.slice(1).toLowerCase() === String(s.name).toLowerCase())) return m;
+    return pre + `<span class="${cls}">${tok}</span>`;
+  });
+}
+function syncInputHl() {
+  inputHl.innerHTML = inputEl.value ? hlTokens(inputEl.value, "tk") + "\n" : "";
+  inputHl.scrollTop = inputEl.scrollTop;
+}
+inputEl.addEventListener("input", syncInputHl);
+inputEl.addEventListener("scroll", () => { inputHl.scrollTop = inputEl.scrollTop; });
+
+inputEl.addEventListener("input", detectMention);
+inputEl.addEventListener("click", detectMention);
+inputEl.addEventListener("keydown", (e) => {
+  if (!mentionMenu.classList.contains("show")) return;
+  const items = [...mentionMenu.querySelectorAll(".mi")].filter(el => el.dataset.insert);
+  // 上下键挑人。以前根本没这一段：选中那一行全靠 renderMentionMenu 给第一行钉个 .sel，
+  // 回车永远只能拿到第一个——想要第二个只能伸手去点，键盘上挑不动
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const down = e.key === "ArrowDown";
+    const cur = items.findIndex(el => el.classList.contains("sel"));
+    const next = cur < 0 ? (down ? 0 : items.length - 1) : (cur + (down ? 1 : items.length - 1)) % items.length;
+    items.forEach(el => el.classList.remove("sel"));
+    items[next].classList.add("sel");
+    items[next].scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault();
+    // 这一下是「把技能填进输入框」，不是「把话发出去」。光 preventDefault 拦不住：
+    // 同一个 textarea 上还挂着一个冒泡阶段的回车监听（bindComposer 里那个），紧跟着就 send()。
+    // 挑完技能整条消息当场飞出去，而人还没来得及写要它做什么。
+    e.stopImmediatePropagation();
+    const sel = mentionMenu.querySelector(".mi.sel") || items[0];
+    applyMention(sel ? sel.dataset.insert : null);
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopImmediatePropagation(); // 菜单开着的时候，Esc 先管关菜单，不该顺手把别的面板也关了
+    mentionMenu.classList.remove("show");
+    mentionState = null;
+  }
+}, true);
+
+// ================= 成果文件 =================
+// ───────── AI 拿不准时的提问卡 ─────────
+// 老版本是一行光秃秃的紫色胶囊按钮：只有选项名，没有「选它意味着什么」。
+// 于是模型只能把代价一股脑塞进问题那一句里，用户读着累，选完还常常选错。
+// 现在一条选项一行，上面是短语、下面是那句代价，键盘 1/2/3/4 直接选；
+// 右上角挂倒计时——超时服务端会替他按默认继续，这件事得让他看见，不能闷着。
+/**
+ * 一道等人回答的岔路。
+ *
+ * 本机跑的任务和终端里 `openworkbuddy` 跑的任务共用这一张卡：两边都是「AI 卡住了等一句话」，
+ * 差别只在答案往哪儿送。为这件事画第二张卡的话，数字键直选、倒计时、送出去到收到回执
+ * 这段不许重复点——这些都得再写一遍，然后慢慢长歪成两个样子。
+ * @param {object} ev 提问事件
+ * @param {string} turnSid 会话 id
+ * @param {(text: string) => Promise<Response|null>} [submit] 答案怎么送出去，缺省是本机那条
+ */
+/**
+ * 「整理文件夹 · 腾出空间」面板。
+ *
+ * 高频意味着两件事：入口要在第一屏（空态底下那条），以及**每次打开都得当场算**，
+ * 不能拿上次的数字糊弄——中间几分钟可能又跑了三个任务。整个工作区走一遍实测 91ms，
+ * 那就每次都走，省下的那点时间不值得换一个可能过期的数字。
+ *
+ * 面板分两截，因为「腾空间」其实是两个问题：
+ *   上半截「能清掉的」——我有把握的部分，每组带理由，勾了就真删；
+ *   下半截「地方花在哪了」——我不判断，只把每个任务占多大摊开。
+ * 只做上半截是不够的：真正吃硬盘的往往是一个用户自己早就不要了的旧任务，
+ * 规则不敢碰它（里面全是成品），但把 88 MB 摆在他眼前，他自己认得出来。
+ */
+let sweepSeq = 0; // 扫描是异步的，用户可能连点两下「只看这个任务」；只认最后一次的结果
+async function openSweep(scope) {
+  mask.classList.add("show");
+  modalBox.classList.remove("wide");
+  mTitle.textContent = "整理文件夹 · 腾出空间";
+  mBody.innerHTML = `<div class="sweep-panel"><div class="sw-empty">正在看你的工作区……</div></div>`;
+  const seq = ++sweepSeq;
+  const task = scope && scope.task ? scope.task : "";
+  let p;
+  try {
+    p = await fetch(`/api/files/sweep?usage=1${task ? `&task=${encodeURIComponent(task)}` : ""}`).then((x) => x.json());
+  } catch { p = { error: "扫不动这个文件夹" }; }
+  if (seq !== sweepSeq) return; // 已经有更新的一次扫描在跑了
+  if (p.error) { mBody.querySelector(".sweep-panel").innerHTML = `<div class="sw-empty">${esc(p.error)}</div>`; return; }
+  renderSweepPanel(p, task);
+}
+function renderSweepPanel(p, task) {
+  const box = mBody.querySelector(".sweep-panel");
+  if (!box) return;
+  const groups = (p.groups || []).filter((g) => g.count > 0);
+  const u = p.usage || { bytes: 0, count: 0, tasks: [] };
+  const top = u.tasks.filter((t) => t.bytes > 0).slice(0, 12);
+  const max = top.length ? top[0].bytes : 1;
+  const rows = groups.map((g, i) => {
+    const items = g.items || [];
+    const why = (items[0] && items[0].why) || "";
+    return `<div class="sw-row" data-gi="${i}">
+      <input type="checkbox" data-gi="${i}"${g.on ? " checked" : ""}>
+      <label class="sw-t"><b>${esc(g.label || g.key)}</b> · ${g.count} 个
+        <div class="sw-why">${esc(why)}</div></label>
+      <span class="sw-sz">${fmtSize(g.bytes)}</span>
+      <button type="button" class="sw-ar" title="看看具体是哪些">${ic("chevron-right")}</button>
+    </div><div class="sw-items" data-gi="${i}" hidden>${items.slice(0, 200).map((it) =>
+      `<div><span>${esc(it.path)}</span><span>${it.count > 1 ? `${it.count} 个 · ` : ""}${fmtSize(it.bytes)}</span></div>`
+    ).join("")}${items.length > 200 ? `<div><span>……还有 ${items.length - 200} 条</span><span></span></div>` : ""}</div>`;
+  }).join("");
+  box.innerHTML = `<div class="sw-sum">
+      <span class="g"><b>${fmtSize(u.bytes)}</b> · ${u.count} 个文件
+        <div class="sub">${task ? `只看「${esc(task)}」这一个任务` : "工作区里所有任务加起来"}${p.capped ? " · 文件太多，只看了前一批" : ""}</div></span>
+      ${task ? `<button type="button" class="sw-all">看全部任务</button>` : ""}
+      <button type="button" class="sw-re" title="重新扫一遍">${ic("refresh-cw")}</button>
+    </div>
+    <h4>${ic("eraser")}能清掉的中间文件</h4>
+    ${groups.length ? `<div class="sw-rows">${rows}</div>
+      <div class="sw-acts"><button type="button" class="sw-go"></button>
+        <button type="button" class="sw-lite sw-pick-all">全选</button>
+        <button type="button" class="sw-lite sw-pick-def">回到默认</button></div>`
+      : `<div class="sw-empty">没找着能清的——这些文件看着都是成品，我不敢乱动。</div>`}
+    <h4>${ic("hard-drive")}地方花在哪了</h4>
+    ${top.length ? `<div class="sw-tasks">${top.map((t) => `<div class="sw-task" data-task="${esc(t.name)}">
+        <span class="bar" style="width:${Math.max(2, Math.round(t.bytes / max * 100))}%"></span>
+        <span class="nm">${esc(t.name || "（散在根目录的文件）")}</span>
+        <span class="sw-sz">${fmtSize(t.bytes)}</span><span class="cnt">${t.count} 个</span>
+        ${t.name ? `<button type="button" class="op" data-act="only" title="只整理这个任务">${ic("eraser")}</button>` : ""}
+        ${t.name && canOpenOnHost() ? `<button type="button" class="op" data-act="open" title="在访达里打开">${ic("folder-open")}</button>` : ""}
+      </div>`).join("")}${u.tasks.length > top.length ? `<div class="sw-empty">还有 ${u.tasks.length - top.length} 个更小的任务没列出来。</div>` : ""}</div>`
+      : `<div class="sw-empty">工作区还是空的。</div>`}`;
+
+  const go = box.querySelector(".sw-go");
+  const boxes = [...box.querySelectorAll(".sw-rows input")];
+  const picked = () => boxes.filter((b) => b.checked).map((b) => groups[+b.dataset.gi]);
+  const sync = () => {
+    if (!go) return;
+    const sel = picked();
+    const n = sel.reduce((a, g) => a + g.count, 0);
+    const b = sel.reduce((a, g) => a + g.bytes, 0);
+    go.textContent = n ? `清掉这 ${n} 个，腾出 ${fmtSize(b)}` : "一个都没勾";
+    go.disabled = !n;
+  };
+  boxes.forEach((b) => b.addEventListener("change", sync));
+  sync();
+  // 展开/收起某一组的逐条清单。点整行的箭头，不占用勾选框那一下
+  box.querySelectorAll(".sw-ar").forEach((b) => { b.onclick = () => {
+    const row = b.closest(".sw-row");
+    const list = box.querySelector(`.sw-items[data-gi="${row.dataset.gi}"]`);
+    row.classList.toggle("open");
+    list.hidden = !row.classList.contains("open");
+  }; });
+  const reload = () => openSweep({ task });
+  if (box.querySelector(".sw-re")) box.querySelector(".sw-re").onclick = reload;
+  if (box.querySelector(".sw-all")) box.querySelector(".sw-all").onclick = () => openSweep({});
+  if (box.querySelector(".sw-pick-all")) box.querySelector(".sw-pick-all").onclick = () => { boxes.forEach((b) => (b.checked = true)); sync(); };
+  if (box.querySelector(".sw-pick-def")) box.querySelector(".sw-pick-def").onclick = () => { boxes.forEach((b) => (b.checked = !!groups[+b.dataset.gi].on)); sync(); };
+  box.querySelectorAll(".sw-task .op").forEach((b) => { b.onclick = () => {
+    const name = b.closest(".sw-task").dataset.task;
+    if (b.dataset.act === "open") revealFile(name, null);
+    else openSweep({ task: name });
+  }; });
+  if (go) go.onclick = async () => {
+    const sel = picked();
+    const paths = [];
+    for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
+    // 删是真删、不进回收站，所以这里必须拦一道。列出的是**组**不是每一条：
+    // 一百多条路径糊在框里等于没写，反倒让人闭着眼点确定
+    if (!(await askConfirm({
+      title: "这些会被直接删掉",
+      hint: "不进回收站，也找不回来。",
+      items: sel.map((g) => `${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`),
+      note: `一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}`,
+      ok: "删掉", danger: true,
+    }))) return;
+    box.classList.add("busy");
+    try {
+      const r = await fetch("/api/files/sweep", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths, task: task || undefined }),
+      }).then((x) => x.json());
+      if (r.error) throw new Error(r.error);
+      if (r.files) renderFiles(r.files);
+      toast(`腾出 ${fmtSize(r.bytes || 0)}${r.skipped ? `，${r.skipped} 个已经不在了` : ""}`, "circle-check");
+      openSweep({ task });  // 重扫一遍：删完剩下什么，当场看见
+    } catch (e) {
+      box.classList.remove("busy");
+      toast(e.message || "清理失败", "circle-x");
+    }
+  };
+}
+
+/**
+ * 收尾问一句：这次顺手造的中间文件要不要清掉。
+ *
+ * 为什么是「问」不是「自动清」：判断中间物靠的是规则（成片出来了 → 逐帧图可以扔），
+ * 规则会看走眼。而删是真删、不进回收站——用户要的是腾出空间，挪一下照样占着地方。
+ * 既然收不回来，那就必须是用户点的头，而且点头之前得看得见清单和理由。
+ *
+ * 为什么每组单独一个勾：几类东西的把握程度不一样。逐帧图、编译产物、cookie 库很确定；
+ * 「任务目录里随手写的脚本」就没那么确定——用户完全可能就是让我写个脚本给他。
+ * 所以那一组服务端默认不勾（g.on=false），要删得他自己伸手点上。
+ */
+function makeSweepCard(ev) {
+  const card = document.createElement("div");
+  card.className = "sweep-card";
+  const groups = (ev.groups || []).filter((g) => g.count > 0);
+  const rows = groups.map((g, i) => {
+    // 理由取第一条的：同一组里理由本来就是同一句（「成片已经出来了」），逐条印一遍是噪音
+    const why = (g.items && g.items[0] && g.items[0].why) || "";
+    const sample = (g.items || []).slice(0, 2).map((it) => esc(String(it.path).split("/").pop())).join("、");
+    const more = (g.items || []).length > 2 ? ` 等 ${(g.items || []).length} 处` : "";
+    return `<label class="sw-row">
+      <input type="checkbox" data-gi="${i}"${g.on ? " checked" : ""}>
+      <span class="sw-t"><b>${esc(g.label || g.key)}</b> · ${g.count} 个
+        <span class="sw-why">${esc(why)}${sample ? `<br>${sample}${more}` : ""}</span></span>
+      <span class="sw-sz">${fmtSize(g.bytes)}</span>
+    </label>`;
+  }).join("");
+  card.innerHTML = `<div class="sw-hd">${ic("eraser")}<span class="sw-lb"></span></div>
+    <div class="sw-rows">${rows}</div>
+    <div class="sw-acts"><button type="button" class="sw-go"></button><button type="button" class="sw-no">先留着</button></div>`;
+  const lb = card.querySelector(".sw-lb");
+  const go = card.querySelector(".sw-go");
+  const boxes = [...card.querySelectorAll(".sw-rows input")];
+  const picked = () => boxes.filter((b) => b.checked).map((b) => groups[+b.dataset.gi]);
+  const sync = () => {
+    const sel = picked();
+    const bytes = sel.reduce((n, g) => n + g.bytes, 0);
+    const count = sel.reduce((n, g) => n + g.count, 0);
+    const all = groups.reduce((n, g) => n + g.count, 0);
+    const allB = groups.reduce((n, g) => n + g.bytes, 0);
+    lb.textContent = `这一趟顺手造了 ${all} 个中间文件，占 ${fmtSize(allB)}。要清掉吗？`;
+    go.textContent = count ? `清掉这 ${count} 个（腾出 ${fmtSize(bytes)}）` : "一个都没勾";
+    go.disabled = !count;
+  };
+  boxes.forEach((b) => b.addEventListener("change", sync));
+  sync();
+  card.querySelector(".sw-no").onclick = () => {
+    card.classList.add("done");
+    card.querySelector(".sw-hd").innerHTML = `${ic("eraser")}<span class="sw-done">中间文件留着了。想清的时候去右边「成果文件 → 整理文件夹」。</span>`;
+  };
+  go.onclick = async () => {
+    const sel = picked();
+    // 路径在服务端还要再验一遍（必须出现在那一刻重新算出来的清单里），这里只管把选中的送过去
+    const paths = [];
+    for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
+    card.classList.add("busy");
+    try {
+      const r = await fetch("/api/files/sweep", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths, since: ev.since }),
+      }).then((x) => x.json());
+      card.classList.remove("busy");
+      card.classList.add("done");
+      // 报「腾出多少」，不报「删了几个」：用户关心的是空间，一开始就是为这个来的。
+      // skipped 也要说——清单是几分钟前算的，这中间文件可能已经被别处动过了
+      const skipped = r.skipped ? `，${r.skipped} 个已经不在了` : "";
+      card.querySelector(".sw-hd").innerHTML = `${ic("eraser")}<span class="sw-done">已清掉 ${(r.removed || []).length} 处中间文件，腾出 ${fmtSize(r.bytes || 0)}${skipped}。</span>`;
+      if (r.files) renderFiles(r.files);
+    } catch {
+      card.classList.remove("busy");
+      toast("清理失败", "circle-x");
+    }
+  };
+  return card;
+}
+
+/** diff 上色：加的绿、删的红、@@ 行灰。文件名那两行不印，卡片标题上已经有了 */
+function paintDiff(text) {
+  const lines = String(text || "").split("\n");
+  if (lines.length > 1 && lines[0].startsWith("--- ") && lines[1].startsWith("+++ ")) lines.splice(0, 2);
+  return lines.map((l) => {
+    const cls = l.startsWith("+") ? "d-add" : l.startsWith("-") ? "d-del" : l.startsWith("@@") || l.startsWith("…") ? "d-hunk" : "";
+    return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+  }).join("\n");
+}
+
+/**
+ * 「回退到这步之前」：把这一步和它之后改过的文件退回去。退完按钮变「撤销回退」，再按就回来——
+ * 回退本身也留了检查点，所以没有「退错了就完了」这回事
+ */
+function rewindButton(sid, ckptId) {
+  const wrap = document.createElement("div");
+  wrap.className = "step-act";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "step-rewind";
+  let undoId = "";
+  const label = () => { b.innerHTML = `${ic(undoId ? "history" : "rotate-ccw")}<span>${undoId ? "撤销回退" : "回退到这步之前"}</span>`; };
+  label();
+  b.onclick = async () => {
+    b.disabled = true;
+    const resp = await fetch(`/api/session/${encodeURIComponent(sid)}/rewind`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: undoId || ckptId }),
+    }).catch(() => null);
+    const r = resp ? await resp.json().catch(() => ({})) : {};
+    b.disabled = false;
+    if (!resp || !resp.ok) { toast(r.error || "没退成，再试一次"); return; }
+    const n = (r.files || []).filter((f) => f.action === "restored" || f.action === "deleted").length;
+    const bad = (r.files || []).filter((f) => f.why);
+    if (undoId) { undoId = ""; toast(n ? `撤销了回退，${n} 个文件回到改完的样子` : "没有文件需要动"); }
+    else { undoId = r.undo || ""; toast(n ? `已退回这步之前，${n} 个文件恢复了` : "文件本来就是那个样子，没动"); }
+    label();
+    if (bad.length) toast(bad.map((f) => `${f.rel}：${f.why}`).join("；"));
+    refreshFilesCache(); // 文件区跟着刷新
+  };
+  wrap.appendChild(b);
+  return wrap;
+}
+
+function makeAskCard(ev, turnSid, submit, ctx) {
+  // 内容配方的开头表单（带 fields）是多项一次定完的另一张卡，见 app-08-recipe.js
+  if (Array.isArray(ev.fields) && ev.fields.length && typeof makeRecipeFormCard === "function") return makeRecipeFormCard(ev, turnSid, submit, ctx);
+  // 审批走同一张卡，但有三处必须不一样，见下面每一处的注释
+  const isAp = ev.kind === "approval";
+  const opts = isAp
+    ? (ev.choices || []).map((c) => ({ label: c.label, detail: c.sub, value: { allow: !!c.allow, scope: c.scope } }))
+    : (ev.options || []).map((o) => (o && typeof o === "object" ? o : { label: String(o), detail: "" }));
+  const card = document.createElement("div");
+  card.className = "ask-card" + (isAp ? " ask-approve" : "");
+  card.dataset.askId = ev.ask_id || "";
+  card.innerHTML =
+    `<div class="ask-hd"><span class="ask-ic">${ic(isAp ? "shield" : "circle-help")}</span><span class="ask-lb">${
+      isAp ? `要你点头：${esc(ev.apKind || "危险操作")}` : (ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下")
+    }</span><span class="ask-timer"></span></div>` +
+    // 命令原文整条印出来，不截断、不折进省略号：危险就危险在被截掉的那半截
+    // （末尾那个 `| sh`、那个 --force、那个真正的路径）
+    (isAp
+      ? `<div class="ask-cmd">${esc(ev.text || "")}</div>` + (ev.detail ? `<pre class="ask-diff">${paintDiff(ev.detail)}</pre>` : "") + (ev.rule ? `<div class="ask-rule">拦它的规则：${esc(ev.rule)}</div>` : "")
+      : `<div class="ask-q">${esc(ev.question || "")}</div>`) +
+    `<div class="ask-opts"></div>` +
+    // 审批没有「自由回答」：这道题只有准和不准，留个输入框只会让人以为还能讨价还价
+    (isAp ? "" : `<div class="ask-free"><input type="text" placeholder="都不是？直接说你想要的…" maxlength="500"><button type="button">发送</button></div>`) +
+    `<div class="ask-ans"></div>`;
+
+  // 要看着文件才答得上来的题：文件挂到卡片上，第一个直接摊到右边。
+  // 审批卡不走这条——那道题看的是命令原文，就印在卡上，没有别的文件要翻。
+  if (!isAp && ctx) {
+    const plan = askPreviewPlan({
+      names: filesInAsk(ev), outFiles: ctx.outFiles || [],
+      replaying: ctx.replaying, otherSession: ctx.otherSession,
+      pvOpen: pvPanel.classList.contains("show"), pvCurrent,
+      narrow: window.innerWidth <= 900,
+    });
+    if (plan.chips.length) {
+      const row = document.createElement("div");
+      row.className = "ask-files";
+      row.innerHTML = `<span class="lb">${ic("eye")}要看着它答</span>`;
+      for (const name of plan.chips) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "ask-file";
+        b.innerHTML = `${ic(fileIcon(name))}<span>${esc(name.split("/").pop())}</span>`;
+        b.title = "在右边打开 " + name;
+        b.onclick = () => previewFile(name, ctx.root || "");
+        row.appendChild(b);
+      }
+      card.querySelector(".ask-q").after(row);
+    }
+    if (plan.preview) previewFile(plan.preview, ctx.root || "");
+  }
+
+  const timerEl = card.querySelector(".ask-timer");
+  let tick = null;
+  const stopTick = () => { if (tick) { clearInterval(tick); tick = null; } timerEl.textContent = ""; };
+
+  // 「不能再点了」和「结论已经画上去了」是两件事，别共用 done 这一个类。
+  // 回放为了前一件事先给卡加了 done，再拿它拦这里，答过的岔路就永远停在「想让你定一下」——
+  // 一条早就跑完的对话，看上去像是正卡在那等人回答
+  const markAnswered = (text, timeout) => {
+    if (card._answered) return;
+    card._answered = true;
+    card.classList.add("done");
+    document.removeEventListener("keydown", onKey);
+    stopTick();
+    // 超时的结局两边是反的：岔路超时＝AI 替你选了一条接着做，审批超时＝这一步没做。
+    // 写成同一句的话，人回来会以为那条命令跑过了
+    card.querySelector(".ask-lb").textContent = isAp
+      ? (timeout ? "没人点，按不允许算了" : "你点过了")
+      : (timeout ? "这个岔路我替你定了" : "这个岔路你定过了");
+    card.querySelector(".ask-ans").innerHTML = timeout
+      ? `<span class="ic">${ic("clock")}</span>${isAp ? "没等到你点头，这一步没做" : "没等到回答，AI 按它认为最合理的默认继续了"}`
+      : `<span class="ic">${ic("circle-check")}</span>你选了 <b>${esc(text || "")}</b>`;
+  };
+  card._mark = markAnswered;
+
+  const answerIt = async (text, value) => {
+    text = String(text || "").trim();
+    if (!text || card.classList.contains("done") || card.classList.contains("sending")) return;
+    card.classList.add("sending"); // 送出到收到回执之间会有一小段，这期间再点/再按一次不许重复发
+    const resp = await (submit ? submit(value === undefined ? text : value) : fetch("/api/chat/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: turnSid, askId: ev.ask_id, answer: text }),
+    })).catch(() => null);
+    card.classList.remove("sending");
+    if (resp && resp.ok) markAnswered(text);
+    else {
+      const j = resp && resp.json ? await resp.json().catch(() => null) : null;
+      // 只说查得到的：服务端说了原因（任务结束了、题过期了）就照它说，没说就不替人猜
+      toast((j && j.error) || (!resp ? "没送出去：连不上服务器，再点一次" : `没送出去${resp.status ? `（HTTP ${resp.status}）` : ""}，再点一次`));
+    }
+  };
+
+  const box = card.querySelector(".ask-opts");
+  opts.forEach((o, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ask-opt";
+    b.innerHTML =
+      `<span class="kk">${i < 9 ? i + 1 : "·"}</span>` +
+      `<span class="tx"><span class="lb">${esc(o.label)}</span>${o.detail ? `<span class="dt">${esc(o.detail)}</span>` : ""}</span>` +
+      `<span class="go">${ic("corner-down-left")}</span>`;
+    b.onclick = () => answerIt(o.label, o.value);
+    box.appendChild(b);
+  });
+
+  const inp = card.querySelector(".ask-free input");
+  if (inp) {
+    card.querySelector(".ask-free button").onclick = () => answerIt(inp.value);
+    inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
+  }
+  // 数字键直选：手在键盘上就别再去够鼠标。焦点在输入框里时不抢——那时 1 就是要打个 1
+  card.tabIndex = -1;
+  const onKey = (e) => {
+    if (card.classList.contains("done") || !document.body.contains(card)) { document.removeEventListener("keydown", onKey); return; }
+    // 光标在任何输入框里，1 就是要打个 1（不只是本卡那个输入框——聊天框、改名框都算）
+    if (e.target.closest && e.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // 只有屏幕上最后一张还没答的提问卡吃数字键。不然上一张还在等回执时，
+    // 这一张按下的 1 会被上一张抢走，答案安到了另一个问题头上
+    const live = document.querySelectorAll(".ask-card:not(.done)");
+    if (live.length && live[live.length - 1] !== card) return;
+    const n = Number(e.key);
+    if (n >= 1 && n <= opts.length) { e.preventDefault(); answerIt(opts[n - 1].label); }
+  };
+  document.addEventListener("keydown", onKey);
+
+  if (isReplaying) {
+    // 历史回放里问题早就过期了，别让人白点，也别倒计时
+    card.classList.add("done");
+    card.querySelector(".ask-ans").innerHTML = `<span class="ic">·</span>这是历史记录里的提问`;
+  } else if (ev.deadline > 0 || ev.timeout_ms > 0) {
+    // 审批带的是服务端定死的截止时刻（deadline + 服务器此刻的钟 now）：卡片晚几秒才画出来、
+    // 本机钟跟服务器差几分钟，都不该让倒计时多给人几秒——那几秒点下去已经被自动拒了
+    const dead = ev.deadline > 0
+      ? Number(ev.deadline) - (Number(ev.now) || Date.now()) + Date.now()
+      : Date.now() + Number(ev.timeout_ms);
+    const paint = () => {
+      const left = Math.max(0, Math.round((dead - Date.now()) / 1000));
+      if (!left) { stopTick(); timerEl.textContent = isAp ? "已自动拒绝" : "已超时"; timerEl.classList.add("hot"); return; }
+      timerEl.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} ${isAp ? "后自动拒绝" : "后按默认继续"}`;
+      timerEl.classList.toggle("hot", left <= 30);
+    };
+    paint();
+    tick = setInterval(paint, 1000);
+  }
+  return card;
+}
+
+function fileIcon(name) {
+  if (/\.pptx?$/i.test(name)) return "presentation";
+  if (/\.docx?$/i.test(name)) return "file-type";
+  if (/\.xlsx?$/i.test(name)) return "file-spreadsheet";
+  if (/\.(md|txt)$/i.test(name)) return "file-text";
+  if (/\.csv$/i.test(name)) return "table";
+  if (/\.html?$/i.test(name)) return "globe";
+  if (/\.pdf$/i.test(name)) return "book-open-text";
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) return "image";
+  if (/\.(mp4|mov|webm|m4v|ogv)$/i.test(name)) return "video";
+  if (/\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(name)) return "music";
+  if (/\.(zip|gz|tgz|bz2|xz|7z|rar|tar)$/i.test(name)) return "archive";
+  if (/\.(js|mjs|cjs|ts|tsx|jsx|py|swift|java|kt|go|rs|rb|php|c|h|cc|cpp|hpp|cs|sh|bash|zsh|sql|vue|scss|less)$/i.test(name)) return "code";
+  return "file";
+}
+function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
+const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
+// 「只看成果」的开关。默认关：面板是文件浏览器，先如实摆全部，用户嫌吵了再收
+let onlyResults = (() => { try { return localStorage.getItem("owb-files-only") === "1"; } catch { return false; } })();
+// 搜索词不落盘：刷新之后该看到的是全部文件，不是上次搜了一半的残影
+let fileQuery = "";
+const FIND_MIN = 8; // 文件少的时候一眼扫得完，搜索框纯占地方
+/**
+ * 这个文件算不算「交到用户手上的成果」。
+ *
+ * 面板里一个真实文件夹长这样：data/ 下十几个抓回来的 json、几个 .py、一份 PROGRESS.md，
+ * 外加一个 .pptx。那份唯一要交的东西，
+ * 跟中间材料排一样的字重、混在按名字排的序里，得自己一行行找。
+ *
+ * 判据跟对话里的产出卡一致（isDeliverable + 图/网页），不另立一套：同一份东西在两处
+ * 该是同一个身份。PROGRESS.md 这类脚手架被 SCAFFOLD_RE 挡在外面，它是过程账本不是成果。
+ */
+function isResultFile(name) {
+  const base = String(name || "").split("/").pop();
+  return isDeliverable(base) || /\.(png|jpe?g|gif|webp|svg|bmp|ico|html?)$/i.test(base);
+}
+// 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
+const closedBuckets = new Set();
+/** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览。
+ *  src 传 "lib" 时找的是资料库那一份（它不在工作区根底下，按工作区算会直接 404） */
+function revealFile(name, e, root, src) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: root || "", src: src || "" }) })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开所在位置"), "circle-x"); }))
+    .catch(() => toast("打不开所在位置", "circle-x"));
+}
+/**
+ * 把文件本身放进剪贴板，之后直接 Cmd+V 粘到微信 / 邮件 / 访达里。
+ * 以前只能先下载一份再自己去翻下载目录。
+ * 服务端会告诉我们放进去的到底是文件还是一条路径，两者得分开说：
+ * 以为复制了文件、粘出来是一行字，比直接说「复制不了」更气人。
+ */
+function copyHostFile(name, e, o) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  const opt = o || {};
+  return fetch("/api/files/copy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: opt.root || "", src: opt.src || "" }) })
+    .then(r => r.json().catch(() => ({})).then(j => {
+      if (!r.ok || !j || j.error) return toast(((j && j.error) || "复制不了这个文件"), "circle-x");
+      if (j.kind === "path") return toast("这台机器放不下文件本身，已复制它的完整路径", "circle-check");
+      toast("已复制文件，去微信 / 邮件 / 访达里直接粘", "circle-check");
+    }))
+    .catch(() => toast("复制不了这个文件", "circle-x"));
+}
+/**
+ * 让服务端用系统程序打开一个文件/文件夹，并且**把结果说出来**。
+ * 老写法是 fetch(...) 后面挂个 .catch(() => {})，于是 403（没权限）和 400（类型不给开）
+ * 一样静悄悄——用户只看到「我点了，什么都没发生」。
+ */
+function openOnHost(name, root) {
+  return fetch(withRoot("/api/files/open/" + fpath(name), root), { method: "POST" })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开这个文件"), "circle-x"); }))
+    .catch(() => toast("打不开这个文件", "circle-x"));
+}
+/** 「打开当前工作目录」。开的同样是服务端那台机器上的窗口，所以失败了也要说出来。
+ *  四个地方都要用它（顶栏、工作空间菜单、助理页、设置页），别再各写一遍 fetch 然后各自吞掉结果。 */
+function openWorkspaceOnHost() {
+  return fetch("/api/open-workspace", { method: "POST" })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开工作目录"), "circle-x"); }))
+    .catch(() => toast("打不开工作目录", "circle-x"));
+}
+/** 下载到用户自己的电脑。Web 部署下这才是「把文件拿到手」的正路 */
+function downloadFile(name, root) {
+  const a = document.createElement("a");
+  a.href = withRoot("/api/files/download/" + fpath(name), root);
+  a.download = String(name).split("/").pop();
+  document.body.appendChild(a); a.click(); a.remove();
+}
+const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">${ic("folder-open")}</span>` : "");
+
+// 按名字找文件。一个任务跑下来几十个
+// 文件，分组能解决「浏览」，解决不了「我就要那一个」。匹配的是整条相对路径，所以文件夹名
+// 也算线索（打「0918」能把那天那个任务夹里的都捞出来）；空格分词、全都命中才算
+// （「封面 html」= 名字里有封面、而且是 html），大小写不敏感。
+function matchFiles(files, q) {
+  const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return files || [];
+  return (files || []).filter((f) => {
+    const n = String((f && f.name) || "").toLowerCase();
+    return words.every((w) => n.includes(w));
+  });
+}
+/** 面板顶上的搜索框 + 「全部 / 只看成果」。
+ *  搜索框的 input 元素一直在原地，只改两个 hidden——重画 innerHTML 会把正在打字的焦点弄丢。
+ *  分段器全是成果或一件成果都没有时不摆：切了看不出差别，白占一行 */
+function renderFileFilter() {
+  const box = document.getElementById("fp-filter");
+  if (!box) return;
+  const segs = document.getElementById("fp-segs");
+  const find = document.getElementById("fp-q");
+  const nres = filesCache.filter((f) => isResultFile(f.name)).length;
+  const showSeg = filesCache.length > 0 && nres > 0 && nres < filesCache.length;
+  const showFind = filesCache.length >= FIND_MIN || !!fileQuery; // 搜空了也得留着框，不然没法清
+  box.hidden = !showSeg && !showFind;
+  if (find) find.hidden = !showFind;
+  if (segs) {
+    segs.hidden = !showSeg;
+    segs.innerHTML = !showSeg ? "" :
+      `<button class="fp-seg${onlyResults ? "" : " on"}" data-only="0">全部 ${filesCache.length}</button>` +
+      `<button class="fp-seg${onlyResults ? " on" : ""}" data-only="1">只看成果 ${nres}</button>`;
+    segs.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
+      onlyResults = b.dataset.only === "1";
+      try { localStorage.setItem("owb-files-only", onlyResults ? "1" : ""); } catch {}
+      renderFiles(filesCache);
+    }; });
+  }
+  if (find && !find.dataset.wired) {
+    find.dataset.wired = "1";
+    find.oninput = () => { fileQuery = find.value; renderFiles(filesCache); };
+    find.onkeydown = (e) => { if (e.key === "Escape" && find.value) { e.stopPropagation(); find.value = ""; fileQuery = ""; renderFiles(filesCache); } };
+  }
+}
+
+function renderFiles(files) {
+  filesCache = files || [];
+  syncOutCards(filesCache); // 对话里的产出卡落后于盘上文件的，按这份清单重画（细账见 syncOutCards）
+  relinkAnswers(chatCol); // 已经收尾的回答里提到、这份清单里真有的文件名，补成链接
+  const el = document.getElementById("file-list");
+  renderFileFilter();
+  // 「只看成果」是个视图开关，不是删除：藏了多少条要如实写在底下，别让人以为文件没了
+  const hiddenN = onlyResults ? filesCache.filter((f) => !isResultFile(f.name)).length : 0;
+  files = onlyResults ? filesCache.filter((f) => isResultFile(f.name)) : filesCache;
+  const q = String(fileQuery || "").trim();
+  const hits = q ? matchFiles(files, q) : files;
+  if (!hits.length) {
+    el.innerHTML = q
+      ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">没有名字里带「${esc(q)}」的文件${onlyResults ? "。「只看成果」开着，切回「全部」再找找" : ""}</div>`
+      : onlyResults && filesCache.length
+      ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">这个工作目录里还没有成果文件（${hiddenN} 个中间材料已折起）</div>`
+      : '<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">暂无成果文件</div>';
+    return;
+  }
+  // 搜出来的行要带上它在哪个文件夹——同名的 index.html 一个任务能有好几份
+  const fileRow = (f, nested, withDir) =>
+    `<div class="file-item${nested ? " nested" : ""}${isResultFile(f.name) ? " res" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
+      <span>${ic(fileIcon(f.name))}</span>
+      <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${withDir && f.name.includes("/") ? esc(f.name.slice(0, f.name.lastIndexOf("/"))) + " · " : ""}${fmtSize(f.size)}</div></span>
+      ${revealBtn(f.name)}
+      <a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a>
+    </div>`;
+  // 行上的点击：打开预览 / 定位到 Finder。分组视图和搜索结果共用
+  const wireRows = () => {
+    el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
+    el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
+      if (e.target.closest(".dl")) return; // 下载/定位按钮不拦截
+      e.preventDefault();
+      previewFile(item.dataset.name);
+    });
+  };
+  // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
+  // 为什么时间只做在**视图**里、磁盘保持扁平：Google ADK 那套产物命名空间是
+  // app/user/session/文件名，**会话是默认主键，压根没有日期这一层**；而 Finder /
+  // 资源管理器 / Drive 全是磁盘扁平、视图里按时间分组。真在磁盘上套一层 2026-08/
+  // 的代价是老文件多一层点击、已有的绝对路径全部失效，而收益（"最近做的东西在哪"）
+  // 视图分组就能给。分组用的是 mtime（跟 Finder 一致——问的是"最近动过什么"），
+  // 文件夹名里那个 MMDD 仍然记着它是哪天开的。
+  // 根目录散件以前是**无条件钉在最上面**的：于是每次打开面板，先撞见的是几个月前
+  // 别的对话留下的文件（真实数据里 22 个），「本对话」被挤到看不见的地方——
+  // 明明每个对话早就各有各的文件夹，用起来还是"一锅粥"。所以本对话有自己文件夹时，
+  // 根目录那堆降级成一个可折叠分组排到最后。反过来，用户自选工作目录/项目模式下
+  // 压根不建对话文件夹，文件本来就都在根目录，那才是正文，保持原样摊开。
+  const ROOT_KEY = "."; // 根目录分组的 key，跟真实目录名不会撞
+  const rootFiles = files.filter(f => !f.name.includes("/"));
+  const groups = {};
+  for (const f of files) {
+    if (!f.name.includes("/")) continue;
+    const dir = f.name.slice(0, f.name.lastIndexOf("/"));
+    (groups[dir] = groups[dir] || []).push(f);
+  }
+  const curDir = sessionDirs.get(sessionId); // 当前对话的成果文件夹：标「本对话」
+  // 成果排前面，同一档里保持原来的顺序（目录内按名字、根目录按最近动过）。
+  // 一个真实文件夹里 data/ 的十几个 json 会把那份 pptx 冲到下面去，用户得自己一行行找
+  const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
+  const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
+  // 搜索结果不分组：分组是给"翻"用的，搜是"我就要那一个"。成果排前面，其余按路径
+  if (q) {
+    const rest = files.length - hits.length;
+    el.innerHTML = `<div class="fp-hit"><b>找到 ${hits.length} 个</b>${rest ? ` · 另外 ${rest} 个名字里没有「${esc(q)}」` : ""}</div>` +
+      hits.slice().sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, false, true)).join("");
+    wireRows();
+    return;
+  }
+  const dirHead = (key, label, n, mine, tip, nres) =>
+    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span class="ar">${ic(openDirs.has(key) ? "chevron-down" : "chevron-right")}</span><span>${ic("folder")}</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">${ic("arrow-up-right")}</span>` : ""}</div>`;
+
+  // 一个文件夹归到哪个时间段，看它**最近动过的那个文件**（不是最老的那个）
+  const dirTime = (dir) => groups[dir].reduce((m, f) => Math.max(m, Date.parse(f.mtime) || 0), 0);
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const D = 86400e3, T0 = dayStart.getTime();
+  const bucketOf = (ms) => {
+    if (ms >= T0) return { key: "#t今天", order: 0, label: "今天" };
+    if (ms >= T0 - D) return { key: "#t昨天", order: 1, label: "昨天" };
+    if (ms >= T0 - 7 * D) return { key: "#t7天", order: 2, label: "过去 7 天" };
+    const d = new Date(ms), y = d.getFullYear(), m = d.getMonth() + 1;
+    // 更早的按月分。同年就不重复写年份——列表里全是今年的东西时，"2026年"这三个字纯占地方
+    return { key: `#t${y}-${m}`, order: 3 + (9999 - y) * 12 + (12 - m), label: `更早（${y === dayStart.getFullYear() ? "" : y + "年"}${m}月）` };
+  };
+  const buckets = new Map();
+  for (const dir of Object.keys(groups)) {
+    const b = bucketOf(dirTime(dir));
+    if (!buckets.has(b.key)) buckets.set(b.key, { ...b, dirs: [] });
+    buckets.get(b.key).dirs.push(dir);
+  }
+
+  const demoteRoot = !!curDir && rootFiles.length > 0;
+  // 根目录这堆本来按 mtime 倒序（服务端就是这么排的），成果提到前面、各档内保持最近优先
+  let html = demoteRoot ? "" : rootFiles.slice().sort(resFirst()).map(f => fileRow(f, false)).join("");
+  for (const b of [...buckets.values()].sort((a, b2) => a.order - b2.order)) {
+    const n = b.dirs.reduce((s, d) => s + groups[d].length, 0);
+    const open = !closedBuckets.has(b.key); // 时间段默认展开，文件夹默认收着——展开的是"有哪些成果"这一层
+    html += `<div class="time-head" data-bucket="${esc(b.key)}"><span class="ar">${ic(open ? "chevron-down" : "chevron-right")}</span><div class="name">${esc(b.label)}</div><span class="cnt">${b.dirs.length} 个文件夹 · ${n} 个文件</span></div>`;
+    if (!open) continue;
+    // 同一时间段内按"最近动过"排前，本对话的置顶——它一定在「今天」里，但列表长了也得一眼找到
+    for (const dir of b.dirs.sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : dirTime(y) - dirTime(x)))) {
+      html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹", resCount(groups[dir]));
+      if (openDirs.has(dir)) html += groups[dir].sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, true)).join("");
+    }
+  }
+
+  if (demoteRoot) {
+    html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, "在 Finder 中打开工作空间根目录", resCount(rootFiles));
+    if (openDirs.has(ROOT_KEY)) {
+      // 逐字节相同的副本才给清理入口。这类是当年"找不到产物就 cp 一份到根目录"留下的，
+      // 原件还在成果文件夹里躺着，所以清掉零信息损失；名字像但内容不同的一个都不碰
+      const dupes = rootFiles.filter(f => f.dup_of);
+      if (dupes.length) html += `<div class="dup-tidy"><b>${dupes.length}</b> 个文件与成果文件夹里的重复<button id="btn-tidy">清掉重复的</button></div>`;
+      html += rootFiles.slice().sort(resFirst()).map(f => fileRow(f, true)).join("");
+    }
+  }
+  if (hiddenN) html += `<div class="fp-hidden">已折起 ${hiddenN} 个中间材料（脚本 / 数据 / 日志）</div>`;
+  el.innerHTML = html;
+  el.querySelectorAll(".time-head").forEach(h => h.onclick = () => {
+    closedBuckets.has(h.dataset.bucket) ? closedBuckets.delete(h.dataset.bucket) : closedBuckets.add(h.dataset.bucket);
+    renderFiles(filesCache);
+  });
+  el.querySelectorAll(".dir-head").forEach(h => h.onclick = () => {
+    openDirs.has(h.dataset.dir) ? openDirs.delete(h.dataset.dir) : openDirs.add(h.dataset.dir);
+    renderFiles(filesCache);
+  });
+  el.querySelectorAll(".opendir").forEach(b => { b.onclick = (e) => {
+    e.stopPropagation();
+    openOnHost(b.dataset.opendir); // 结果要读回来：以前这里 .catch(() => {}) 把 403/404 一起吞了
+  }; });
+  const tidyBtn = el.querySelector("#btn-tidy");
+  if (tidyBtn) tidyBtn.onclick = async () => {
+    const dupes = filesCache.filter(f => f.dup_of && !f.name.includes("/"));
+    // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来。
+    // 顺带会收掉空的成果文件夹（10 分钟内没动过的才算），所以也得说出来——
+    // 按钮做了什么就写什么，别让用户点完发现还动了别的东西
+    if (!(await askConfirm({
+      title: `整理这 ${dupes.length} 个重复文件？`,
+      hint: "副本移到 .trash，可随时恢复；空的成果文件夹也一并移走。",
+      items: dupes.slice(0, 10).map((f) => f.name),
+      note: dupes.length > 10 ? `…共 ${dupes.length} 个` : "",
+      ok: "整理",
+    }))) return;
+    tidyBtn.disabled = true;
+    try {
+      const r = await fetch("/api/files/tidy", { method: "POST" }).then(x => x.json());
+      const parts = [];
+      if (r.moved) parts.push(`${r.moved} 个重复副本`);
+      if (r.dirs && r.dirs.length) parts.push(`${r.dirs.length} 个空文件夹`);
+      toast(parts.length ? `已清掉 ${parts.join(" + ")}（在 ${r.trash} 里）` : "没有可清理的东西");
+      fetch("/api/files").then(x => x.json()).then(renderFiles);
+    } catch { toast("清理失败", "circle-x"); tidyBtn.disabled = false; }
+  };
+  wireRows();
+}
+fetch("/api/files").then(r => r.json()).then(f => { if (Array.isArray(f)) { renderFiles(f); snapshotFiles(f); } }).catch(() => {});
+
+// ================= 助理模式（IM 通道状态 + 最近消息） =================
+const WS_STATE_TXT = { connected: "已连接", connecting: "连接中…", reconnecting: "重连中…", failed: "连接失败", idle: "已断开", off: "未启动", unknown: "未知" };
+async function refreshImStatus() {
+  try {
+    const s = await fetch("/im/status").then(r => r.json());
+    // 只数真在线的：飞书/QQ/微信长连接 connected，企微应用/公众号回调配置齐，企微群推送已配
+    let n = 0;
+    if (s.feishu.configured && s.feishu.ws.state === "connected") n++;
+    if ((s.qq || {}).configured && s.qq.state === "connected") n++;
+    if ((s.wechat_ilink || {}).configured && s.wechat_ilink.state === "connected") n++;
+    if ((s.wecom_app || {}).configured && s.wecom_app.callback_ready) n++;
+    if ((s.wechat_mp || {}).configured && s.wechat_mp.callback_ready) n++;
+    if (s.wecom.configured) n++;
+    const sub = document.getElementById("ab-sub");
+    if (sub) sub.textContent = n ? `${n} 个通道在线` : "IM 远程指挥";
+  } catch {}
+}
+document.getElementById("ab-head").onclick = () => openAssistView();
+refreshImStatus();
+// 窗口没在看的时候别问：这一问在服务端要扫一遍 IM 会话目录，跟正在跑的任务抢的是同一条事件循环。
+// 桌面版关了 backgroundThrottling，最小化了定时器照样满速跑，所以得自己收着点。
+// 切回来立刻补一次，用户看到的还是新的。
+setInterval(() => { if (!document.hidden) refreshImStatus(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshImStatus(); });
+
+// 开机悄悄看一眼有没有新版：同一个版本只提醒一次，提醒完就记在本地，不做红点也不弹窗。
+// 走的是服务端 6 小时缓存那份，不会每次开机都去打 GitHub。
+setTimeout(async () => {
+  try {
+    const d = await fetch("/api/update").then(r => r.json());
+    if (!d.has_update || localStorage.getItem("owb-update-seen") === d.latest) return;
+    localStorage.setItem("owb-update-seen", d.latest);
+    toast(`有新版 v${d.latest}（当前 v${d.current}）· 设置 → 关于 里看怎么升`);
+  } catch {}
+}, 8000);
+
+// ---------------- 文件预览 ----------------
+// 只剩 Word 97 时代那三个二进制老格式还得交给本机 Office——它们不是 zip+XML，拆不开。
+// docx/xlsx/pptx 现在在应用内直接看（见 previewKind 的 doc/sheet/slides）。
+const OFFICE_RE = /\.(doc|ppt|xls)$/i;
+const pvPanel = document.getElementById("preview-panel");
+let pvCurrent = null;
+let pvRoot = "";   // pvCurrent 那份文件所属的工作目录指纹，见 withRoot
+// 用户自己把预览关掉的时刻。收尾时的自动预览要看它：这一趟里他亲手关过，就别再给他弹回来
+let pvClosedAt = 0;
+
+// 有专门看法的四类：网页/图/音/视频。其余一律先当纯文本试着打开。
+// 以前这里是一张"文本扩展名白名单"（txt|csv|json|js|cjs|css|xml|log|yml|yaml），
+// 白名单外的整个掉进「该格式暂不支持应用内预览」——可真实工作目录里 .py/.swift/.plist/.srt/.h
+// 全在白名单外，明明是纯文本却只能下载；.mp3/.mp4 更离谱，文件列表里都给了 🎵🎬 图标，
+// 点开却说不支持。白名单这个形状本身就是 bug：模型每产出一种新后缀就要回来改一次代码。
+// 所以反过来写：只列"当文本打开必然满屏乱码"的二进制后缀，其余都试，
+// 试出来真是二进制（含 NUL 或大量替换字符）再退回提示。
+const PV_IFRAME_RE = /\.(html?)$/i;
+// SVG 也从 iframe 里拆出来。渲染方式跟网页一样（走 iframe，因为 mermaid 老文件的文字
+// 在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字），但**摆法**不一样：
+// 网页是文章，必须贴顶从第一行读；SVG 是一张图，装得下就该摆在正中间。
+// 量过：一张 900×220 的流程图（图表产出最常见的形状）贴顶时下面空 669px。
+const PV_SVG_RE = /\.svg$/i;
+// PDF 单拎出来，不跟 html/svg 混在一起走「量内容高度再整页缩放」那条路。
+// iframe 里的 PDF 是 Chromium 自带的阅读器（一个 <embed> 插件文档），
+// contentDocument.scrollHeight 量出来几乎是 0——于是外层被设成了 0 高，
+// 面板上只剩顶端一条黑边框，底下整片空白。用户原话：「就那么一小块地方是在预览的」。
+// PDF 本来就自带翻页、缩放和滚动，正确做法是把整个面板让给它，一个字都别量。
+const PV_PDF_RE = /\.pdf$/i;
+const PV_IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
+const PV_AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
+// .ts 故意不进这条：mime 库把 .ts 认成 video/mp2t，但工作目录里的 .ts 全是 TypeScript 源码。
+// mkv/avi/wmv/flv/mpg 浏览器多半解不了，但仍然归到 video —— 让它走 <video> 那条路，
+// 解不了的时候由下面的 onerror 说一句人话；以前它们掉进「当文本打开」，
+// 用户得到的是一句驴唇不对马嘴的「这个文件不是文本」
+const PV_VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv|mkv|avi|wmv|flv|mpe?g|m2ts|mts|3gp)$/i;
+const PV_MD_RE = /\.(md|markdown)$/i;
+// 下面四种浏览器自己打不开（zip 里的一包 XML / 一堆条目），走 /api/files/preview 让服务端拆
+const PV_DOC_RE = /\.docx$/i;
+const PV_SHEET_RE = /\.xlsx$/i;
+const PV_SLIDES_RE = /\.pptx$/i;
+const PV_ARCHIVE_RE = /\.zip$/i;
+const PV_CSV_RE = /\.(csv|tsv)$/i;
+const PV_BINARY_RE = /\.(zip|gz|tgz|bz2|xz|7z|rar|tar|dmg|pkg|iso|exe|dll|so|dylib|a|o|bin|dat|pcm|wasm|class|jar|pyc|pyd|node|db|sqlite\d?|woff2?|ttf|otf|eot|psd|ai|sketch|fig|msgpack|hmap|dia|swiftmodule|swiftdoc|swiftsourceinfo|pdb|lib|obj|heic|tiff?|blend)$/i;
+
+/** 预览走哪条路。抽成纯函数是为了能直接断言，不用一个个文件点开肉眼验 */
+function previewKind(name) {
+  if (PV_PDF_RE.test(name)) return "pdf";
+  if (PV_SVG_RE.test(name)) return "svg";
+  if (PV_IFRAME_RE.test(name)) return "iframe";
+  if (PV_IMAGE_RE.test(name)) return "image";
+  if (PV_AUDIO_RE.test(name)) return "audio";
+  if (PV_VIDEO_RE.test(name)) return "video";
+  if (PV_MD_RE.test(name)) return "markdown";
+  if (PV_DOC_RE.test(name)) return "doc";
+  if (PV_SHEET_RE.test(name)) return "sheet";
+  if (PV_SLIDES_RE.test(name)) return "slides";
+  if (PV_ARCHIVE_RE.test(name)) return "archive";
+  if (PV_CSV_RE.test(name)) return "csv";
+  if (PV_BINARY_RE.test(name)) return "binary";
+  return "text"; // 认不出来的一律先当文本试，试不成再退回去
+}
+
+/** 这段内容到底是不是文本：有 NUL 就是二进制；UTF-8 解码非法字节会吐 U+FFFD，
+ *  正经文本一个都不该有（按字节截断只会在末尾留一个，所以阈值放到 8 个以上且占比超 1%） */
+function looksBinary(text) {
+  if (!text) return false;
+  if (text.includes("\u0000")) return true;
+  const bad = (text.match(/\uFFFD/g) || []).length;
+  return bad > 8 && bad / text.length > 0.01;
+}
+
+const PV_TEXT_MAX = 512 * 1024; // 只取前 512KB。以前是整包 fetch 完再 slice(0,100000)，
+                                // 碰上几百 MB 的日志，渲染进程在 slice 之前就已经卡死了
+
+/** 取文件开头一段当文本。服务端是 res.sendFile，自带 Range 支持（实测 206 + Content-Range） */
+async function fetchTextHead(url) {
+  try {
+    const r = await fetch(url, { headers: { Range: `bytes=0-${PV_TEXT_MAX - 1}` } });
+    if (!r.ok && r.status !== 206) return null;
+    let text = await r.text();
+    const m = /\/(\d+)\s*$/.exec(r.headers.get("Content-Range") || "");
+    const total = m ? Number(m[1]) : null;
+    // 按字节切可能把最后一个多字节字符切成两半，末尾那个替换字符是我们自己造的，去掉
+    if (total != null && total > PV_TEXT_MAX) text = text.replace(/\uFFFD$/, "");
+    if (text.length > PV_TEXT_MAX) text = text.slice(0, PV_TEXT_MAX);
+    return { text, total, truncated: total != null ? total > PV_TEXT_MAX : text.length >= PV_TEXT_MAX };
+  } catch { return null; }
+}
+
+/**
+ * 「这儿没东西可看」的那一块：图标 + 一句话 + 可选的几颗按钮，摆在面板正中间。
+ *
+ * 以前这几处各写各的 `<div class="pv-text">`，而 .pv-text 是给整篇文字用的——
+ * 贴左上角、左对齐。于是一句「这是二进制文件」孤零零挂在天花板左角，
+ * 底下七百多像素全空。用户看 PDF 时说的那句「就那么一小块地方是在预览的，
+ * 其他一大部分空白」，在二进制、空文件、加载失败这几处是一模一样的毛病。
+ *
+ * 居中用的是 margin:auto 而不是父层 align-items:center——后者在内容比面板高时
+ * 会把内容顶部推到可滚动区域外，滚轮再也回不到第一行；auto 外边距在剩余空间
+ * 为负时按 0 算，短的居中、长的贴顶，一条规则两头都对。
+ */
+const pvNotice = (icon, text, acts) =>
+  `<div class="pv-empty">${ic(icon, "pv-empty-ico")}<div>${esc(text)}</div>${
+    acts ? `<div class="pv-empty-acts">${acts}</div>` : ""
+  }</div>`;
+
+/** 真看不了时的兜底。以前这句写的是"可点右上 🗔 …或 ⬇"，可标题栏早就换成 SVG 图标了，
+ *  用户照着找一辈子也找不到那两个 emoji——所以直接给一个能点的按钮 */
+const pvFallback = (why) =>
+  pvNotice("circle-alert", why + "，应用内看不了。",
+    canOpenOnHost()
+      ? `<button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button>`
+      : `<button class="pv-download">下载到本地看</button>`);
+/** 把 pvFallback 里那几颗按钮接上。单独一个函数是因为它要被调两次：
+ *  一次是渲染完，一次是 <video> 解码失败之后现换的那块内容——晚绑的那次没人接就是死按钮 */
+function bindPvFallback(body, name, root) {
+  const r = root === undefined ? pvRoot : root;
+  const sysBtn = body.querySelector(".pv-open-sys");
+  if (sysBtn) sysBtn.onclick = () => openOnHost(name, r);
+  const rvBtn = body.querySelector(".pv-reveal");
+  if (rvBtn) rvBtn.onclick = () => revealFile(name, null, r);
+  const dlBtn = body.querySelector(".pv-download");
+  if (dlBtn) dlBtn.onclick = () => downloadFile(name, r);
+}
+/**
+ * 大文件截断提示。
+ *
+ * 一次全读进来是真的会把渲染进程干死
+ * （所以 512 KB 这道口子不能拆），但只留一句「要看全的话下载或用系统程序打开」
+ * 等于把人推出应用——他想看的那一行可能就在第 520 KB 上。
+ * 所以这里给一颗按钮：一段一段往后接着读，读到哪儿写清楚到哪儿，读完了就说读完了。
+ * 接上来的一律按纯文本渲染——按 512 KB 切开的那一刀，正好可能切在一个代码围栏
+ * 或者一行 CSV 的中间，接着当 Markdown/表格渲染只会渲染出一堆错的东西。
+ */
+const pvTrunc = (total, shown) => {
+  const at = shown == null ? PV_TEXT_MAX : shown;
+  const rest = total ? Math.max(0, total - at) : 0;
+  return `<div class="pv-more-box" style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--owb-border);color:var(--owb-text-3);font-size:13px">`
+    + `<span class="pv-more-at">已经显示到 ${fmtSize(at)}${total ? ` / 整个文件 ${fmtSize(total)}` : ""}</span>`
+    + (rest
+      ? ` · <button class="pv-more" data-at="${at}">再往后看 ${fmtSize(Math.min(PV_TEXT_MAX, rest))}</button>`
+      : "")
+    + `<div class="pv-more-tip" style="margin-top:6px">以下按纯文本显示，看全请下载。</div>`
+    + `<pre class="pv-more-text" style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;margin:8px 0 0"></pre>`
+    + `</div>`;
+};
+
+/** 接着往后读一段。跟 fetchTextHead 同一条路（服务端 res.sendFile 自带 Range） */
+async function fetchTextRange(url, from, to) {
+  try {
+    const r = await fetch(url, { headers: { Range: `bytes=${from}-${to}` } });
+    if (!r.ok && r.status !== 206) return null;
+    const text = await r.text();
+    const m = /\/(\d+)\s*$/.exec(r.headers.get("Content-Range") || "");
+    return { text, total: m ? Number(m[1]) : null };
+  } catch { return null; }
+}
+
+/** 把「再往后看」接上。按钮上永远写着这一下会读多少，读完了就把按钮换成「到头了」 */
+function bindPvMore(body, url) {
+  const box = body.querySelector(".pv-more-box");
+  if (!box) return;
+  const btn = box.querySelector(".pv-more");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const at = Number(btn.dataset.at) || 0;
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "读取中…";
+    const r = await fetchTextRange(url, at, at + PV_TEXT_MAX - 1);
+    if (!r) { btn.disabled = false; btn.textContent = label + "（上一次没读到，再试一次）"; return; }
+    // 按字节切，末尾那半个多字节字符是我们自己切出来的，去掉
+    const chunk = r.total != null && at + PV_TEXT_MAX < r.total ? r.text.replace(/\uFFFD$/, "") : r.text;
+    box.querySelector(".pv-more-text").textContent += chunk;
+    const now = at + PV_TEXT_MAX;
+    const total = r.total;
+    box.querySelector(".pv-more-at").textContent = `已经显示到 ${fmtSize(Math.min(now, total || now))}${total ? ` / 整个文件 ${fmtSize(total)}` : ""}`;
+    const rest = total ? Math.max(0, total - now) : 0;
+    if (!rest || !chunk) { btn.replaceWith(Object.assign(document.createElement("span"), { textContent: "已经到文件末尾了" })); return; }
+    btn.dataset.at = String(now);
+    btn.disabled = false;
+    btn.textContent = `再往后看 ${fmtSize(Math.min(PV_TEXT_MAX, rest))}`;
+  };
+}
+
+// ---- 拆出来的结构化数据 → HTML。服务端只给数据，转义全在这儿，只此一处 ----
+// 文档里的链接只认这三种协议。.docx 常常是外面发进来的，
+// 里头写一句 javascript:... 的超链接完全合法，照单渲染就等于给了它一个可点的入口。
+const SAFE_LINK = /^(https?:|mailto:)/i;
+const runsHtml = (runs) => (runs || []).map((r) => {
+  let h = esc(r.s || "").replace(/\n/g, "<br>");
+  if (r.b) h = "<b>" + h + "</b>";
+  if (r.i) h = "<i>" + h + "</i>";
+  if (r.u) h = "<u>" + h + "</u>";
+  const href = String(r.href || "").trim();
+  if (href && SAFE_LINK.test(href)) h = `<a class="ov-a" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${h}</a>`;
+  return h;
+}).join("");
+
+const cellsHtml = (row, tag) => row.map((c) => `<${tag}>${typeof c === "string" ? esc(c) : runsHtml(c.runs)}</${tag}>`).join("");
+const gridHtml = (rows, cls) =>
+  `<div class="ov-scroll"><table class="${cls}">${rows.map((r, i) => `<tr>${cellsHtml(r, i ? "td" : "th")}</tr>`).join("")}</table></div>`;
+
+function docHtml(d) {
+  const out = [];
+  if (d.header) out.push(`<div class="ov-chrome">页眉　${esc(d.header)}</div>`);
+  // 有序列表按层级各数各的，跟 docToText 里那套一样：进深一层清零，插了正文重新起
+  const counters = [];
+  for (const b of d.blocks || []) {
+    if (b.t !== "li") counters.length = 0;
+    if (b.t === "img") {
+      // src 是服务端从 zip 里读出来现拼的 data URI；再确认一次前缀，别让别的协议混进来
+      if (/^data:image\//.test(b.src || "")) out.push(`<img class="ov-img" src="${esc(b.src)}">`);
+    } else if (b.t === "h") out.push(`<h${b.lvl} class="ov-h">${runsHtml(b.runs)}</h${b.lvl}>`);
+    else if (b.t === "li") {
+      const lvl = b.lvl || 0;
+      counters.length = lvl + 1;
+      counters[lvl] = b.ord ? (counters[lvl] || 0) + 1 : 0;
+      const mark = b.ord ? counters[lvl] + "." : "•";
+      out.push(`<div class="ov-li" style="margin-left:${lvl * 22}px"><span class="ov-mark">${mark}</span>${runsHtml(b.runs)}</div>`);
+    }
+    else if (b.t === "table") out.push(gridHtml(b.rows, "ov-table"));
+    else out.push(`<p class="ov-p"${b.align === "center" ? ' style="text-align:center"' : b.align === "right" ? ' style="text-align:right"' : ""}>${runsHtml(b.runs)}</p>`);
+  }
+  if (!out.length) out.push('<p class="ov-p" style="color:var(--owb-text-3)">这个文档里没有可显示的正文。</p>');
+  if (d.footer) out.push(`<div class="ov-chrome">页脚　${esc(d.footer)}</div>`);
+  if (d.truncated) out.push(`<div class="ov-note">文档太长，只显示了前 ${(d.blocks || []).length} 段。</div>`);
+  return `<div class="ov-doc">${out.join("")}</div>`;
+}
+
+function sheetHtml(d) {
+  const tabs = d.sheets.map((sh, i) =>
+    `<button class="ov-tab${i ? "" : " on"}" data-sheet="${i}">${esc(sh.name)}</button>`).join("");
+  const panes = d.sheets.map((sh, i) => {
+    const note = sh.truncated ? `<div class="ov-note">共 ${sh.totalRows} 行 × ${sh.totalCols} 列，只显示了前 ${sh.rows.length} 行。</div>` : "";
+    const grid = sh.rows.length ? gridHtml(sh.rows, "ov-table ov-sheet") : '<div class="ov-note">空工作表。</div>';
+    return `<div class="ov-pane" data-pane="${i}"${i ? " hidden" : ""}>${grid}${note}</div>`;
+  }).join("");
+  return `<div class="ov-doc">${d.sheets.length > 1 ? `<div class="ov-tabs">${tabs}</div>` : ""}${panes}</div>`;
+}
+
+function slidesHtml(d) {
+  const cards = d.slides.map((s) => `<div class="ov-slide">
+      <div class="ov-slide-n">第 ${s.n} 页</div>
+      ${s.title ? `<div class="ov-slide-t">${esc(s.title)}</div>` : ""}
+      ${s.lines.map((l) => `<div class="ov-li" style="margin-left:${l.lvl * 22}px">${esc(l.s)}</div>`).join("")}
+      ${s.notes ? `<div class="ov-notes">备注：${esc(s.notes)}</div>` : ""}
+    </div>`).join("");
+  return `<div class="ov-doc"><div class="ov-note">共 ${d.total} 页${d.truncated ? `，只显示了前 ${d.slides.length} 页` : ""}</div>${cards}</div>`;
+}
+
+function archiveHtml(d) {
+  const rows = [["文件", "大小"]].concat(d.entries.map((e) => [e.name, fmtSize(e.size)]));
+  return `<div class="ov-doc"><div class="ov-note">共 ${d.total} 个文件，解压后 ${fmtSize(d.bytes)}${d.truncated ? `；只列出前 ${d.entries.length} 个` : ""}</div>${gridHtml(rows, "ov-table ov-sheet")}</div>`;
+}
+
+/** CSV/TSV 自己在前端拆：内容已经取回来了，没必要再跑一趟服务端。
+ *  必须按 RFC4180 处理引号——字段里带逗号和换行是常事，split(",") 会把表拆散架 */
+function parseCsv(text, sep) {
+  const rows = [];
+  let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c !== '"') { cur += c; continue; }
+      if (text[i + 1] === '"') { cur += '"'; i++; } else q = false;
+    } else if (c === '"') q = true;
+    else if (c === sep) { row.push(cur); cur = ""; }
+    else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else if (c !== "\r") cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+function csvHtml(text, name) {
+  const head = text.slice(0, text.indexOf("\n") + 1 || text.length);
+  const sep = /\.tsv$/i.test(name) || (head.split("\t").length > head.split(",").length) ? "\t"
+    : head.split(";").length > head.split(",").length ? ";" : ",";
+  const rows = parseCsv(text, sep);
+  if (!rows.length) return pvNotice("file", "这个文件是空的，里面一行内容都没有");
+  const shown = rows.slice(0, 2000);
+  const note = rows.length > shown.length ? `<div class="ov-note">共 ${rows.length} 行，只显示了前 ${shown.length} 行。</div>` : "";
+  return `<div class="ov-doc">${gridHtml(shown, "ov-table ov-sheet")}${note}</div>`;
+}
+
+// ---------------- 代码文件的看法（横向滚动 + 行号 + 着色 + 压缩产物展开） ----------------
+// 起因：工作区里点开一个 .mjs（前端打包产物），右边糊出一大坨。
+// 是两件事叠在一起，得分开治：
+//   1) 打包产物是**压缩过的**——整个文件常常就一行五万字符。而下面那条兜底 <pre> 用的是
+//      white-space:pre-wrap + overflow-wrap:anywhere（那是为日志和纯文本调的，长 URL 不该
+//      把面板撑宽）。于是这一行被从**任意位置**折断：`fun` 留在上一行、`ction` 掉到下一行。
+//      「像乱码」说的就是这个 —— 字都是对的，断点全是错的。
+//   2) 一点着色和行号都没有，就算源码本来有换行，也只是一坨等宽字。
+// 所以代码类后缀单独走一条路：代码永远不该被拦腰折（横向滚动）+ 行号 + 着色，
+// 压缩过的先按 { } ; 展开，并且留一颗「看原文」—— 展开是为了读，不是为了改，
+// 总有人就是想确认原文长什么样。
+const PV_CODE_RE = /\.(m?[jt]sx?|cjs|cts|mts|jsonc?|json5|css|s[ac]ss|less|styl|py|pyw|rb|go|rs|java|kts?|swift|mm?|cc?|hh?|cpp|hpp|cxx|cs|php|pl|lua|r|scala|dart|sh|bash|zsh|fish|ps1|sql|vue|svelte|astro|gradle|tf|proto|gql|graphql|ya?ml|toml|ini|cfg|conf|plist|xml)$/i;
+// 没有后缀、但一眼就是配置/脚本的那些。工作区里 Dockerfile 和 .env 不算少见
+const PV_CODE_NAME_RE = /^(dockerfile|makefile|rakefile|gemfile|podfile|\.env(\..+)?|\.gitignore|\.gitattributes|\.dockerignore|\.npmrc|\.editorconfig|\.[a-z]+rc)$/i;
+
+/** 这个文件该不该按代码来画 */
+function isCodeFile(name) {
+  const base = String(name || "").split("/").pop();
+  return PV_CODE_RE.test(base) || PV_CODE_NAME_RE.test(base);
+}
+
+/** 归到哪一族。一个预览器不需要分清 Kotlin 和 Swift，只要分清「注释长什么样、
+ *  字符串长什么样」—— 真正决定画面的就这两样。 */
+function codeLang(name) {
+  const base = String(name || "").split("/").pop().toLowerCase();
+  const ext = (base.match(/\.([^.]+)$/) || ["", ""])[1];
+  if (/^(dockerfile|makefile|rakefile|gemfile|podfile)$/.test(base)) return "hash";
+  if (/^\.[a-z]+$/.test(base)) return "hash";               // .gitignore / .npmrc / .babelrc 这类
+  if (/^(json|jsonc|json5)$/.test(ext)) return "json";
+  if (/^(css|scss|sass|less|styl)$/.test(ext)) return "css";
+  if (/^(xml|plist|svg|vue|svelte|astro|html?)$/.test(ext)) return "xml";
+  if (/^(py|pyw|rb|pl|r|sh|bash|zsh|fish|ps1|ya?ml|toml|ini|cfg|conf|env|tf)$/.test(ext)) return "hash";
+  if (ext === "sql") return "sql";
+  if (/^(m?[jt]sx?|cjs|cts|mts|go|rs|java|kts?|swift|mm?|cc?|hh?|cpp|hpp|cxx|cs|php|lua|scala|dart|proto|gradle|gql|graphql)$/.test(ext)) return "c";
+  return "plain";
+}
+
+// ---- 扫描器：认得出字符串 / 注释 / 正则，就够了 ----
+// 展开和着色都要用。为什么非认不可：压缩过的代码里 `"}"`、`'//'`、`/[{};]/`
+// 这种字面量满地都是。不认引号，第一个引号里的 } 就把后面整份文件的缩进带歪；
+// 不认正则，`/[/]/` 里那个斜杠会被当成注释开头，后面半行凭空消失。
+
+/** 从 i 处的引号读到配对的引号，返回闭引号之后的下标。
+ *  反引号要额外认 ${…}：里面能再套字符串、再套反引号，拿个深度计数跟着数。 */
+function scanStr(s, i) {
+  const q = s[i];
+  let j = i + 1;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "\\") { j += 2; continue; }
+    if (c === q) return j + 1;
+    if (q === "`" && c === "$" && s[j + 1] === "{") {
+      let d = 1; j += 2;
+      while (j < s.length && d > 0) {
+        const k = s[j];
+        if (k === "\\") { j += 2; continue; }
+        if (k === '"' || k === "'" || k === "`") { j = scanStr(s, j); continue; }
+        if (k === "{") d++; else if (k === "}") d--;
+        j++;
+      }
+      continue;
+    }
+    // 单双引号不跨行：没闭合的引号（英文里的 it's、日志里截断的半句）不能把后面整份文件吞掉
+    if (q !== "`" && c === "\n") return j;
+    j++;
+  }
+  return s.length;
+}
+
+/** 从 i 处的 / 读一条正则，返回结束下标；看着不像正则就返回 i（调用方按除号处理） */
+function scanRe(s, i) {
+  let j = i + 1, cls = false;
+  if (s[j] === "/" || s[j] === "*" || s[j] === undefined) return i;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "\\") { j += 2; continue; }
+    if (c === "\n") return i;              // 正则不跨行 → 那个 / 是除号
+    if (cls) { if (c === "]") cls = false; }
+    else if (c === "[") cls = true;
+    else if (c === "/") { j++; while (j < s.length && /[a-z]/i.test(s[j])) j++; return j; }
+    j++;
+  }
+  return i;
+}
+
+// `/` 是正则开头还是除号，靠它前面那个 token 判。判错的代价只是这一段不断行、不着色，
+// 内容一个字都不会少 —— 所以这里用够用的启发式，不去建 AST。
+const RE_AFTER_CH = /[({[,;:!&|?+\-*/%=~^<>]/;
+const RE_AFTER_KW = /\b(return|typeof|instanceof|in|of|new|delete|void|do|else|case|yield|await)$/;
+function reAllowed(before) {
+  const t = before.replace(/\s+$/, "");
+  if (!t) return true;
+  if (RE_AFTER_KW.test(t)) return true;
+  return RE_AFTER_CH.test(t[t.length - 1]);
+}
+
+const MINIFIED_COL = 400;       // 一行超过这么多字符就当它是压缩产物。手写代码几乎不会越过 200
+const PV_CODE_MAX_LINES = 5000; // 展开一份 500KB 的 bundle 能出好几万行，全画出来渲染进程要卡住
+
+/** 文件里最长那一行有多少字符 */
+function longestLine(text) {
+  let max = 0, at = 0;
+  for (;;) {
+    const j = text.indexOf("\n", at);
+    const len = (j < 0 ? text.length : j) - at;
+    if (len > max) max = len;
+    if (j < 0) return max;
+    at = j + 1;
+  }
+}
+
+/** 这份内容是不是压缩过的代码（只有花括号那几族谈得上「展开」） */
+function codeMinified(text, name) {
+  return longestLine(text) > MINIFIED_COL && /^(c|css|json)$/.test(codeLang(name));
+}
+
+/**
+ * 把压缩过的代码按 { } ; 重新断行并缩进。
+ *
+ * 只断行、只补缩进，一个字符都不改、不增、不删 —— 这是刻意的克制。
+ * 真正的 formatter（prettier 那种）要先建 AST，碰上一个它不认的新语法就整份罢工；
+ * 而这儿的输入恰恰是各家打包器吐出来的花活儿。所以退到一个**不会失败**的层面：
+ * 扫一遍字符，认得出字符串/注释/正则就照抄，剩下的按三个符号断行。
+ * 最坏情况是断得不好看，不会把内容弄丢 —— 对「只是想看看这文件是啥」来说，这个取舍是对的。
+ */
+function unminify(text, lang) {
+  const out = [];
+  let depth = 0, paren = 0, line = "", i = 0;
+  const n = text.length;
+  const push = () => {
+    const t = line.trim();
+    if (t) out.push("  ".repeat(Math.max(0, depth)) + t);
+    line = "";
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === "/" && text[i + 1] === "/" && lang !== "css") {
+      const j = text.indexOf("\n", i);
+      line += text.slice(i, j < 0 ? n : j); push(); i = j < 0 ? n : j + 1; continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      const j = text.indexOf("*/", i + 2);
+      line += text.slice(i, j < 0 ? n : j + 2); i = j < 0 ? n : j + 2; continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { const e = scanStr(text, i); line += text.slice(i, e); i = e; continue; }
+    if (c === "/" && lang === "c" && reAllowed(line)) {
+      const e = scanRe(text, i);
+      if (e > i) { line += text.slice(i, e); i = e; continue; }
+    }
+    if (c === "{") { line += c; push(); depth++; i++; continue; }
+    if (c === "}") {
+      push(); depth--; line = "}"; i++;
+      // 紧跟在 } 后面的收尾符号粘住，别让 `});` 变成三行
+      while (i < n && /[;,)\]]/.test(text[i])) { line += text[i]; i++; }
+      push(); continue;
+    }
+    // for(let i=0;i<n;i++) 里的分号不算句末 —— 所以要跟着括号深度
+    if (c === ";" && paren === 0) { line += c; push(); i++; continue; }
+    if (c === "(") paren++;
+    else if (c === ")") paren = Math.max(0, paren - 1);
+    if (c === "\n") { push(); i++; continue; }
+    line += c; i++;
+  }
+  push();
+  return out.join("\n");
+}
+
+// ---- 着色 ----
+// 五档就够：注释 / 字符串 / 数字 / 键名 / 关键字。再往下分就成了给自己看的玩具，
+// 而且每加一档就多一次「这个词到底算哪档」的争论。
+// 底色固定是深的（--owb-code-bg 在亮色和暗色下都是深色，跟对话里的代码块一致），
+// 所以只要一套配色，不用为两个主题各调一遍。
+const HI_KW_C = "abstract|as|async|await|break|case|catch|class|const|constructor|continue|debugger|default|defer|delete|do|dynamic|else|enum|export|extends|extension|extern|final|finally|fn|for|from|func|function|get|go|goto|guard|if|impl|implements|import|in|init|inline|instanceof|interface|internal|is|lateinit|let|match|mod|mut|namespace|new|of|open|operator|override|package|private|protected|pub|public|readonly|record|required|return|sealed|select|self|set|static|struct|super|switch|this|throw|throws|trait|try|type|typealias|typeof|union|unsafe|use|using|val|var|void|where|while|with|yield|true|false|null|nil|None|undefined|NaN|Infinity|bool|boolean|byte|char|double|float|int|long|short|string|uint|unsigned|usize";
+const HI_KW_HASH = "and|as|assert|async|await|break|case|class|continue|declare|def|del|do|done|echo|elif|else|elsif|end|esac|except|export|fi|finally|for|from|function|global|if|import|in|is|lambda|local|module|nonlocal|not|or|pass|raise|readonly|require|rescue|return|select|set|source|then|try|unless|unset|until|while|with|yield|True|False|None|null|true|false|nil|self";
+const HI_KW_SQL = "select|from|where|insert|into|values|update|set|delete|create|alter|drop|table|index|view|join|inner|left|right|outer|full|on|group|by|order|having|limit|offset|union|all|distinct|as|and|or|not|null|is|in|like|between|exists|case|when|then|else|end|primary|key|foreign|references|constraint|default|unique|with|returning|asc|desc";
+
+// 每族一条大正则：分组顺序就是优先级。注释必须排第一 ——
+// 不然 "// 这在字符串里" 中的两条斜杠会把后半行连同闭引号一起吃掉。
+// cls 把「第几个分组」映射到「上哪个色」；不放空分组占位，空匹配会让 exec 原地打转。
+const HI_RULES = {
+  c: {
+    re: new RegExp(
+      "(\\/\\*[\\s\\S]*?(?:\\*\\/|$)|\\/\\/[^\\n]*)" +
+      "|(\"(?:\\\\[\\s\\S]|[^\"\\\\\\n])*\"?|'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?|`(?:\\\\[\\s\\S]|[^`\\\\])*`?)" +
+      "|\\b(0[xXbBoO][0-9a-fA-F_]+|\\d[\\d_]*(?:\\.[\\d_]+)?(?:[eE][+-]?\\d+)?)\\b" +
+      "|\\b(" + HI_KW_C + ")\\b", "g"),
+    cls: ["c-com", "c-str", "c-num", "c-kw"],
+  },
+  hash: {
+    re: new RegExp(
+      "(#[^\\n]*)" +
+      "|(\"\"\"[\\s\\S]*?(?:\"\"\"|$)|'''[\\s\\S]*?(?:'''|$)|\"(?:\\\\[\\s\\S]|[^\"\\\\\\n])*\"?|'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?)" +
+      "|\\b(0[xX][0-9a-fA-F_]+|\\d[\\d_]*(?:\\.[\\d_]+)?)\\b" +
+      "|^(\\s*[\\w.$-]+)(?=\\s*[:=])" +
+      "|\\b(" + HI_KW_HASH + ")\\b", "gm"),
+    cls: ["c-com", "c-str", "c-num", "c-key", "c-kw"],
+  },
+  json: {
+    re: new RegExp(
+      "(\"(?:\\\\[\\s\\S]|[^\"\\\\])*\"(?=\\s*:))" +
+      "|(\"(?:\\\\[\\s\\S]|[^\"\\\\])*\")" +
+      "|(-?\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)" +
+      "|\\b(true|false|null)\\b", "g"),
+    cls: ["c-key", "c-str", "c-num", "c-kw"],
+  },
+  css: {
+    re: new RegExp(
+      "(\\/\\*[\\s\\S]*?(?:\\*\\/|$))" +
+      "|(\"(?:\\\\[\\s\\S]|[^\"\\\\\\n])*\"?|'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?)" +
+      "|(#[0-9a-fA-F]{3,8}\\b|-?\\d[\\d.]*(?:px|em|rem|%|vh|vw|ms|s|deg|fr|ch|pt)?\\b)" +
+      "|([-a-zA-Z]+)(?=\\s*:)" +
+      "|(@[-a-z]+|!important)", "g"),
+    cls: ["c-com", "c-str", "c-num", "c-key", "c-kw"],
+  },
+  xml: {
+    re: new RegExp(
+      "(<!--[\\s\\S]*?(?:-->|$))" +
+      "|(\"[^\"]*\"|'[^']*')" +
+      "|([\\w:.-]+)(?==)" +
+      "|(<\\/?[\\w:.-]+|\\/?>)", "g"),
+    cls: ["c-com", "c-str", "c-key", "c-kw"],
+  },
+  sql: {
+    re: new RegExp(
+      "(--[^\\n]*|\\/\\*[\\s\\S]*?(?:\\*\\/|$))" +
+      "|('(?:''|[^'])*'?|\"[^\"]*\"?)" +
+      "|\\b(\\d[\\d_]*(?:\\.\\d+)?)\\b" +
+      "|\\b(" + HI_KW_SQL + ")\\b", "gi"),
+    cls: ["c-com", "c-str", "c-num", "c-kw"],
+  },
+};
+
+/** 一段代码 → 上了色的 HTML。没有规则的语族只转义、不着色 */
+function hiCode(text, lang) {
+  const rule = HI_RULES[lang];
+  if (!rule) return esc(text);
+  const re = new RegExp(rule.re.source, rule.re.flags);   // 每次新建：全局正则的 lastIndex 会跨调用留存
+  let out = "", at = 0, m;
+  while ((m = re.exec(text))) {
+    if (m[0] === "") { re.lastIndex++; continue; }         // 空匹配保险丝
+    out += esc(text.slice(at, m.index));
+    let cls = "";
+    for (let g = 1; g <= rule.cls.length; g++) if (m[g]) { cls = rule.cls[g - 1]; break; }
+    out += cls ? `<span class="${cls}">${esc(m[0])}</span>` : esc(m[0]);
+    at = m.index + m[0].length;
+  }
+  return out + esc(text.slice(at));
+}
+
+// 正在预览的这份代码的原文。放模块变量、不放 data-* 属性：一份 500KB 的源码塞进属性里，
+// 等于把它连着 HTML 再转义一遍存第二份，切一次文件就多一份垃圾
+let pvCodeRaw = "";
+let pvCodeName = "";
+let pvCodeExpanded = false;
+
+/** 代码预览的整块 HTML。expand=true 时先展开压缩产物 */
+function codeHtml(text, name, truncHtml, expand) {
+  const lang = codeLang(name);
+  const minified = codeMinified(text, name);
+  const on = !!(expand && minified);
+  let lines = (on ? unminify(text, lang) : text).split("\n");
+  let cut = "";
+  if (lines.length > PV_CODE_MAX_LINES) {
+    cut = `<div class="ov-note">${on ? "展开后" : "这个文件"}有 ${lines.length} 行，这里只画前 ${PV_CODE_MAX_LINES} 行（文件本身没被动过，下载下来是完整的）。</div>`;
+    lines = lines.slice(0, PV_CODE_MAX_LINES);
+  }
+  const gutter = lines.map((_, i) => i + 1).join("\n");
+  const bar = !minified ? "" :
+    `<div class="pv-code-bar">${on
+      ? `<span>压缩过的文件（最长一行 ${longestLine(text).toLocaleString()} 字符），已按 <code>{ } ;</code> 断行。</span><button id="pv-code-raw" title="只加了换行和缩进，一个字符都没改">看原文</button>`
+      : `<span>这是压缩过的原文，一行几万字符，横着拉才看得完。</span><button id="pv-code-raw">展开排版</button>`}</div>`;
+  return `<div class="pv-code">${bar}<div class="pv-code-wrap"><pre class="pv-code-ln" aria-hidden="true">${gutter}</pre>` +
+    `<pre class="pv-code-src" translate="no">${hiCode(lines.join("\n"), lang)}</pre></div>${cut}${truncHtml || ""}</div>`;
+}
+
+/** 「展开排版 / 看原文」那颗按钮。切换只重画这一块，不再发一次请求 */
+function bindPvCode(body, truncHtml) {
+  const btn = body.querySelector("#pv-code-raw");
+  if (!btn) return;
+  btn.onclick = () => {
+    pvCodeExpanded = !pvCodeExpanded;
+    body.innerHTML = codeHtml(pvCodeRaw, pvCodeName, truncHtml, pvCodeExpanded);
+    body.scrollTop = 0;
+    bindPvCode(body, truncHtml);
+  };
+}
+
+/**
+ * 把一整页网页按宽度缩到预览栏里。
+ *
+ * 起因：做小红书图文那种 3:4 竖版卡片，页面是按 1200×1600 写死的，而右边这条预览栏
+ * 只有几百像素宽。iframe 按 1:1 渲染，人看到的是**左上角那一块**——看起来像"放大得太厉害"，
+ * 其实是页面比框宽，框只露出了一角。要判断一张卡排得对不对，第一眼就得是整张。
+ *
+ * 做法是量出这一页自己有多宽，再整体 scale 下去；高度按它真实的文档高度给足，
+ * 让外面那层滚动，而不是 iframe 里再套一根滚动条（套两层的结果是两根都只能滚一半）。
+ *
+ * 尺寸只能靠页面自己 postMessage 报上来（{__wbFit:1,w,h,v}，v 是量的时候视口多宽）。两个预览位都跑在 sandbox 里、
+ * 都不给 allow-same-origin：工作区的网页是模型写的或网上下的，资料库的是外来的，
+ * 同源的话页面能以应用的身份调 /api/*（跑工具、花钱）。于是外面读 contentDocument 会抛，量不了。
+ * 报尺寸的脚本谁来挂：资料库那边是前端往 blob 尾巴上接 PV_FIT_REPORTER；
+ * 工作区这边是服务端在 ?fit=1 的响应里挂同一段（server.js 的 PV_FIT_HTML）。
+ *
+ * 四处容易踩空：
+ *   - **量之前必须先把宽度放回可用宽度、并撤掉缩放**。不然页面按上次设的宽度排版、报回来的还是那个值，
+ *     响应式页面会被一路越缩越小。归位一改宽度，页面收到 resize 会自己重报。
+ *   - 报不上来就别让它缩在 150px 高的默认框里还滚不动（页面自带 CSP 挡了内联脚本、
+ *     在框里点链接跳到了一个没挂脚本的页……）：等一会儿没动静，退回「占满面板、框里自己滚」。
+ *   - 只认这个框自己发来的消息。别的窗口冒充报一个尺寸，不许把框撑成那样。
+ *   - 页面里的图片是后到的，图一到高度就变。报尺寸那段脚本在 load 之后还会补报两次。
+ */
+function fitPreviewFrame(host) {
+  const wrap = host.querySelector(".pv-fit");
+  const fr = wrap && wrap.querySelector("iframe");
+  const zoomBtn = wrap && wrap.querySelector(".pv-zoom");
+  if (!fr) return;
+  // 页面加载完多久还没报尺寸就算报不上来。报尺寸的脚本在 load 时一定会报一次，1.5 秒是给慢机器留的余量
+  const WAIT_MS = 1500;
+  let real = false; // false = 适应宽度（默认），true = 实际大小
+  let last = null;  // 上一次报上来的 {w,h}，切换缩放比时直接复用，不用重新量
+  let lastReportAt = 0;
+  let loads = 0;
+  let fell = false;  // true = 报不上来，已退回「占满面板、框里自己滚」
+  let laidAt = -1;   // 上一次按多宽的可用宽度排的。宽度没变的 resize（只是高度变了）不用重排
+  let baseW = 0;     // 上一次归位给的宽度，也就是页面量自己时的视口宽
+  let grows = 0;     // 归位之后，框已经放宽过、页面又报得更宽的次数（封顶用，见 onMsg）
+
+  const availOf = () => wrap.clientWidth || host.clientWidth || 0;
+
+  const layout = (w, h) => {
+    const avail = availOf();
+    if (!avail || !w || !h) return;
+    last = { w, h };
+    laidAt = avail;
+    if (fell) { fell = false; fr.setAttribute("scrolling", "no"); }
+    const scale = real ? 1 : Math.min(1, avail / w);
+    fr.style.width = w + "px";
+    fr.style.height = h + "px";
+    fr.style.transform = scale === 1 ? "none" : `scale(${scale})`;
+    // 外层撑到缩放后的实际占位，页面才滚得到底（transform 不改变布局占位，得自己给）
+    wrap.style.height = Math.ceil(h * scale) + "px";
+    wrap.style.overflowX = real && w > avail ? "auto" : "hidden";
+    if (zoomBtn) {
+      // 本来就装得下的页面不摆这颗按钮：没得可切的开关只会让人以为哪里不对
+      zoomBtn.hidden = !(w > avail + 1);
+      zoomBtn.textContent = real ? "实际大小 · 点这里适应宽度" : `适应宽度 · ${Math.round(scale * 100)}%`;
+      zoomBtn.title = real ? "现在是 1:1，点一下缩回整页" : "现在是整页缩放，点一下按原始尺寸看细节";
+    }
+  };
+
+  // 归位：把 iframe 放回"可用宽度、不缩放"，页面按这个视口重新排一次，报上来的才是它真实要多宽
+  const reset = () => {
+    if (!fr.isConnected) return;
+    const avail = availOf();
+    if (!avail) return;
+    laidAt = avail;
+    baseW = avail;
+    grows = 0;
+    fr.style.transform = "none";
+    fr.style.width = avail + "px";
+  };
+
+  // 报不上来：占满面板，滚动交还给框自己
+  const fallback = () => {
+    fell = true;
+    last = null;
+    fr.removeAttribute("scrolling");
+    reset();
+    const h = host.clientHeight || 0;
+    if (h) { fr.style.height = h + "px"; wrap.style.height = h + "px"; }
+    if (zoomBtn) zoomBtn.hidden = true;
+  };
+
+  const onMsg = (e) => {
+    if (!fr.isConnected) { window.removeEventListener("message", onMsg); return; }
+    // 认 source 不认 origin：sandbox 页面的 origin 是 "null"，对不上任何白名单
+    if (e.source !== fr.contentWindow || !e.data || e.data.__wbFit !== 1) return;
+    lastReportAt = Date.now();
+    // v 是页面量的时候视口多宽。外面刚改了框宽（出了滚动条、归位），页面还没按新宽度重排，
+    // 路上那几条还是旧宽度量的：照它排会把框撑回旧宽度，页面收不到 resize 就不再重报，
+    // 卡在「适应宽度 · 98%」这种半缩放里。旧的不认，页面按新宽度重排后自己会再报
+    const v = Number(e.data.v) || 0;
+    const w = Number(e.data.w) || 0;
+    const cur = parseFloat(fr.style.width) || 0;
+    if (v && cur && Math.abs(v - cur) > 1) return;
+    // 页面在归位宽度下量出来没比那个宽度宽（跟着视口排的那种），可用宽度却已经变了——
+    // 多半是上一条报数把面板撑出了滚动条，窄了十来像素。照它排也是半缩放，归位让它按现在的宽度重排重报。
+    // 比的是归位宽度 baseW，不是 v：按报数把框设成页面宽之后页面会再报一次，那次 v 就等于 w，
+    // 拿 v 比会把写死 1200 宽的卡片也当成跟着视口排的，归位、放宽、再归位，来回打转
+    if (v && baseW && w <= baseW + 1 && Math.abs(availOf() - baseW) > 1) { reset(); return; }
+    const h = Number(e.data.h) || 0;
+    // 框已经按报数放宽过（v 不是归位宽度），页面却报得比框还宽：多半是 body 带外边距又写了 width:100vw 的通栏，
+    // 视口多宽它就比视口宽一截。照单放宽→页面再报更宽→再放宽，框会一路宽到几千像素、消息来回刷个不停。
+    // 这种报数只许再放宽两次（真有后到的宽内容也够用），之后宽度不动、只认高度
+    if (v && baseW && Math.abs(v - baseW) > 1 && w > cur + 1 && ++grows > 2) { layout(cur, h); return; }
+    layout(w, h);
+  };
+  window.addEventListener("message", onMsg);
+
+  if (zoomBtn) zoomBtn.onclick = () => { real = !real; if (last) layout(last.w, last.h); };
+  fr.addEventListener("load", () => {
+    // 第一次 load 之前宽度已经是归位的，不用再动（动了就是白闪一下）。
+    // 之后的 load 是框里点链接换了一页：新页面得按可用宽度重新排、重新报
+    if (loads++) reset();
+    const at = Date.now();
+    // 报尺寸的脚本在 load 前后各报一次；load 之前一小会儿报过的也算这一页的
+    setTimeout(() => { if (fr.isConnected && lastReportAt < at - 800) fallback(); }, WAIT_MS);
+  });
+  // 预览栏本身可以拖宽，宽度一变就得重新算
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => {
+      if (!fr.isConnected) return ro.disconnect();
+      if (fell) fallback();
+      else if (availOf() !== laidAt) reset();
+    });
+    ro.observe(host);
+  }
+  reset();
+}
+
+/**
+ * sandbox 里的页面自己报尺寸用的那段脚本（跨源读不到，只能让它主动说）。
+ * 跟 server.js 的 PV_FIT_HTML 一字不差（test/preview-layout.js 钉着）；为什么 resize 只认宽度变化，理由写在那边。
+ */
+const PV_FIT_REPORTER = '<script>(function(){var w0=-1;function s(){try{var d=document.documentElement,b=document.body,w=Math.max(d.scrollWidth||0,b?b.scrollWidth||0:0),h=Math.max(d.scrollHeight||0,b?b.scrollHeight||0:0);w0=innerWidth;'
+  + 'if(!b&&d.width&&d.width.baseVal){var W=d.width.baseVal,H=d.height.baseVal,v=d.viewBox&&d.viewBox.baseVal;if(W.unitType!==2)w=W.value;if(H.unitType!==2)h=H.value;else if(v&&v.width&&v.height)h=Math.ceil(w*v.height/v.width);}'
+  + 'parent.postMessage({__wbFit:1,w:w,h:h,v:innerWidth},"*");}catch(e){}}'
+  + 'addEventListener("load",s);addEventListener("resize",function(){if(innerWidth!==w0)s();});setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);})()<\/script>';
+
+async function previewFile(name, root) {
+  if (OFFICE_RE.test(name)) {
+    // Office 文件交给本机 Office/WPS 打开。多人服务器上「本机」是服务端那台，
+    // 对成员没意义也没权限——那边直接给他下载，这才是他真正想要的结果
+    if (canOpenOnHost()) await openOnHost(name, root); else downloadFile(name, root);
+    return;
+  }
+  pvCurrent = name;
+  pvRoot = String(root || ""); // 这份预览是从哪个工作目录的成果点进来的，面板里的下载/定位都跟着它
+  document.getElementById("files-panel").classList.remove("show"); // 预览时收起文件列表，给聊天区留空间
+  // 立刻亮预览面板再去异步拉内容：晚亮的话，自动预览的调用方同步检查时以为预览没开，
+  // 会把成果文件面板弹回来，右侧双开互相盖字（用户反馈过）
+  pvPanel.classList.add("show");
+  document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
+  document.getElementById("pv-name").textContent = name;
+  document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
+  const body = document.getElementById("pv-body");
+  // 每次换文件都从第一行/第一屏开始。浏览器不会因为 innerHTML 换了就可靠地清掉
+  // overflow 容器的旧 scrollTop；Markdown、HTML 和纯文本共用这一层，统一在这里归零。
+  body.scrollTop = 0;
+  body.scrollLeft = 0;
+  const url = withRoot("/api/files/view/" + fpath(name) + "?t=" + Date.now(), pvRoot);
+  const kind = previewKind(name);
+  // 「复制」只对图片有意义。别的类型藏起来——摆一个按下去没反应的按钮比没有这个按钮更糟
+  const pvCopyBtn = document.getElementById("pv-copy");
+  if (pvCopyBtn) pvCopyBtn.hidden = kind !== "image";
+  // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
+  // 一张矮图挂在顶上、底下一大片空白。
+  body.classList.toggle("pv-mid", kind === "image" || kind === "video");
+  // 自带阅读器的（目前只有 PDF）要整个面板，而且面板自己不许再滚——
+  // 两层滚动条叠在一起，滚轮到底给谁都说不清
+  body.classList.toggle("pv-full", kind === "pdf");
+  if (kind === "pdf") {
+    body.innerHTML = `<iframe class="pv-pdf" src="${url}" title="${esc(name)}"></iframe>`;
+  } else if (kind === "iframe" || kind === "svg") {
+    // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字。
+    // pv-fit-mid 只给 SVG：图装得下就摆正中间，装不下（长流程图）自动退回贴顶接着滚。
+    // 网页不给——文章必须从第一行读起。
+    // sandbox 不给 allow-same-origin：工作区网页是模型写的或网上下的，同源就能以应用的身份调 /api/*。
+    // 服务端对这类响应另回一条 CSP sandbox，直接在新标签页打开也一样隔离。
+    // 页面里的 localStorage / Cookie 因此用不了，这是故意的。
+    // fit=1 让服务端在页面尾巴挂上报尺寸的脚本（外面读不到 contentDocument 了，只能等它自己报）
+    body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+    fitPreviewFrame(body);
+  } else if (kind === "image") {
+    // title 写出来是因为这事儿不写没人知道：双击复制、Ctrl/Cmd+C 也复制
+    body.innerHTML = `<img class="pv-img" src="${url}" alt="${esc(name)}" title="双击复制这张图">`;
+    const im = body.querySelector(".pv-img");
+    if (im) im.ondblclick = () => copyPreviewImage();
+  } else if (kind === "audio" || kind === "video") {
+    // 服务端 res.sendFile 会回 Accept-Ranges（实测 206 + Content-Range），所以进度条能拖、长视频不用等整包下完。
+    // 音频再包一层卡片：一条 54px 的播放条单摆着，在 824px 高的面板里就是「顶上一小条、
+    // 底下全空」——跟用户吐槽 PDF 的是同一件事。补上图标和文件名，整块摆正中间，
+    // 这一屏才算有东西可看（音频本来也没有画面可给）。
+    body.innerHTML = kind === "audio"
+      ? `<div class="pv-audio">${ic("file-audio", "pv-audio-ico")}<div class="pv-audio-name">${esc(name)}</div>` +
+        `<audio class="pv-media" src="${url}" controls preload="metadata"></audio></div>`
+      : `<video class="pv-media" src="${url}" controls preload="metadata" playsinline></video>`;
+    // 能不能解码这一关是浏览器说了算：iPhone 拍的 HEVC .mov、mkv/avi 这类容器，Chromium 多半解不了。
+    // 解不了的时候它不吭声，只留一个纹丝不动的黑框——用户从黑框里只能得出「这软件不支持看视频」。
+    // 所以这儿必须自己说一句实话，并把「用系统播放器打开 / 下载」这两条真出路摆出来。
+    const mv = body.querySelector(".pv-media");
+    if (mv) mv.onerror = () => {
+      // 迟到的 error 不许盖别人的屏：用户点开一个解不了的片子、马上又去看别的文件，
+      // 那个已经被换下来的 <video> 几百毫秒后才把 error 抛出来。它照着自己的名字重画一遍，
+      // 用户正看着的那份内容就被掀掉了——换成一句关于上一个文件的错误提示
+      if (!mv.isConnected) return;
+      body.classList.remove("pv-mid");
+      body.innerHTML = pvFallback("这个" + (kind === "audio" ? "音频" : "视频") + "的编码浏览器解不了（常见于 iPhone 的 HEVC，以及 mkv / avi / wmv 这些容器）");
+      bindPvFallback(body, name);
+    };
+  } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
+    const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?t=" + Date.now(), pvRoot)).then(r => r.json()).catch(() => null);
+    if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
+    else body.innerHTML = kind === "doc" ? docHtml(d) : kind === "sheet" ? sheetHtml(d) : kind === "slides" ? slidesHtml(d) : archiveHtml(d);
+    body.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
+      body.querySelectorAll(".ov-tab").forEach((x) => x.classList.toggle("on", x === t));
+      body.querySelectorAll(".ov-pane").forEach((p) => { p.hidden = p.dataset.pane !== t.dataset.sheet; });
+    }; });
+  } else if (kind === "binary") {
+    body.innerHTML = pvFallback("这是二进制文件");
+  } else {
+    const r = await fetchTextHead(url);
+    if (!r) body.innerHTML = pvNotice("circle-x", "这个文件没读出来，可能刚刚被移走或删掉了");
+    else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
+    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name), false, pvRoot)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
+    else if (isCodeFile(name)) {
+      // 源码走代码看法。压缩过的默认就展开：用户点开它是想看看这是什么东西，
+      // 不是想确认它被压得有多狠 —— 让他先看到能读的那一面，想看原文再点一下
+      const trunc = r.truncated ? pvTrunc(r.total) : "";
+      pvCodeRaw = r.text; pvCodeName = name; pvCodeExpanded = codeMinified(r.text, name);
+      body.innerHTML = codeHtml(r.text, name, trunc, pvCodeExpanded);
+      bindPvCode(body, trunc);
+    }
+    else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+  }
+  bindPvFallback(body, name);
+  bindPvMore(body, url);
+  // 异步加载替换内容后再归零一次：长 Markdown/HTML 的旧滚动位置不能把新文件带到中段。
+  body.scrollTop = 0;
+  body.scrollLeft = 0;
+  syncNavByRole(); // 标题栏那两颗「在本机打开」也按身份收一收（下载那颗一直在）
+  pvPanel.classList.add("show");
+  renderDeployBar();
+}
+document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvRoot = ""; pvClosedAt = Date.now(); };
+/**
+ * 把正在预览的这张图放进系统剪贴板，好让人直接粘到微信 / Word / PPT 里。
+ *
+ * 两个坑，都不绕不过去：
+ *
+ * 1. **只有 PNG 能写进剪贴板**。Chromium 的 async clipboard 只认 image/png，
+ *    给它一个 image/jpeg 的 Blob 会直接抛 NotAllowedError。而我们产出的图大半是
+ *    jpg/webp。所以非 PNG 一律先画进 canvas 再 toBlob 成 PNG——多一次编码，
+ *    换来的是「粘过去真的有图」。
+ * 2. **必须在用户手势的同一跳里写**。`await fetch` 之后再 write，Safari 会判定
+ *    失去了用户激活而拒绝。Chromium/Electron 目前不拦，但把整段包进一次点击里
+ *    本来也不费事，就不赌浏览器哪天收紧。
+ *
+ * 失败了要说人话：剪贴板权限这类错，浏览器抛出来的是 NotAllowedError 这种词，
+ * 直接弹给用户等于没说。下面按原因分开讲，并且一律给出「那你还能怎么办」。
+ */
+async function copyPreviewImage() {
+  if (!pvCurrent) return;
+  if (!document.querySelector("#pv-body .pv-img")) return;
+  const btn = document.getElementById("pv-copy");
+  if (btn) btn.disabled = true;
+  try {
+    await copyImageFromUrl(withRoot("/api/files/view/" + fpath(pvCurrent), pvRoot));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** 按地址把一张图放进剪贴板。预览面板和画布灯箱共用；说明见 copyPreviewImage 上面那段 */
+async function copyImageFromUrl(url) {
+  try {
+    if (!navigator.clipboard || !window.ClipboardItem) throw new Error("no-api");
+    const src = await fetch(url).then((r) => { if (!r.ok) throw new Error("fetch"); return r.blob(); });
+    let png = src;
+    if (src.type !== "image/png") {
+      png = await new Promise((ok, no) => {
+        const im = new Image();
+        im.onload = () => {
+          const c = document.createElement("canvas");
+          // naturalWidth 为 0 的情况有：SVG 没写 width/height、图已经被换掉。给个兜底尺寸，
+          // 免得 toBlob 出来是一张 0×0 的透明图——粘过去是个看不见的东西，比报错更难查
+          c.width = im.naturalWidth || im.width || 1024;
+          c.height = im.naturalHeight || im.height || 1024;
+          c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+          c.toBlob((b) => (b ? ok(b) : no(new Error("encode"))), "image/png");
+        };
+        im.onerror = () => no(new Error("decode"));
+        im.src = URL.createObjectURL(src);
+      });
+    }
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    toast("图片已复制，去微信 / Word / PPT 里直接粘", "circle-check");
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    if (why === "no-api" || why.includes("secure")) {
+      // http:// 访问（局域网直连没套 HTTPS）时剪贴板 API 整个不存在，这不是权限问题，劝也没用
+      toast("浏览器不允许写剪贴板（需 HTTPS），请右键「复制图片」或下载", "circle-x");
+    } else if (why === "decode" || why === "encode") {
+      toast("这张图无法复制，请下载后再复制", "circle-x");
+    } else if (why === "fetch") {
+      toast("图片没取到，可能已经被移走或删掉了", "circle-x");
+    } else {
+      toast("复制失败：" + why + "。可以右键图片选「复制图片」，或者点下载", "circle-x");
+    }
+  }
+}
+document.getElementById("pv-copy").onclick = () => copyPreviewImage();
+// 预览面板开着、看的又是图的时候，Ctrl/Cmd+C 就复制这张图。
+// 判一下有没有选中文字：用户可能是想复制文件名，那一下不该被我们抢走
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || (e.key !== "c" && e.key !== "C")) return;
+  const pv = document.getElementById("preview-panel");
+  if (!pv || !pv.classList.contains("show")) return;
+  if (!document.querySelector("#pv-body .pv-img")) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (String(window.getSelection() || "")) return;
+  e.preventDefault();
+  copyPreviewImage();
+});
+document.getElementById("pv-sys").onclick = () => { if (pvCurrent) openOnHost(pvCurrent, pvRoot); };
+document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent, null, pvRoot); };
+
+// ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
+let previewSrv = { running: false };
+async function renderDeployBar() {
+  const bar = document.getElementById("pv-deploy");
+  if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
+  bar.style.display = "";
+  if (!previewSrv.running) {
+    bar.innerHTML = `<span>这是网页，要本地起服务预览吗？（相对路径和 fetch 才正常）</span>
+      <button class="primary" id="pv-serve">本地部署预览</button>`;
+    bar.querySelector("#pv-serve").onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = "启动中…";
+      previewSrv = await startPreview(false); // 默认只听本机，要给手机看再单独放开
+      if (!previewSrv.running) { toast("本地预览服务启动失败"); }
+      renderDeployBar();
+    };
+    return;
+  }
+  // 令牌必须跟着链接走：预览站是独立进程，认不了应用的登录 cookie，
+  // 没令牌的链接打开是 401 而不是页面
+  const withTok = (base) => base + fpath(pvCurrent) + (previewSrv.token ? "?t=" + previewSrv.token : "");
+  const url = withTok(previewSrv.url);
+  const lan = previewSrv.lan_url ? withTok(previewSrv.lan_url) : null;
+  // 「放开给手机看」= 把这台机器上的目录挂到局域网，属于服务器级动作。
+  // 不是平台管理员就别画这颗按钮：点了只会静默降级成本机，用户只当是自己 Wi-Fi 有问题
+  const canLan = amPlatformOwner();
+  bar.innerHTML = `<span>${ic("circle-check")}已本地部署</span><code>${esc(url)}</code>
+    ${lan
+      ? `<span style="color:var(--owb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
+      : canLan
+        ? `<button id="pv-lan" title="同一个 Wi-Fi 下的人都能翻你的工作目录，看完记得停">放开给手机看</button>`
+        : ""}
+    <button id="pv-open-br">在浏览器打开</button><button id="pv-serve-stop">停止</button>`;
+  bar.querySelector("#pv-open-br").onclick = async (e) => {
+    // 传当前的 lan 状态，别把已经放开给手机的服务悄悄收回本机
+    e.target.disabled = true;
+    const st = await startPreview(previewSrv.lan_open, pvCurrent);
+    e.target.disabled = false;
+    if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
+  };
+  const lanBtn = bar.querySelector("#pv-lan");
+  if (lanBtn) lanBtn.onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = "切换中…";
+    previewSrv = await startPreview(true);
+    if (previewSrv.lan_denied) toast((previewSrv.lan_hint || "对局域网开放要平台管理员来开"), "circle-x");
+    else if (!previewSrv.lan_url) toast("这台机器没找到局域网地址（没连 Wi-Fi？）");
+    renderDeployBar();
+  };
+  bar.querySelector("#pv-serve-stop").onclick = async () => {
+    previewSrv = await fetch("/api/preview/stop", { method: "POST" }).then(r => r.json()).catch(() => ({ running: false }));
+    renderDeployBar();
+  };
+}
+function startPreview(lan, open) {
+  return fetch("/api/preview/start", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lan: !!lan, open: open || undefined }),
+  }).then(r => r.json()).catch(() => ({ running: false }));
+}
+fetch("/api/preview/status").then(r => r.json()).then(s => { previewSrv = s; }).catch(() => {});
+
+// 产出快照：记住每个文件的 mtime，下一回合才认得出哪些是这回合新写/改过的
+let fileSnapshot = null;  // null = 基线还没建（首屏 /api/files 还没回来）
+let fileSnapshotAt = 0;   // 这份基线是什么时候拍的
+function snapshotFiles(files) {
+  fileSnapshot = {};
+  fileSnapshotAt = Date.now();
+  for (const f of files || []) fileSnapshot[f.name] = f.mtime;
+}
+// 和上一次快照比，挑出这次任务真正新增/改动过的文件（不改快照，调用方决定什么时候推进）
+// 基线没建好就先拿这次当基线：否则首屏没加载完就发任务，整个工作目录都会被当成"本次产出"糊一屏卡片
+// 这是给**老会话**兜底的一条路（新记录走服务端算好的 ev.changed）。它跟服务端那边犯过同一个错：
+// 「不在基线里」被当成了「新产出」。而 /api/files 只给最新 500 条，中途删掉一批中间文件，
+// 窗口往回滑，几个月前的旧文件就重新挤进来——于是整个工作目录被当成这回合的产出。
+// 所以这里也补同一道绝对时间闸：没见过的文件，mtime 得在基线拍下之后才算数。
+// 见 agent.js 的 makeFilesEmitter，两边的判据必须一致，不然同一条会话新旧两种读法会得出两个答案。
+const MTIME_SLACK_MS = 2000;
+function changedFiles(files) {
+  if (!fileSnapshot) { snapshotFiles(files); return []; }
+  const since = fileSnapshotAt - MTIME_SLACK_MS;
+  return (files || []).filter((f) => {
+    const known = fileSnapshot[f.name];
+    if (known === f.mtime) return false;
+    if (known !== undefined) return true;     // 见过、而且变了：真改过
+    const t = Date.parse(f.mtime);
+    return !Number.isFinite(t) || t >= since;  // 没见过：只有确实是基线之后写的才算
+  });
+}
+
+// 来源：这一回合真正打开过的网页。不是"模型说它参考了什么"，而是工具层记下来的实际访问记录，
+// 所以点进去一定打得开，也能拿它反查结论是不是有出处。
+function renderSources(body, items) {
+  if (!items || !items.length) return;
+  let block = body.querySelector(":scope > .src-block");
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "src-block";
+    block.innerHTML = `<div class="src-hd"></div><div class="src-list"></div>`;
+    onActivate(block.querySelector(".src-hd"), () => block.classList.toggle("open"));
+    body.appendChild(block);
+  }
+  const list = block.querySelector(".src-list");
+  const seen = block._seen || (block._seen = new Set());
+  for (const it of items) {
+    const url = String(it && it.url || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    const a = document.createElement("a");
+    a.className = "src-item";
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noreferrer noopener";
+    a.title = (it.title ? it.title + "\n" : "") + url;
+    a.innerHTML = `<span class="n">${seen.size}</span><span class="t">${esc(it.title || hostOf(url))}</span><span class="n">${esc(hostOf(url))}</span>`;
+    list.appendChild(a);
+  }
+  block.querySelector(".src-hd").textContent = `来源 (${seen.size})`;
+}
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return String(u).slice(0, 30); } }
+
+// 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
+// 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
+const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
+const OUT_ROW_MAX = 6;                                    // 变更清单先露这么多行，再多的收在「还有 N 个文件」后面
+const FILES_LIST_CAP = 500;                               // 服务端 outputFiles() 的截断上限，见 tools.js
+
+/**
+ * 这份文件列表，够不够格给产出区的文件盖「已删除」的章。
+ *
+ * 「不在列表里」= 「已经没了」这一步，只有在列表本身是**同一个工作目录的完整快照**时才成立。
+ * 四个文件全被划掉，
+ * 磁盘上一个都没少。两条真实路径都会掉进来：
+ *
+ *   1. 回放历史对话。存盘时整份 files 被裁成「这一批变更的那几条」（不然 500 条 × 每批一次
+ *      能把会话文件撑爆），于是回放到第二批时，第一批的产出在第二批的列表里当然找不着；
+ *   2. 换工作目录。name 是相对路径，换了目录就是换了坐标系，新目录的清单说明不了旧目录的事。
+ *
+ * 判据按可靠度从高到低排：服务端明说的（partial/full/root）> 老会话的形状推断 > 兜底的重合度。
+ * 返回 why 是为了能测、也为了排查时说得清是哪条拦的。
+ */
+function reapScope(block, live, ev) {
+  ev = ev || {};
+  if (!Array.isArray(live)) return { ok: false, why: "no-list" };
+  // 回放：服务端明说了这份是裁过的
+  if (ev.partial) return { ok: false, why: "partial" };
+  // 换目录：两套坐标系不能互相判生死
+  const root = ev.root || "", had = block && block.dataset ? block.dataset.root || "" : "";
+  if (root && had && root !== had) return { ok: false, why: "other-root" };
+  // 截断的列表说明不了「不存在」
+  if (ev.full === false || live.length >= FILES_LIST_CAP) return { ok: false, why: "truncated" };
+  // 老会话没有上面这些字段：列表跟 changed 逐条相等，就是存盘裁过的那种形状
+  const chg = ev.changed;
+  if (Array.isArray(chg) && chg.length && chg.length === live.length && live.every((f) => chg.includes(f.name)))
+    return { ok: false, why: "legacy-partial" };
+  // 兜底，只对更老的、连 root 都没有的记录起作用：本块的产出跟这份清单连**同一个顶层目录**
+  // 都不沾边，那多半是换了坐标系，不是「一口气全删了」。
+  // 为什么按顶层目录比、不按「有没有重合的文件名」比：agent 擦水印那种情形正是 8 个中间文件
+  // 全删、只留一个新成品，文件名一个都不重合——但它们在同一个目录里，那是真删，得认。
+  const topOf = (n) => { const i = String(n).indexOf("/"); return i < 0 ? "" : String(n).slice(0, i); };
+  const tops = new Set(live.map((f) => topOf(f.name)));
+  const mine = [...new Set([...(block ? block.querySelectorAll("[data-name]") : [])].map((e) => topOf(e.dataset.name)))];
+  if (mine.length && !mine.some((t) => tops.has(t))) return { ok: false, why: "other-tree" };
+  return { ok: true, why: "" };
+}
+
+/**
+ * 把「这一回合中途造出来、后来又被删掉」的文件从产出区撤掉。
+ *
+ * 之前这个函数只加不减：卡片是每次 files 事件累加的，文件删了卡片留着。
+ * 后果不止是「看得见不该看的」——真实会话里 agent 为了擦掉生图带的水印，造了 8 个中间文件
+ * （_tab1/_tab2/_corner/_bottom/_wm2…），干完活它确实把中间文件删了，但 8 张卡片正好把
+ * OUT_CARD_MAX 占满，最后那张唯一的成品反而一张卡都没轮上。用户在对话里看到 8 个中间过程，
+ * 一个成品都看不到，而 agent 还在说「目录里只留这一张正式成果」——界面在替它撒谎。
+ *
+ * 判定依据是服务端刚给的完整列表：卡片能挂上来，说明它当时在列表里；现在不在了，就是没了。
+ * 两个前提得守住，否则会误杀还活着的文件：
+ *   - 这份列表得**说得了话**：换过工作目录、回放时被裁过、到 500 条截断了的列表，
+ *     一律不能拿来判生死，见 reapScope；
+ *   - 变更清单里的行不删，只打上「已删除」——中途造了什么是真实发生过的事，
+ *     抹掉等于帮 agent 圆谎；但下载/定位入口要摘掉，留着点了就是 404。
+ */
+function reapDeletedOutputs(block, live, ev) {
+  if (!reapScope(block, live, ev).ok) return 0;
+  const alive = new Set(live.map((f) => f.name));
+  let n = 0;
+  block.querySelectorAll(".out-card").forEach((c) => {
+    // 整包那张卡代表的是一个文件夹，文件夹的名字永远不会出现在文件清单里。
+    // 拿 alive.has() 判它等于每来一条 files 事件就把它撤一次——里面还有活着的文件就算它还在
+    if (c.dataset.bundle) {
+      if (![...alive].some((n2) => n2.startsWith(c.dataset.bundle))) { c.remove(); n++; }
+      return;
+    }
+    if (!alive.has(c.dataset.name)) { c.remove(); n++; return; }
+    // 卡还在，但挂在它身上的「另一种格式」没了：只摘那条链接，卡留着
+    const altLink = c.querySelector(".oa-alt");
+    if (altLink && !alive.has(altLink.dataset.name)) { altLink.remove(); delete c.dataset.alt; }
+  });
+  block.querySelectorAll(".out-row").forEach((r) => {
+    if (alive.has(r.dataset.name) || r.classList.contains("gone")) return;
+    r.classList.add("gone");
+    r.querySelectorAll(".dl, .rv").forEach((el) => el.remove());
+    r.onclick = null;
+    const sz = r.querySelector(".sz");
+    if (sz) sz.textContent = "已删除";
+    n++;
+  });
+  return n;
+}
+
+/**
+ * 一条 files 事件里，「本回合产出」该从哪份清单里挑、拿哪份判「已删除」。
+ * files 是右侧面板那份（最深 3 层、最新 500 条）；第 4 层往下、或挤出 500 条的本回合产出，
+ * 服务端另放在 turn_files 里。只看 files 的话，深处的成品画不出卡，画出来的也会因为
+ * 「清单里找不着」被盖成已删除。老记录没有 turn_files，原样就是 files。
+ */
+function outPool(ev) {
+  const files = (ev && ev.files) || [];
+  const extra = (ev && Array.isArray(ev.turn_files)) ? ev.turn_files : [];
+  if (!extra.length) return files;
+  const seen = new Set(files.map((f) => f.name));
+  return files.concat(extra.filter((f) => f && f.name && !seen.has(f.name) && seen.add(f.name)));
+}
+
+function renderTurnOutputs(body, changed, live, ev) {
+  if (!body || !changed || !changed.length) return;
+  let block = body.querySelector(":scope > .out-block");
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "out-block";
+    // 只留一层开关。以前是两层：点开「本回合产出」，里面还压着一个「查看所有变更」，
+    // 用户点第一下只看到又一行标题，
+    // 文件躺在第二层里，谁也不会去点第二下。现在标题这一下就把文件摊开；
+    // 产出多的时候用「还有 N 个文件」再展开，那是量的问题，不是再折一层。
+    block.dataset.root = (ev && ev.root) || ""; // 记住这块产出属于哪个工作目录，换目录后别拿新清单判它的生死
+    block.innerHTML = `<div class="out-hd out-main"><span class="ar">${ic("chevron-down")}</span> 本回合产出 <span class="cn"></span></div>` +
+      `<div class="out-body"><div class="out-grid"></div><div class="out-list"></div><div class="out-hd out-more" hidden></div></div>`;
+    body.appendChild(block);
+    onActivate(block.querySelector(".out-main"), () => {
+      const packed = block.classList.toggle("packed");
+      block.querySelector(".out-main .ar").innerHTML = ic(packed ? "chevron-right" : "chevron-down");
+    });
+    onActivate(block.querySelector(".out-more"), () => { block.dataset.all = "1"; clipOutList(block); });
+  }
+  const grid = block.querySelector(".out-grid");
+  const list = block.querySelector(".out-list");
+  // 这块产出算在哪个工作目录名下。块自己记的优先——重放到一半用户又换了目录的话，
+  // ev.root 说的是「现在」，而这些卡片属于「当时」
+  const blkRoot = block.dataset.root || (ev && ev.root) || "";
+  // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
+  reapDeletedOutputs(block, live, ev);
+  const bundles = bundleDirs(block, changed);   // 这一回合被整包倒进东西的目录，见下面 OUT_BUNDLE_MIN
+  for (const f of changed) {
+    const isHtml = /\.html?$/i.test(f.name);
+    const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
+    // 网页/图有缩略图；PPT/Word/Excel/PDF 这些要交到用户手上的成果出图标卡。
+    // 以前它们只在收起的「查看所有变更」里躺着一行，做完一个 PPT，用户在对话里压根看不见它，
+    // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
+    if (!bundles.has(dirWithSlash(f.name)) && (isHtml || isImg || isDeliverable(f.name))) {
+      const base = f.name.split("/").pop();
+      let same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
+      // 同一个文件在这一回合里被改写了第二次（先出 v1、看不顺眼又原地重画成 v2）：
+      // 以前这一支什么都不做，卡片留着 v1 的地址，浏览器把缓存的旧图一直摆着，
+      // 右侧面板打开的却是 v2——用户那句「对话里预览的图和右边的不一样」就是这儿来的。
+      // 版本号变了就整张重画（挂在旧卡上的「另一种格式」跟着搬过去）
+      if (same && same.dataset.v !== fileVer(f, blkRoot)) {
+        const c = makeOutCard(f, isHtml, blkRoot);
+        if (same.dataset.alt) attachAltFmt(c, same.dataset.alt, blkRoot);
+        same.replaceWith(c);
+        same = c;
+      }
+      // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
+      // 卡片区只摆一张，否则用户看到的就是「同一张图显示了两遍」；两个路径在下面的变更清单里都还留着，信息不丢
+      const twin = same || (f.size ? grid.querySelector(`.out-card[data-base="${cssEsc(base)}"][data-size="${f.size}"]`) : null);
+      // gen_diagram 一次落两个文件：<名字>.svg 和 <名字>.png，同一张图的两种格式，不是两张图。
+      // 文件名和大小都不一样，上面那条「同名同大小」的判重认不出来，用户看到的就是两张一模一样的图。
+      // 这里按「同目录同主名 + 一个 svg 一个 png」并成一张卡，另一种格式挂到卡上留个下载入口
+      const mate = twin ? null : pairedCard(grid, f.name);
+      if (mate) {
+        // PNG 当门面：缩略图直接渲染，插飞书/Word 用的也是它；SVG 退居「另一种格式」
+        if (extOf(f.name) === "png") { const c = makeOutCard(f, false, blkRoot); attachAltFmt(c, mate.dataset.name, blkRoot); mate.replaceWith(c); }
+        else attachAltFmt(mate, f.name, blkRoot);
+      } else if (!twin) {
+        if (grid.querySelectorAll(".out-card").length < OUT_CARD_MAX) grid.appendChild(makeOutCard(f, isHtml, blkRoot));
+      } else if (!same && pathDepth(f.name) < pathDepth(twin.dataset.name)) {
+        // 副本留路径最浅的那份：点「所在位置」多半是想去工作目录根，而不是任务子目录
+        twin.replaceWith(makeOutCard(f, isHtml, blkRoot));
+      }
+    }
+    if (!list.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { // 同一文件改多次只记一行
+      const row = document.createElement("div");
+      row.className = "out-row";
+      row.dataset.name = f.name;
+      const base = f.name.split("/").pop();
+      row.dataset.base = base;                       // 跟卡片一样按「文件名 + 大小」认副本
+      if (f.size) row.dataset.size = String(f.size);
+      // 目录和文件名分开放：一行放不下时省略号只许吃目录。以前整串挤在一个省略号里，
+      // 「任务_0909_怎么推广我这个项目啊/PROGRESS.md」被截在中间，最该看的文件名反而没了
+      const dir = f.name.slice(0, f.name.length - base.length);
+      row.innerHTML = `<span class="ic">${ic(fileIcon(f.name))}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="${withRoot("/api/files/download/" + fpath(f.name), blkRoot)}" download title="下载">${ic("download")}</a>`;
+      row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e, blkRoot);
+      row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name, blkRoot); };
+      // 计划/说明这类脚手架沉到底、压暗：PROGRESS.md 在长任务里每几步就重写一次，
+      // 它是过程账本不是交付物，却总占着清单第一行——过程要看去上面那张里程碑卡
+      if (SCAFFOLD_RE.test(base)) row.classList.add("sub");
+      list.insertBefore(row, row.classList.contains("sub") ? null : list.querySelector(".out-row.sub"));
+    }
+  }
+  mergeFmtPairs(grid);
+  foldBundleCards(grid, bundles, blkRoot);
+  markDupBasenames(grid);
+  hideCardedRows(block);
+  // 数不全就照实写「N+」：整树那趟撞了条数上限（scan_capped），
+  // 或者服务端报了改动、清单里却没带上（turn_files 截过）。底下补一句「可能没列全」，不装作列全了；
+  // 两种来由这一句都对得上，所以只说知道的，不替人讲是哪一种
+  if (ev && (ev.scan_capped || (Array.isArray(ev.changed) && new Set(ev.changed).size > changed.length))) block.dataset.capped = "1";
+  const nRows = list.querySelectorAll(".out-row").length;
+  block.querySelector(".out-main .cn").textContent = `(${nRows}${block.dataset.capped ? "+" : ""})`;
+  if (block.dataset.capped && !block.querySelector(".out-note")) {
+    const note = document.createElement("div");
+    note.className = "out-note";
+    note.textContent = "这回合的产出可能没列全";
+    block.querySelector(".out-body").appendChild(note);
+  }
+  clipOutList(block);
+}
+
+// 已经出了卡的文件，下面不再原样列一遍。
+// 四张图给了四张卡，卡下面又跟着四行同名文件，同一批产出画了两遍，
+// 第二遍还没有缩略图，纯占版面。清单从此只留没卡的那些：脚本、日志、PROGRESS.md
+// 这类过程文件，外加已删除的行（卡撤了，但"这个文件没了"这条信息得留着）。
+// 判重跟卡片一条口径：全路径对不上就按「文件名 + 大小」认，
+// 不然 agent 把产出往根目录又拷一份时，那份副本会孤零零留在清单里，看着像多出来一个文件。
+function hideCardedRows(block) {
+  const names = new Set(), twins = new Set();
+  block.querySelectorAll(".out-card").forEach((c) => {
+    names.add(c.dataset.name);
+    if (c.dataset.alt) names.add(c.dataset.alt); // 「另一种格式」挂在卡上，也算露过面了
+    if (c.dataset.base && c.dataset.size) twins.add(c.dataset.base + "|" + c.dataset.size);
+  });
+  let shown = 0;
+  block.querySelectorAll(".out-row").forEach((r) => {
+    const carded = !r.classList.contains("gone") &&
+      (names.has(r.dataset.name) || (r.dataset.size && twins.has(r.dataset.base + "|" + r.dataset.size)));
+    r.classList.toggle("carded", carded);
+    if (!carded) shown++;
+  });
+  block.querySelector(".out-list").hidden = shown === 0;
+  return shown;
+}
+
+// 清单长了就先露前几行，剩下的收在「还有 N 个文件」后面。
+// 只多出一行时不折：那行字自己就占一行，折了什么也没省下
+function clipOutList(block) {
+  const rows = [...block.querySelectorAll(".out-list .out-row:not(.carded)")]; // 藏起来的不算，不然「还有 N 个文件」数的是看不见的东西
+  const more = block.querySelector(".out-more");
+  const hide = block.dataset.all === "1" || rows.length <= OUT_ROW_MAX + 1 ? 0 : rows.length - OUT_ROW_MAX;
+  rows.forEach((r, i) => r.classList.toggle("hid", hide > 0 && i >= OUT_ROW_MAX));
+  more.hidden = !hide;
+  if (hide) more.textContent = `还有 ${hide} 个文件`;
+}
+
+// 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架
+const DELIVER_RE = /\.(pdf|pptx?|docx?|xlsx?|csv|md|txt|mp4|mov|webm|m4v|zip)$/i;
+// 带语种后缀的同一份东西也算（README.en.md / PROGRESS.zh-CN.md）：
+// 以前只认 README.md，于是英文版 README 大摇大摆地上了产出卡
+const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)(\.[a-z]{2}(-[A-Za-z]{2,4})?)?\.(md|txt)$/i;
+function isDeliverable(name) {
+  const base = String(name || "").split("/").pop();
+  return DELIVER_RE.test(base) && !SCAFFOLD_RE.test(base);
+}
+
+function pathDepth(n) { return String(n || "").split("/").length; }
+
+/* ---- 「一整包东西」不是「一百件产出」 ----
+ *
+ * 2026-09-21 的真事故，从会话存档里逐条数出来的：一条做软著登记的任务，第 3 轮跑了个导出
+ * 脚本，把整个仓库拷进任务目录下的「登记用源码包_测试/」。那一轮真落盘 124 个文件，其中
+ * **122 个都在这一个目录里**。卡片区按老规矩从里头挑出「像交付物的」前 8 个摆卡，而卡片上
+ * 只写文件名不写目录，于是用户看到的是 cover_v2.png / README.en.md / 粘贴文本_0909_162900.txt
+ * 这一排——全是他在别处见过的名字，字节数也跟仓库根目录那几个一模一样（本来就是拷贝），
+ * 于是他的结论是「别的对话的文件跑进我这一回合了」。文件没串台，是卡片把一包东西拆开摆了。
+ *
+ * 判据两条一起看，缺一条都会误伤：
+ *   ① 这个目录这一回合收了 OUT_BUNDLE_MIN 个以上的文件；
+ *   ② 里面够格上卡的是少数派（不到一半）。
+ * 只有 ① 的话，一回合出 12 张图的做图任务会被折成一个文件夹图标，缩略图全没了——
+ * 那 12 张恰恰是真产出。加上 ② 才分得开「倒进来一包源码、里面顺带夹着几张图」
+ * 和「这一目录里就是十几张成品图」。
+ */
+const OUT_BUNDLE_MIN = 8;
+const OUT_HTML_RE = /\.html?$/i;
+const OUT_IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+// 带尾斜杠的目录（"a/b/c.png" → "a/b/"）：成果包的键和卡片的 data-bundle 前缀都长这样。
+// 以前它也叫 dirOf，跟路径助手里那个不带尾斜杠的同名——函数声明会提升，后写的这个把前一个整个顶掉了
+function dirWithSlash(n) { const i = String(n || "").lastIndexOf("/"); return i < 0 ? "" : String(n).slice(0, i + 1); }
+function cardWorthy(n) { return OUT_HTML_RE.test(n) || OUT_IMG_RE.test(n) || isDeliverable(n); }
+
+/** @returns {Map<string, number>} 目录（带尾斜杠）→ 这一回合它收了几个文件 */
+function bundleDirs(block, changed) {
+  // 已经摆出来的行 + 这一批新来的，合起来算：一次 files 事件就能带来一百多个名字，
+  // 只数 DOM 里的旧行的话，前 8 个在行插进去之前就已经摆上卡了
+  const names = new Set();
+  block.querySelectorAll(".out-row:not(.gone)").forEach((r) => names.add(r.dataset.name));
+  for (const f of changed || []) names.add(f.name);
+  const all = new Map(), worthy = new Map();
+  for (const n of names) {
+    const d = dirWithSlash(n);
+    if (!d) continue;                                   // 工作目录根下的散件不算一包
+    all.set(d, (all.get(d) || 0) + 1);
+    if (cardWorthy(n)) worthy.set(d, (worthy.get(d) || 0) + 1);
+  }
+  const out = new Map();
+  for (const [d, c] of all) if (c >= OUT_BUNDLE_MIN && (worthy.get(d) || 0) * 2 < c) out.set(d, c);
+  return out;
+}
+
+/** 把已经摆出来的成员卡撤掉，一包换一张文件夹卡。重复调用是幂等的（每轮 files 事件都会走） */
+function foldBundleCards(grid, bundles, root) {
+  let n = 0;
+  // 先清算旧的：包里的东西被删掉之后它就不成其为一包了，这张卡得撤——
+  // 留着它等于对着一个空文件夹说「122 个文件」。剩下的那几个在下面的清单里本来就还在
+  grid.querySelectorAll(".out-card[data-bundle]").forEach((c) => {
+    if (!bundles || !bundles.has(c.dataset.bundle)) { c.remove(); n++; }
+  });
+  if (!bundles || !bundles.size) return n;
+  for (const [dir, count] of bundles) {
+    const members = [...grid.querySelectorAll(".out-card")]
+      .filter((c) => !c.dataset.bundle && dirWithSlash(c.dataset.name) === dir);
+    let card = grid.querySelector(`.out-card[data-bundle="${cssEsc(dir)}"]`);
+    if (!card) {
+      card = makeBundleCard(dir, count, root);
+      // 插在第一张成员卡的位置上，别让它跑到队尾去——它本来就是那批东西的代表
+      if (members[0]) grid.insertBefore(card, members[0]); else grid.appendChild(card);
+    }
+    const meta = card.querySelector(".out-meta");
+    if (meta) meta.textContent = `${count} 个文件`;     // 后面还在往这个目录里写，数要跟着涨
+    card.title = dir + " · 这一回合往这个文件夹里写了 " + count + " 个文件";
+    for (const c of members) { c.remove(); n++; }
+  }
+  return n;
+}
+
+/**
+ * 整包那张卡：只说「这里头有 N 个文件」，给一个打开文件夹的入口。
+ * 不给预览、不给下载——一包东西没有「预览」可言，下载一个目录也不是这个接口能干的事。
+ */
+function makeBundleCard(dir, count, root) {
+  const card = document.createElement("div");
+  card.className = "out-card out-bundle";
+  card.dataset.bundle = dir;                            // 带尾斜杠，判生死时拿它当前缀
+  card.dataset.name = dir.replace(/\/+$/, "");
+  card.dataset.base = card.dataset.name.split("/").pop();
+  if (root) card.dataset.root = root;
+  card.tabIndex = 0;
+  card.innerHTML = `<div class="out-thumb"><span class="ph">${ic("folder")}</span></div>
+    <div class="out-info"><span class="out-name">${esc(card.dataset.base)}/</span><span class="out-meta">${count} 个文件</span></div>
+    <div class="out-acts">
+      <button class="oa-main" data-a="rv" title="打开所在位置">${ic("folder-open")}<span class="tx">打开文件夹</span></button></div>`;
+  onActivate(card, (e) => revealFile(card.dataset.name, e, root));
+  return card;
+}
+
+function extOf(n) { const m = String(n || "").match(/\.([^./]+)$/); return m ? m[1].toLowerCase() : ""; }
+
+// 卡片区里找「同一张图的另一种格式」那张卡：同目录、同主名，一个 svg 一个 png
+function pairedCard(grid, name) {
+  const ext = extOf(name);
+  if (ext !== "svg" && ext !== "png") return null;
+  const stem = name.replace(/\.[^./]+$/, "");
+  const want = ext === "svg" ? "png" : "svg";
+  return [...grid.querySelectorAll(".out-card")].find(c => c.dataset.stem === stem && extOf(c.dataset.name) === want) || null;
+}
+
+// 把另一种格式挂到这张卡上：下载键拆成两个，各自标格式。
+// 不能光把 SVG 藏掉——藏了用户想要矢量图就只能回右侧文件面板里翻，那是把一个 bug 换成另一个。
+// 两个键都是「图标 + 格式名」：之前本体那个键是纯图标、挂上来的那个是纯文字且没有 class，
+// 一个被挤进 30px 的方框里、一个是条裸链接，用户看到的就是两个长得不一样的下载键
+function attachAltFmt(card, alt, root) {
+  if (!card || !alt || card.dataset.alt === alt) return;
+  if (root === undefined) root = card.dataset.root || rootOf(card); // 收尾合并（mergeFmtPairs）不传根，从卡片自己身上取
+  card.dataset.alt = alt;
+  const acts = card.querySelector(".out-acts");
+  if (!acts) return;
+  acts.querySelectorAll(".oa-alt").forEach((el) => el.remove()); // 重新挂之前先清掉上一次挂的
+  const self = acts.querySelector("a[download]:not(.oa-alt)");
+  if (!self) return;
+  const fmt = (n) => extOf(n).toUpperCase();
+  self.className = "oa-ico oa-fmt";
+  self.title = "下载 " + fmt(card.dataset.name);
+  self.innerHTML = ic("download") + `<span class="tx">${fmt(card.dataset.name)}</span>`;
+  const a = document.createElement("a");
+  a.className = "oa-ico oa-fmt oa-alt";
+  a.dataset.name = alt;
+  a.href = withRoot("/api/files/download/" + fpath(alt), root);
+  a.setAttribute("download", "");
+  a.title = "下载 " + fmt(alt) + "（" + alt + "）";
+  a.innerHTML = ic("download") + `<span class="tx">${fmt(alt)}</span>`;
+  acts.appendChild(a);
+}
+
+// 收尾统一收敛：上面「同名副本留路径最浅那份」那条会把已经并好的卡整张换掉，
+// 挂在旧卡上的「另一种格式」就跟着没了，同一张图又变回并排两张
+function mergeFmtPairs(grid) {
+  const all = () => [...grid.querySelectorAll(".out-card")];
+  for (const c of all()) {
+    if (!c.isConnected) continue;
+    const ext = extOf(c.dataset.name);
+    if (ext !== "png" && ext !== "svg") continue;
+    const want = ext === "png" ? "svg" : "png";
+    const mate = all().find((o) => o !== c && o.dataset.stem === c.dataset.stem && extOf(o.dataset.name) === want);
+    if (!mate) continue;
+    const front = ext === "png" ? c : mate; // PNG 当门面：缩略图渲染得出来，插飞书/Word 用的也是它
+    const back = front === c ? mate : c;
+    attachAltFmt(front, back.dataset.name);
+    back.remove();
+  }
+}
+
+/**
+ * 右侧清单刷新之后，把对话里那些已经落后于盘上文件的产出卡重画一遍。
+ * 卡片是文件事件来的那一刻画的；用户后来自己改了文件、或者 agent 在下一回合又改写了它，
+ * 这张卡的地址还停在旧版本上。清单是「现在」，卡是「当时」，两者对不上就以清单为准。
+ * 只动根对得上的卡（curStamp 会拦），只动版本真变了的卡——其余一张都不碰，浏览器缓存照用。
+ * @returns {number} 重画了几张
+ */
+function syncOutCards(files) {
+  const cards = document.querySelectorAll(".out-card[data-name]");
+  let n = 0;
+  for (const card of cards) {
+    const name = card.dataset.name, root = card.dataset.root || "";
+    const now = curStamp(name, root);
+    if (!now || now === card.dataset.v) continue;
+    const f = (files || []).find((x) => x && x.name === name) || { name, mtime: now };
+    const c = makeOutCard(f, /\.html?$/i.test(name), root);
+    if (card.dataset.alt) attachAltFmt(c, card.dataset.alt, root);
+    card.replaceWith(c);
+    n++;
+  }
+  return n;
+}
+
+function makeOutCard(f, isHtml, root) {
+  // 缓存键用「这一版文件」本身（mtime/大小），不是 Date.now()。
+  // 以前每来一个文件事件，整片卡都带着新时间戳重建一次：七张图 = 每次重新下 2.7MB，
+  // 屏幕上那一格先白一下再慢慢长出来——用户看到的就是「图怎么不渲染」。
+  // 文件真被改写时 mtime 会变，缓存照样失效，该刷新的一次不少。
+  // 版本号先问当前清单（curStamp）：事件里那份是「当时」，清单里那份是「现在」，两者不一样时
+  // 说明文件后来又被改过，卡片必须跟着现在这一版走，不然对话里摆的就是一张过期的缓存图
+  const ver = fileVer(f, root);
+  const url = withRoot("/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(ver), root);
+  // 产出卡：缩略图在上、文件名和大小在下、三个图标钮收在底边。
+  // 交付物看得见长什么样才叫产出；只有一行文件名的话，用户还得点开才知道自己拿到了什么
+  // 图（含 svg）直接出缩略图——：
+  // 一排只有文件名的行，等于把右侧文件面板抄进了对话里。图用 <img> 渲染，网页/文档给大图标，
+  // 但都不内嵌 iframe：一回合出三个网页就是在对话里跑三个小浏览器，又慢又挡正文
+  const isPic = /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(f.name);
+  // 视频也出缩略图：#t=0.1 让浏览器只拉头上一点点、定格在第一帧。
+  // 一个 🎬 图标只说明「这是个视频」，第一帧才说明「这是哪个视频」——
+  // 一回合出三条片子的时候，靠图标是分不出哪条是哪条的。
+  const isVid = /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
+  // 整张图放进来之后，扁盒子配竖图必然剩一圈留白。底下垫一层同一张图的放大模糊版把它填掉：
+  // 用的是同一个 url，浏览器走缓存，不会多下一次。视频没有这层——它自己带黑底，本来就是电影画幅的样子。
+  // 缩略图走 ?thumb=320，不要原图。卡片只有 120px 宽，而工作空间里真实躺着
+  // 2800×7032 的图——原图当缩略图是让浏览器解码 75 MB 位图去画一个指甲盖，
+  // 一回合八张卡就是 293 MB。服务端缩不动（纯 node 没有 nativeImage）会自己发原图，
+  // 所以这里不用判断跑在哪儿。svg 不走：矢量本来就小，栅格化反而更大更糊
+  const thumbUrl = /\.svg$/i.test(f.name) ? url : url + "&thumb=320";
+  const thumb = isPic ? `<span class="out-bg" style="background-image:url(&quot;${thumbUrl}&quot;)" aria-hidden="true"></span><img src="${thumbUrl}" alt="" loading="lazy" decoding="async">`
+    : isVid ? `<video src="${url}#t=0.1" muted playsinline preload="metadata"></video><span class="vd-play" aria-hidden="true"></span>`
+    : `<span class="ph">${ic(fileIcon(f.name))}</span>`;
+  const card = document.createElement("div");
+  card.className = "out-card";
+  card.dataset.name = f.name;
+  card.dataset.v = ver;                              // 这张卡画的是哪一版：同名文件再改一次就按它判要不要重画
+  card.dataset.base = f.name.split("/").pop();      // 判重按「文件名 + 大小」，光看全路径认不出复制出来的副本
+  card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
+  if (root) card.dataset.root = root;                  // 卡片被挪走/换掉时根跟着走，见 attachAltFmt
+  if (f.size) card.dataset.size = String(f.size);
+  card.title = f.name + " · " + (OFFICE_RE.test(f.name) ? "点击用系统程序打开" : "点击预览");
+  card.tabIndex = 0; // 键盘也能落到 chip 上（不加 role=button：里面还有三个真按钮，按钮套按钮读屏会吞掉它们）
+  const mainTx = isHtml ? "在浏览器打开" : "预览";
+  card.innerHTML = `<div class="out-thumb">${thumb}</div>
+    <div class="out-info"><span class="out-name">${esc(f.name.split("/").pop())}</span><span class="out-meta">${fmtSize(f.size)}</span></div>
+    <div class="out-acts">
+      <button class="oa-main" data-a="${isHtml ? "br" : "pv"}" title="${mainTx}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${mainTx}</span></button>
+      <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
+      <a class="oa-ico" href="${withRoot("/api/files/download/" + fpath(f.name), root)}" download title="下载">${ic("download")}</a></div>`;
+  // 缩略图读不出来（文件被改名、挪走、删了，或者这个格式浏览器解不了）就退回文件类型图标。
+  // 以前它只留一个空灰方框，卡片自己一个字都不说，看着就像整个功能坏了。
+  const th = card.querySelector(".out-thumb img, .out-thumb video");
+  if (th) th.onerror = () => {
+    const box = th.closest(".out-thumb");
+    if (box) box.innerHTML = `<span class="ph" title="${isVid ? "这条片子的编码浏览器解不了，点开看还能用系统播放器" : "这张图读不出来了：可能已被改名、移走或删掉"}">${ic(fileIcon(f.name))}</span>`;
+    card.classList.add("thumb-dead");
+  };
+  onActivate(card, (e) => {
+    if (e.target.closest("a")) return;
+    if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e, root);
+    if (e.target.closest('[data-a="br"]')) {
+      e.stopPropagation();
+      startPreview(previewSrv.lan_open, f.name).then(st => {
+        if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
+      });
+      return;
+    }
+    previewFile(f.name, root);
+  });
+  return card;
+}
+
+// 同名但内容不同的两件产出（a/report.html 和 b/report.html）：卡片上只写文件名，用户根本分不出谁是谁，
+// 给这类卡片补上所在目录。内容相同的副本上面已经并成一张卡了，走不到这里
+function markDupBasenames(grid) {
+  const byBase = {};
+  grid.querySelectorAll(".out-card").forEach(c => {
+    (byBase[c.dataset.base] = byBase[c.dataset.base] || []).push(c);
+  });
+  Object.keys(byBase).forEach(b => {
+    if (byBase[b].length < 2) return;
+    byBase[b].forEach(c => {
+      const nm = c.querySelector(".out-name");
+      if (!nm || nm.querySelector(".dim")) return;
+      const path = c.dataset.name;
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "./";
+      nm.innerHTML = `<span class="dim">${esc(dir)}</span>` + nm.innerHTML;
+    });
+  });
+}
+// 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
+function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
+// ---- 正文里提到的产出文件名 → 可点开的链接 ----
+// 模型收尾时爱写「简历已经写好了，在 张三_简历.html 里」——那串文件名在对话里是死的，
+// 用户得自己去右侧面板一行行找同名的那个。现在正文里提到的文件名，只要盘上真有，就是能点的。
+// 认的是两份名单：这一趟真产出过的，和工作目录里现在就有的（右侧清单）。
+// 以前只认前一份，于是「这三张图上一轮画的、这两张这一轮画的」那张清单表里，
+// 只有两行能点，另外三行明明就在产出目录里，却是死字。
+// 不拿正则去猜「长得像文件名的东西」：猜出来的链接点开是 404，比压根没有链接更气人。
+//
+// 裸文件名（模型多半只写名字不写路径）指向哪一份：
+//   · 这一趟的产出优先——它就是这句话在说的那个
+//   · 这一趟的同一件产出常被拷成两份（任务子目录一份、根上一份），指路径最浅的那个
+//   · 清单里的同名文件只在认得出是哪一个时才链：一份，或者有一份比别的都浅（根上那份）。
+//     两个子目录里各有一份 README.md，模型说的是哪个没法知道，猜错了点开的是另一份东西，宁可不链
+function fileLinkTargets(files, listing) {
+  const map = new Map();
+  const depth = (n) => n.split("/").length;
+  const nameOf = (f) => {
+    const name = typeof f === "string" ? f : (f && f.name) || "";
+    return name && /\.[A-Za-z0-9]{1,8}$/.test(name.split("/").pop()) ? name : ""; // 没后缀的不认，免得把普通词当文件名挑出来
+  };
+  // 先铺清单，再拿这一趟的产出盖上去
+  const byBase = new Map();
+  for (const f of listing || []) {
+    const name = nameOf(f);
+    if (!name) continue;
+    map.set(name, name);
+    const base = name.split("/").pop();
+    (byBase.get(base) || byBase.set(base, []).get(base)).push(name);
+  }
+  for (const [base, names] of byBase) {
+    const d = names.map(depth), top = Math.min(...d);
+    if (d.filter((x) => x === top).length === 1) map.set(base, names[d.indexOf(top)]);
+  }
+  const own = new Map();
+  for (const f of files || []) {
+    const name = nameOf(f);
+    if (!name) continue;
+    own.set(name, name);
+    const base = name.split("/").pop();
+    const cur = own.get(base);
+    if (!cur || depth(name) < depth(cur)) own.set(base, name);
+  }
+  for (const [k, v] of own) map.set(k, v);
+  return map;
+}
+/**
+ * 右侧清单（当前工作目录里现在真有的文件），前提是它跟这张回答是同一个工作目录。
+ * 根对不上就当没有：换过工作目录的话，同名文件在另一个根下是另一份东西（curStamp 同一条规矩）。
+ * typeof 那一道是给前端测试留的：它按段切真源码，切到这一段时清单变量可能还没声明。
+ */
+function listingFor(turnRoot) {
+  if (typeof filesCache === "undefined" || !Array.isArray(filesCache)) return [];
+  const fr = typeof filesRoot === "undefined" ? "" : String(filesRoot || "");
+  const r = String(turnRoot || "");
+  return r && fr && r !== fr ? [] : filesCache;
+}
+/**
+ * 给一张已经收尾的回答插文件链接。每个名字对每张回答只试一次：
+ * renderFiles 一趟任务里要走好多次，清单几百个名字 × 几十张回答，次次从头扫会卡。
+ * 先试的先占：收尾那一下这一趟的产出排在清单前面，裸名「报告.md」一旦指给了这趟的
+ * 任务_A/报告.md，后来清单里根上那份同名的就不会再把它抢走。
+ */
+function linkTurn(turn, targets, root) {
+  if (!turn || !targets || !targets.size) return 0;
+  const tried = turn._linkTried || (turn._linkTried = new Set());
+  // 回答收尾后正文不会再变，字只取一次。[文字](报告.md) 这种链接的路径不在正文里，也并进来，
+  // 不然校正它的那一步（linkifyOutputs 开头）拿不到对应的名字
+  if (turn._linkText == null) {
+    turn._linkText = [...turn.querySelectorAll(".body .a-text")].map((el) => el.textContent).join("\n")
+      + "\n" + [...turn.querySelectorAll(".body .a-text a.file-ln[data-md]")].map((a) => a.dataset.name || "").join("\n");
+  }
+  const pick = new Map();
+  for (const [k, v] of targets) {
+    if (tried.has(k)) continue;
+    tried.add(k);
+    if (turn._linkText.includes(k)) pick.set(k, v);
+  }
+  let n = 0;
+  if (pick.size) turn.querySelectorAll(".body .a-text").forEach((el) => { n += linkifyOutputs(el, pick, root); });
+  return n;
+}
+/**
+ * 清单刷新了：已经收尾的回答里，提到了、清单里又真有的文件名，补成链接。
+ * 收尾那一下清单可能还没到（刚打开页面就回放历史、切会话时清单还在路上），
+ * 也可能那个文件是后来才生成的——这两种以前都得刷新页面才能点。
+ * @returns {number} 这一遍新补了几处
+ */
+function relinkAnswers(scope) {
+  if (!scope) return 0;
+  let n = 0;
+  for (const turn of scope.querySelectorAll(".turn[data-out-root]")) {
+    const root = turn.dataset.outRoot;
+    n += linkTurn(turn, fileLinkTargets([], listingFor(root)), root);
+  }
+  return n;
+}
+function linkifyOutputs(root, targets, fileRoot) {
+  if (!root || !targets || !targets.size) return 0;
+  // renderMd 拼出来的 [文字](报告.md) 只照字面那条路径指，可模型十有八九只写文件名，
+  // 真身在任务子目录里（任务_A/报告.md）。这儿拿这一趟的产出表把它校正过来，
+  // 不然点下去就是一句「文件不存在」。
+  // 表里查不到的不动：那多半是上一轮的产出，链接本身是好的，只是不归这一趟管
+  for (const a of root.querySelectorAll("a.file-ln[data-md]")) {
+    const want = a.dataset.name || "";
+    const real = targets.get(want) || targets.get(want.split("/").pop());
+    if (real && real !== want) { a.dataset.name = real; a.title = "点击预览 " + real; }
+  }
+  // 清单能有几百个名字，正文里提到的往往就三五个：先按字面筛一遍，别拿几百个分支的正则去扫每一段字
+  const text = root.textContent || "";
+  const keys = [...targets.keys()].filter((k) => text.includes(k)).sort((a, b) => b.length - a.length); // 长的先匹配，全路径别被切成半截
+  if (!keys.length) return 0;
+  const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+  // 左边界：紧挨着 ASCII 路径字符说明这是更长的一串（别把 data.md 里的 a.md 挑出来）；
+  // 右边界同理。中文紧挨着是常态（「生成了简历.html供你查看」），必须放行
+  const okLeft = (s, i) => !/[A-Za-z0-9_./\\-]/.test(s[i - 1] || "");
+  const okRight = (s, i, len) => !/[A-Za-z0-9]/.test(s[i + len] || "");
+  // 左边紧挨着的是一串路径时，别放弃——那是模型写了全路径
+  // （/Users/…/报告.html、file:///…/报告.html）。该整串都是链接，
+  // 而不是把尾巴那一截单拎出来，更不是干脆不给链接。
+  const leadPath = (s, i) => {
+    const m = s.slice(0, i).match(/[^\s"'<>()\[\]，。；：！？、]*\/$/);
+    if (!m || !m[0]) return -1;
+    const start = i - m[0].length;
+    return okLeft(s, start) ? start : -1;
+  };
+  const nodes = [];
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+    const p = t.parentElement;
+    if (!t.nodeValue || !/\S/.test(t.nodeValue) || !p) continue;
+    // 代码块（<pre>）里的路径是代码，链接化会把代码改样。但**行内** `报告.html` 是另一回事：
+    // 模型收尾列交付物时十有八九给文件名套了反引号，以前这一套就把它们全筛掉了——
+    // 说的就是这批。
+    if (p.closest("a, pre, .out-block, .file-ln")) continue;
+    nodes.push(t);
+  }
+  let n = 0;
+  for (const t of nodes) {
+    const s = t.nodeValue;
+    const frag = document.createDocumentFragment();
+    let last = 0, hit = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(s))) {
+      if (!okRight(s, m.index, m[0].length)) continue;
+      let start = m.index;
+      if (!okLeft(s, start)) {
+        start = leadPath(s, start);
+        if (start < 0 || start < last) continue;
+      }
+      if (start > last) frag.appendChild(document.createTextNode(s.slice(last, start)));
+      frag.appendChild(makeFileLink(s.slice(start, m.index + m[0].length), targets.get(m[0]), fileRoot));
+      last = m.index + m[0].length;
+      hit++;
+    }
+    if (!hit) continue;
+    if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+    t.parentNode.replaceChild(frag, t);
+    n += hit;
+  }
+  return n;
+}
+function makeFileLink(label, name, root) {
+  const a = document.createElement("a");
+  a.className = "file-ln";
+  a.dataset.name = name;
+  if (root) a.dataset.root = root; // 这张回答是哪个工作目录的：换过目录以后点它，开的还是当时那一份
+  a.textContent = label;
+  a.title = "点击预览";
+  a.tabIndex = 0;
+  const open = (e) => { e.preventDefault(); previewFile(name, root || ""); };
+  a.onclick = open;
+  a.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") open(e); };
+  return a;
+}
+
+/**
+ * 一趟任务跑完了，右侧要不要直接把成果摊开。
+ *
+ * 「中途不弹」是定下来的
+ * 跑完了还是一片空白是另一回事，
+ * 所以只在收尾这一下开，而且只开一件：这一趟真正交到手上的那个成果。
+ *
+ * 一律不开的情形，每一条都是「开了反而添乱」：
+ *   · 回放历史 / 用户已经切到别的会话：他压根没在看这一趟
+ *   · 这趟没有交付物（只有 PROGRESS.md 这类过程账本）
+ *   · 这趟里用户自己把预览关掉过：他已经明说了不想看
+ *   · 成果文件面板开着：他正在自己翻列表，别把面板从手里抢走
+ *   · 窄窗：预览在这个宽度下是盖在聊天上的浮层，一开就把刚写完的结论挡了
+ *   · 只剩 .doc/.ppt/.xls 那三个老格式：previewFile 会去拉起本机 Office，抢的是整个系统焦点，太重
+ */
+// 一道题里提到的文件。
+// AI 让人「三版对比在《封面三选一.html》里，你要哪版」，题面其实**在那个文件里**——
+// 右边不摊开，这道题就是让人对着一句话猜。收尾自动预览（finishPreviewPlan）救不了它：
+// 提问发生在任务跑到一半，那会儿还早得很。
+const ASK_FILE_RE = /([^\s，。、；：！？,"'`()（）【】《》「」\[\]]+\.(?:html?|pdf|svgz?|png|jpe?g|gif|webp|bmp|avif|mp4|webm|mov|m4v|mp3|wav|m4a|md|markdown|txt|csv|tsv|json|docx?|xlsx?|pptx?))/gi;
+function filesInAsk(ev) {
+  const texts = [String((ev && ev.question) || "")];
+  for (const o of (ev && ev.options) || []) {
+    if (o && typeof o === "object") texts.push(String(o.label || ""), String(o.detail || ""));
+    else texts.push(String(o || ""));
+  }
+  const out = [];
+  for (const t of texts) {
+    for (const m of t.matchAll(ASK_FILE_RE)) {
+      const name = m[1].replace(/^[./\\]+/, "");
+      if (name && name.length <= 200 && !out.includes(name)) out.push(name);
+    }
+  }
+  return out;
+}
+/**
+ * 这道题该把哪个文件摊到右边，以及卡片上挂哪几个文件。
+ *
+ * 只认这一趟真落过盘的文件：正文里顺口提一句「参考 xxx.md」也会被上面那条正则捞出来，
+ * 照着它去开预览，用户得到的是一句「文件不存在」——比不开更糟。
+ * 纯函数，前端 harness 直接验输入输出。
+ */
+function askPreviewPlan(o) {
+  const chips = [];
+  const outs = (o.outFiles || []).map((f) => (f && f.name) || "").filter(Boolean);
+  for (const n of o.names || []) {
+    const hit = outs.includes(n) ? n : outs.find((k) => k.split("/").pop() === n.split("/").pop());
+    if (hit && !chips.includes(hit)) chips.push(hit);
+  }
+  if (!chips.length) return { preview: null, chips: [], why: "no-file" };
+  if (o.replaying || o.otherSession) return { preview: null, chips, why: "not-watching" };
+  if (o.narrow) return { preview: null, chips, why: "narrow" }; // 手机上右边那条根本没地方站
+  if (o.pvOpen && o.pvCurrent === chips[0]) return { preview: null, chips, why: "already-open" };
+  return { preview: chips[0], chips, why: "ok" };
+}
+function finishPreviewPlan(o) {
+  if (o.replaying || o.otherSession) return { preview: null, why: "not-watching" };
+  if (o.userClosedPreview) return { preview: null, why: "user-closed" };
+  if (o.filesOpen) return { preview: null, why: "files-open" };
+  if (o.narrow) return { preview: null, why: "narrow" };
+  const pick = pickFinishDeliverable(o.turnOut || []);
+  if (!pick) return { preview: null, why: "no-deliverable" };
+  if (o.pvOpen && o.pvCurrent === pick) return { preview: null, why: "already-open" };
+  return { preview: pick, why: "ok" };
+}
+// 这一趟最该给用户看的那一件。排序：网页 > 图 > PDF > Office 三件套 > 音视频 > 纯文本；
+// 同一档里路径最浅的优先（任务子目录那份和根目录那份是同一件东西），再同就取最新的
+const FINISH_RANK = [/\.html?$/i, /\.(png|jpe?g|gif|webp|svg|bmp)$/i, /\.pdf$/i, /\.(pptx|docx|xlsx)$/i, /\.(mp4|mov|webm|m4v|mp3|wav|m4a)$/i, /\.(md|txt|csv)$/i];
+function pickFinishDeliverable(outs) {
+  const rank = (n) => { const i = FINISH_RANK.findIndex((re) => re.test(n)); return i < 0 ? 99 : i; };
+  const cand = [];
+  for (const f of outs || []) {
+    const name = (f && f.name) || "";
+    const base = name.split("/").pop();
+    if (!name || OFFICE_RE.test(name) || SCAFFOLD_RE.test(base) || rank(name) === 99) continue;
+    cand.push({ name, rank: rank(name), depth: name.split("/").length, mtime: (f && f.mtime) || "" });
+  }
+  if (!cand.length) return null;
+  cand.sort((a, b) => a.rank - b.rank || a.depth - b.depth || b.mtime.localeCompare(a.mtime) || a.name.localeCompare(b.name));
+  return cand[0].name;
+}
+// 产出到了该怎么办。以前是「有产出就把右侧预览 / 成果文件面板弹出来」——
+// 现在默认什么都不抢：快照照推进、「成果文件」按钮上记个角标、chip 就在对话里，想看再点。
+// 唯一会碰右侧的情况：用户本来就开着预览、看的正是这回合改过的那个文件——原地刷新，布局不动。
+// 纯函数：输入是当下的状态，输出是三个动作，前端 harness 直接验
+function outputArrivalPlan(o) {
+  const outs = o.turnOut || [];
+  if (o.replaying) return { snapshot: false, badge: 0, refresh: null };                 // 回放历史：快照和角标都不动
+  if (o.otherSession || !outs.length) return { snapshot: true, badge: 0, refresh: null }; // 后台回合 / 没产出：只推进基线
+  const refresh = o.pvOpen && o.pvCurrent && outs.some((f) => f.name === o.pvCurrent) ? o.pvCurrent : null;
+  // 角标点开的是「成果文件」面板，那边只列 listed（ev.files：最深 3 层、最新 500 条）。
+  // 第 4 层往下的产出在对话里有卡，面板里却没有——算进角标就成了「说有 3 件新的，点开只见 1 件」
+  const inPanel = Array.isArray(o.listed) ? new Set(o.listed.map((f) => f && f.name)) : null;
+  const n = inPanel ? outs.filter((f) => inPanel.has(f.name)).length : outs.length;
+  return { snapshot: true, badge: o.filesOpen ? 0 : n, refresh };
+}
+function applyOutputArrival(plan, files) {
+  if (plan.snapshot) snapshotFiles(files);
+  if (plan.badge) bumpFilesBadge(plan.badge);
+  if (plan.refresh) previewFile(plan.refresh); // 预览本来就开着：只换内容，不动布局
+}
+// 「成果文件」按钮上的角标：还没看过的新产出有几件。面板一打开就清零
+function bumpFilesBadge(n) {
+  const btn = document.getElementById("toggle-files");
+  if (!btn || !n) return;
+  let b = btn.querySelector(".fb-badge");
+  if (!b) { b = document.createElement("span"); b.className = "fb-badge"; btn.appendChild(b); }
+  b.textContent = String(Math.min(99, (parseInt(b.textContent, 10) || 0) + n));
+}
+function clearFilesBadge() {
+  const b = document.querySelector("#toggle-files .fb-badge");
+  if (b) b.remove();
+}
+document.getElementById("toggle-files").onclick = () => {
+  const fp = document.getElementById("files-panel");
+  fp.classList.toggle("show");
+  if (fp.classList.contains("show")) clearFilesBadge(); // 看过了，「没看过的新产出」就归零
+  // 预览和成果文件面板互斥：右侧只留一个。双开把聊天区挤没，窄窗下两个浮层还互相盖字
+  if (fp.classList.contains("show") && pvPanel.classList.contains("show")) {
+    pvPanel.classList.remove("show"); pvCurrent = null;
+  }
+};
+document.getElementById("fp-close").onclick = () => document.getElementById("files-panel").classList.remove("show");
+// 侧栏开关：窄窗（≤900px）走浮层抽屉 side-open，宽窗走常规折叠 side-collapsed
+function toggleSidebar() {
+  if (window.innerWidth <= 900) document.body.classList.toggle("side-open");
+  else document.body.classList.toggle("side-collapsed");
+}
+document.getElementById("toggle-side").onclick = toggleSidebar;
+window.addEventListener("resize", () => { if (window.innerWidth > 900) document.body.classList.remove("side-open"); });
+// 抽屉开着时点旁边关掉。那层灰罩是 body 的伪元素（body.side-open::before），
+// 伪元素接不了事件，点它命中的是 body 本身——所以监听挂在 document 上，只认「点的就是 body」。
+// 挂在 .main 上收不到：灰罩盖在 .main 上面，指针根本落不到里面的元素。
+document.addEventListener("click", (e) => {
+  if (!document.body.classList.contains("side-open")) return;
+  if (e.target === document.body || (e.target.closest && e.target.closest(".main"))) {
+    document.body.classList.remove("side-open");
+  }
+}, true);
+document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); openWorkspaceOnHost(); };
+document.getElementById("fp-sweep").onclick = (e) => { e.preventDefault(); openSweep({}); };
+
+// ================= 下拉菜单通用 =================
+function setupPicker(btnId, menuId) {
+  const btn = document.getElementById(btnId);
+  const menu = document.getElementById(menuId);
+  btn.onclick = (e) => { e.stopPropagation(); closeAllMenus(menu); menu.classList.toggle("show"); };
+  return menu;
+}
+function closeAllMenus(except) {
+  document.querySelectorAll(".picker-menu").forEach(m => { if (m !== except) m.classList.remove("show"); });
+}
+document.addEventListener("click", () => closeAllMenus());
+
+// ================= 模型选择（输入卡片右下角，仿官方 Auto ▾） =================
+const modelMenu = setupPicker("model-btn", "model-menu");
+async function refreshSettingsCache() {
+  settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
+  if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
+  if (settingsCache) {
+    // 首次拿到配置时给还没动过的新对话套上「沿用上次模型」；之后的刷新不再动，免得盖掉用户手动清掉的选择
+    if (!refreshSettingsCache._inited) { refreshSettingsCache._inited = true; if (sessionId === null && !pendingModel) pendingModel = defaultPendingModel(); }
+    updateModelLabel();
+    document.getElementById("ws-label").textContent = settingsCache.workspace_dir.split(/[\\/]/).pop() || "工作空间";
+    renderModelMenu();
+    renderWsMenu();
+    syncNavByRole();
+  }
+}
+/**
+ * 侧栏也得按身份收一收。多人服务器上的普通成员点「自动化」「评测」，连 GET 都是 403：
+ * 定时任务跑在这台服务器上、评测要真金白银调模型，两样都归平台管理员。
+ * 一个点开只有一句「归平台管理员管」的入口，摆在那儿只是让人白点一次。
+ * （「资料库」不在这儿：那份内容他的 agent 本来就读得到，只是写不了——页面自己按身份收起上传和删除。）
+ *
+ * 用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住——
+ * 跟「项目」那一栏踩的是同一个坑。
+ */
+const PLATFORM_ONLY_VIEWS = ["autom", "eval", "trace"];
+function syncNavByRole() {
+  const po = amPlatformOwner();
+  for (const v of PLATFORM_ONLY_VIEWS) {
+    const el = document.querySelector(`.side-nav [data-view="${v}"]`);
+    if (el) el.style.display = po ? "" : "none";
+  }
+  // 静态写在 index.html 里的「在这台机器上打开」入口也一起收：
+  // 成果面板标题上那条「打开文件夹」、预览标题栏那两颗图标
+  const host = canOpenOnHost();
+  for (const id of ["open-ws", "pv-sys", "pv-rv"]) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = host ? "" : "none";
+  }
+}
+// 这个选择器只管「当前对话」用哪个模型，不动全局默认（全局默认在 设置 → 模型 里改）。
+// 每个对话可以各选各的：切换对话时标签跟着换，别的对话完全不受影响
+function currentSessModel() {
+  if (inAssistMode) return assistModel;
+  return sessionId === null ? pendingModel : sessionModels.get(sessionId);
+}
+// 「新对话沿用上次手动选的模型」（设置 → 模型 里的开关）：算出新对话该预选谁。
+// 直接写进 pendingModel 让标签立刻显示出来——用户发消息前就看得见用的是哪个，绝不静默换模型
+function defaultPendingModel() {
+  const s = settingsCache;
+  if (s && s.model_follow_last && s.last_picked_model && s.last_picked_model !== s.active_model
+      && (s.models || []).some(m => m.name === s.last_picked_model)) return s.last_picked_model;
+  return undefined;
+}
+/**
+ * 现在这个对话到底由谁在跑。
+ *
+ * 用户在 设置 → 智能体 里把底层引擎切成「本机 Claude Code / Codex」之后，
+ * 这个选择器里的一整排 API 模型**一个都不会被用到**——任务是交给本机那个 CLI 跑的，
+ * 用它自己的登录态和它自己的模型。旧版这里照样显示「deepseek-chat」并且让你随便点，
+ * 点完还提示「已切换」：用户以为换了模型，其实每个任务都在用 CLI 的默认模型。
+ * 所以走本机引擎时，标签要显示 CLI 的名字和 CLI 的模型，菜单要说清楚这里改不动它。
+ *
+ * 助理模式（inAssistMode）是例外：助理走的一直是内置的 API 那条路，不受引擎设置影响。
+ */
+function activeEngine() {
+  const ag = (settingsCache && settingsCache.agent) || {};
+  const id = ag.engine || "builtin";
+  if (id === "builtin" || inAssistMode) return null;
+  const o = (ag.engine_options || {})[id] || {};
+  return { id, label: ag.engine_label || id, model: (o.model || "").trim() };
+}
+function updateModelLabel() {
+  if (!settingsCache) return;
+  const eng = activeEngine();
+  const ov = currentSessModel();
+  const text = eng ? (eng.model || eng.label) : (ov || settingsCache.active_model);
+  const btn = document.getElementById("model-btn");
+  document.getElementById("model-label").textContent = text;
+  // 本机 CLI 在跑的时候，光看模型名跟 API 模型长得一模一样——用户分不清这次花不花钱。
+  // 换成显示器图标 + 一句「谁在跑、花不花钱」的悬停说明，扫一眼就知道自己在哪条路上
+  if (btn) {
+    const use = btn.querySelector("use");
+    if (use) use.setAttribute("href", eng ? "#i-monitor" : "#i-sparkles");
+    btn.title = eng
+      ? `由「${eng.label}」在跑 · 不花 API 额度`
+      : "这个对话用哪个模型（点开可以只给本对话换一个）";
+  }
+  renderModelMenu();
+  // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
+  const al = document.getElementById("im-model-label");
+  if (al) { al.textContent = ov || settingsCache.active_model; renderModelMenu(document.getElementById("im-model-menu")); }
+}
+async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
+  // 本机引擎在跑的时候，这里选什么都到不了 CLI。让它落库再显示成「已切换」，
+  // 就是骗用户——直接拒了，并指路真正能改模型的地方
+  const eng = activeEngine();
+  if (eng) { toast("现在由「" + eng.label + "」在跑，模型由它自己定；要改去 设置 → 智能体 → 底层引擎"); return; }
+  if (inAssistMode) { // 助理模式：存进配置，下次进来还是它
+    try {
+      const r = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
+      if (r && r.error) return toast(r.error, "triangle-alert");
+      assistModel = name || undefined;
+      if (settingsCache) settingsCache.assist_model = assistModel || "";
+    } catch {}
+    updateModelLabel();
+    return;
+  }
+  if (sessionId === null) { pendingModel = name || undefined; updateModelLabel(); return; }
+  try {
+    const r = await fetch("/api/session/" + encodeURIComponent(sessionId) + "/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
+    if (r && r.error) return toast(r.error, "triangle-alert");
+    if (name) sessionModels.set(sessionId, name); else sessionModels.delete(sessionId);
+    if (name && settingsCache) settingsCache.last_picked_model = name; // 服务端也记了，这里同步本地缓存
+  } catch {}
+  updateModelLabel();
+}
+// 模型健康小标：近 N 次任务的成败（服务端账本）。连挂 ≥2 标红——坏渠道一眼看出来，不用踩了才知道
+// 只产内容，不带前后分隔符——分隔符归拼接的人管。以前把「 · 」焊在这里，模型设置那边要
+// 跟「默认」一起排，只好再用正则把它抠掉一次；再多一个调用点就会冒出双圆点或者行首孤儿点。
+function healthBadge(name) {
+  const h = settingsCache && settingsCache.model_health && settingsCache.model_health[name];
+  if (!h || !h.n) return "";
+  let s = `近${h.n}次任务${h.ok}成`;
+  if (h.fail_streak >= 2) s += ` <span style="color:var(--owb-err-text)" title="${esc(h.last_fail || "")}">${ic("triangle-alert", "i-sm")}连挂${h.fail_streak}</span>`;
+  return s;
+}

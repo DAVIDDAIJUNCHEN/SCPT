@@ -1,0 +1,89 @@
+node_modules/
+workspace/
+# 项目工作目录跟 workspace/ 一样是成果，不入 git（docs/数据同步与搬家.md 里列过）
+projects/
+# 本地执行追踪账本：工作目录被设成仓库根时就落在这儿，里面是提示词原文和工具参数，不进版本库
+.openworkbuddy/
+schedules.json
+schedules.json.bak
+schedules.json.corrupt*
+config.json
+config.json.bak
+config.json.corrupt*
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+data/
+backups/
+# 运行期日志。装好的机器上 log.js 写的是 dataPath("logs")，在 openworkbuddy-data/ 里，上面已经挡住了；
+# 但直接从源码树跑的时候（开发机、npm start）它就落在仓库自己的 logs/ 里。
+# 上面那条 *.log 只盖得住 boot.log，app-<日期>.jsonl 漏在外面——而那里头是真在跑的
+# 请求记录。这个仓库是公开的，差一次随手 add 就推出去了。
+logs/
+
+# Docker 部署产生的：deploy.sh 会在仓库目录里建这两个
+# openworkbuddy-data/config.json 存着 API Key，.env 存着端口和域名——都不入 git
+.env
+openworkbuddy-data/
+# 改名前那个目录名。老部署的机器上还在，里面同样有 Key，别让它有机会被 add 进来
+wb-data/
+
+# 第三方技能包：仓库不打包别人的代码，在应用内一键从上游装（技能页 → 推荐技能）
+skills/ppt-master/
+skills/frontend-design/
+skills/canvas-design/
+skills/theme-factory/
+skills/brand-guidelines/
+skills/webapp-testing/
+skills/mcp-builder/
+skills/follow-builders/
+skills/holo-card-studio/
+skills/archify/
+skills/i-have-adhd/
+
+# 没有许可证、也查不到上游仓库的技能：来源不明的代码不往公开仓库里塞，留在本机自用
+# （hongshuskill 还会用真 Chrome 操作小红书账号，替别人分发更不合适）
+skills/hongshuskill/
+
+# 私有自用的发布管线（含本机专属配置），不进仓库
+skills/*-pro/
+
+# 用户自己装的 Agent Plugins 插件（plugins.js 是代码，plugins/ 是数据）
+plugins/
+.tmp/
+
+# Claude Code 在这儿留的断点文件（.claude/RESUME.md 带 session id 和一个 refs/claude/ 的 ref）。
+# .dockerignore 一直挡着，这边漏了：它不是密钥，但属于本机的工具痕迹，公开仓库里没必要有，
+# 而且一次手滑 `git add .` 就进去了。
+.claude/
+
+# 评测跑批产物（每次跑的工作目录和分数明细）
+eval/runs/
+
+# 打包产物
+dist/
+
+# 从聊天窗口粘出来的临时文本，常带真实姓名/凭证，一律不入库
+粘贴文本_*.txt
+
+# 录 demo 的副产物：README 里嵌的是 GIF，mp4 只是录制时顺手产的，不入库占体积
+docs/images/demo.mp4
+
+# 只维护 package-lock.json（CI 和 Dockerfile 都走 npm ci）。
+# 两份锁文件长期手工对齐必然漂：上一份 pnpm-lock.yaml 过期五周、缺 7 个包
+pnpm-lock.yaml
+
+# 改大文件前手抖存的时间戳快照（im.js.bak.0914_0116 那种）：本机留着当后悔药，不入库。
+# 这种文件最坑的是它跟真文件只差一个后缀，混进仓库后很容易被当成现役代码读
+*.bak.[0-9]*
+
+# 出片过程里的半成品：README 里嵌的是 case-canvas.jpg（官网是 short-drama-canvas-overview.png），
+# 下面这几张/这段是录制和调色时顺手产的，谁都没引用，加起来 4 个多 MB，不入库
+docs/images/demo-canvas.mp4
+docs/images/short-drama-canvas.png
+docs/images/short-drama-canvas-ui.png
+docs/images/short-drama-canvas-agent.png
+
+# 跟 Cowork / Codex 的能力对照，属于个人笔记，不进仓库
+docs/能力对照-Cowork-Codex.md

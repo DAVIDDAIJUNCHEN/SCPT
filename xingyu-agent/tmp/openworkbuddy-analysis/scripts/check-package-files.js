@@ -1,0 +1,302 @@
+"use strict";
+/**
+ * 打包完整性闸门：装机包里少一个 require 得到的文件，应用就是打不开。
+ *
+ * v0.1.1 就栽在这儿——electron-builder.config.js 的 files 白名单只写了 "*.js"，
+ * 那个通配符只匹配顶层，engines/ 那 7 个文件一个都没进包。装机后 server.js 在
+ * `require("./engines")` 抛 MODULE_NOT_FOUND，异常被 whenReady 的 async 吞掉，
+ * 端口没人监听、窗口也没亮相 —— 用户看到的就是「双击没反应 / 有进程没界面」。
+ *
+ * 白名单是手写的，require 图是一直在长的，两边迟早对不上。所以这里不去修白名单本身，
+ * 而是每次打包之后拿真包做一次核对：从入口文件顺着 require 爬一遍，凡是本仓库自己的
+ * 文件，都必须能在包里找到。找不到就让打包失败，别等用户下载完才发现。
+ */
+const fs = require("fs");
+const path = require("path");
+
+const ROOT = path.join(__dirname, "..");
+/** 入口：装机态真正会被跑起来的那几个 */
+const ENTRIES = ["electron-main.js", "server.js", "cli.js", "eval/run.js"];
+/**
+ * 不是 require 进来、而是按路径打开的运行时资源。爬 require 图爬不到它们，
+ * 少了照样打不开（preload 缺了窗口一片空白，tool-bridge 缺了 MCP 桥起不来）。
+ */
+const ASSETS = [
+  "pet-preload.js",          // 宠物窗口的 preload，BrowserWindow 按路径加载
+  "public/pet.html",         // 同上
+  "public/index.html",       // 主界面
+  "engines/tool-bridge.js",  // 被当成子进程 spawn，不走 require
+  "experts.json",            // 首次启动 seed 到 ~/OpenWorkBuddy
+  "config.example.json",     // 同上
+];
+
+/**
+ * 整个目录都是运行时源码、必须原样进包的那几个子目录。
+ *
+ * 光靠爬 require 图不够：它只认字面量路径，`for (const f of fs.readdirSync("routes")) require(...)`
+ * 这种按目录挂路由/工具的写法它一个都爬不到——于是白名单漏了那个目录，这道闸门照样绿。
+ * 第 7 批要把 server.js 拆进 routes/ + lib/、tools.js 拆进 src/tools/，正是这种形状；
+ * engines/ 是 v0.1.1 栽过的那一个。"*.js" 只匹配顶层，所以这里按目录逐个核：
+ * 盘上有的运行时文件，包里一个都不许少。目录还不存在的时候什么都不查。
+ */
+const SOURCE_DIRS = ["engines", "routes", "src", "lib"];
+/** 只核运行时会读的类型；.map / .d.ts 本来就该被瘦身删掉，别让两道闸门互相打架 */
+const SOURCE_EXT = /\.(?:js|cjs|mjs|json)$/;
+
+/** SOURCE_DIRS 里盘上现有的运行时文件（仓库相对路径，posix 分隔） */
+function sourceDirFiles(root = ROOT) {
+  const out = [];
+  const walk = (rel) => {
+    let ents;
+    try { ents = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.name.startsWith(".")) continue;
+      const r = rel + "/" + e.name;
+      if (e.isDirectory()) walk(r);
+      else if (e.isFile() && SOURCE_EXT.test(e.name) && !DEAD_WEIGHT.some((re) => re.test(e.name))) out.push(r);
+    }
+  };
+  for (const d of SOURCE_DIRS) walk(d);
+  return out.sort();
+}
+
+/** SOURCE_DIRS 里有、包里没有的那些 */
+function missingSourceDirFiles(appDir, root = ROOT) {
+  return sourceDirFiles(root).filter((rel) => !fs.existsSync(path.join(appDir, rel)));
+}
+
+/**
+ * 只在 package.json 里挂了名字才会进装机包的那些依赖。
+ *
+ * 上面那句 `if (resolved.includes("node_modules")) continue;` 是故意的：文件闸门只管本仓库的文件。
+ * 代价是另一类「装完打不开」它一个都抓不到——代码里 require 了某个 npm 包，但 package.json 的
+ * dependencies 里没写。开发机上 node_modules 里恰好有（别的包顺带装的、或者早年手装过），
+ * 测试全绿；用户那份包是照着 dependencies 装的，于是第一次用到就 MODULE_NOT_FOUND。
+ *
+ * @anthropic-ai/sdk 就是这么漏的：设置页的模型下拉里明晃晃写着「Anthropic Claude」，向导验活
+ * 走的是裸 fetch 所以能过，等真发第一条消息才抛「需先安装可选依赖」——而装机包的用户根本没法
+ * 自己 npm install。所以这条线只能靠声明来守，下面把它变成一条会红的断言。
+ */
+const NODE_BUILTIN = new Set(require("module").builtinModules);
+/** 不用写进 dependencies 的例外，每条都得说清楚为什么 */
+const RUNTIME_PROVIDED = new Set([
+  "electron", // Electron 自己提供；它在 devDependencies 里，由 electron-builder 打进壳
+  "ws",       // 只在 Node 22 以下才会走到的兜底分支，外面包了 try/catch 并给了人话提示
+]);
+
+/** 静态扒出一个文件里 require 的 npm 包名（@scope/pkg 保留作用域那一层） */
+function bareRequires(code) {
+  const out = [];
+  for (const m of code.matchAll(/require\(\s*["']([^."'][^"']*)["']\s*\)/g)) {
+    const spec = m[1];
+    if (spec.startsWith("node:")) continue;
+    const parts = spec.split("/");
+    out.push(spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]);
+  }
+  return out;
+}
+
+/**
+ * 爬一遍装机态真正会跑的源文件，挑出「代码里 require 了、package.json 里没声明」的包。
+ * @param {object} [deps] 覆盖掉 package.json 的 dependencies；只给测试做反向对照用
+ * @returns {Array<{pkg: string, file: string}>}
+ */
+function missingDeps(deps) {
+  const pkg = deps ? { dependencies: deps } : JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const declared = new Set(Object.keys(pkg.dependencies || {}));
+  const out = [];
+  const seen = new Set();
+  for (const rel of walkGraph()) {
+    if (!rel.endsWith(".js")) continue;
+    let code;
+    try {
+      code = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    } catch {
+      continue;
+    }
+    for (const name of bareRequires(code)) {
+      if (NODE_BUILTIN.has(name) || RUNTIME_PROVIDED.has(name) || declared.has(name)) continue;
+      const key = name + "@" + rel;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ pkg: name, file: rel });
+    }
+  }
+  return out;
+}
+
+/** 静态扒出一个文件里的本地 require；node_modules 和用户数据路径不算 */
+function localRequires(code) {
+  const out = [];
+  // require("./x") / require("../x")
+  for (const m of code.matchAll(/require\(\s*["'](\.[^"']+)["']\s*\)/g)) out.push(m[1]);
+  // require(path.join(__dirname, "x", "y.js"))
+  for (const m of code.matchAll(/require\(\s*path\.join\(\s*__dirname\s*,([^)]*)\)\s*\)/g)) {
+    const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
+    if (parts.length) out.push("./" + parts.join("/"));
+  }
+  return out;
+}
+
+/** 从入口爬出全部本仓库文件（仓库相对路径） */
+function walkGraph() {
+  const seen = new Set();
+  const queue = ENTRIES.map((e) => path.join(ROOT, e));
+  while (queue.length) {
+    const file = queue.shift();
+    const rel = path.relative(ROOT, file);
+    if (seen.has(rel)) continue;
+    let code;
+    try {
+      code = fs.readFileSync(file, "utf8");
+    } catch {
+      continue; // 入口自己不存在的情况交给下面的断言去报
+    }
+    seen.add(rel);
+    for (const spec of localRequires(code)) {
+      let resolved;
+      try {
+        resolved = require.resolve(path.resolve(path.dirname(file), spec));
+      } catch {
+        continue; // 解析不出来的（比如可选依赖）不拦，宁可漏报也别误报把打包卡死
+      }
+      if (resolved.includes("node_modules")) continue;
+      if (!resolved.startsWith(ROOT + path.sep)) continue;
+      queue.push(resolved);
+    }
+  }
+  for (const a of ASSETS) seen.add(a);
+  return [...seen];
+}
+
+/**
+ * @param {string} appDir 包里 app/ 的绝对路径（Resources/app 或 resources/app）
+ * @param {string} [root] 按目录核那一半从哪个仓库列文件；只给测试做反向对照用（require 图那一半总是爬本仓库）
+ * @returns {string[]} 缺失文件的仓库相对路径
+ */
+function missingFrom(appDir, root = ROOT) {
+  const viaGraph = walkGraph().filter((rel) => !fs.existsSync(path.join(appDir, rel)));
+  // require 图爬不到的按目录补一遍；walkGraph 在 Windows 上给的是反斜杠，统一成 / 再去重
+  const seen = new Set(viaGraph.map((r) => r.split(path.sep).join("/")));
+  return viaGraph.concat(missingSourceDirFiles(appDir, root).filter((r) => !seen.has(r)));
+}
+
+/** electron-builder 的 afterPack 里调；缺文件直接抛，让打包红掉 */
+function assertPackComplete(appDir) {
+  const missing = missingFrom(appDir);
+  if (missing.length) {
+    throw new Error(
+      `[打包] 装机包里少了 ${missing.length} 个运行时要用的文件，装完必定打不开：\n` +
+        missing.map((m) => "  - " + m).join("\n") +
+        `\n把它们加进 electron-builder.config.js 的 files 白名单。`
+    );
+  }
+  console.log(`[打包] 完整性核对通过：${walkGraph().length} 个源文件都在包里（${SOURCE_DIRS.join("/、")}/ 下 ${sourceDirFiles().length} 个也逐个核过）`);
+  return missing;
+}
+
+/**
+ * 把装机包里的每一个生产依赖真 require 一遍。
+ *
+ * 上面那道闸门只查「我们自己的源文件在不在」，查不出 node_modules 被削瘦之后还能不能跑。
+ * 这道是被真事逼出来的：为了让 Windows 免安装版别再解压两万个文件，files 里加了几条排除，
+ * 其中一条按目录名删（test/doc/example），当场把 @iconify/utils/lib/emoji/test/parse.js 和
+ * exceljs/lib/doc/ 删没了——那是人家的运行时代码，不是测试。静态扫文件名看不出来，
+ * 只有真 require 才会红。装机包里 require 不起来的依赖，一个都不许发出去。
+ *
+ * ESM 包（mermaid 这种）在 Node 22.12+ 上 require 得动；万一撞上老 Node 的 ERR_REQUIRE_ESM，
+ * 退回 import() 再试一次，别把「这台机器的 Node 太老」误报成「包坏了」。
+ */
+async function assertDepsRequirable(appDir) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8"));
+  const names = Object.keys(pkg.dependencies || {});
+  const bad = [];
+  for (const n of names) {
+    let resolved;
+    try {
+      resolved = require.resolve(n, { paths: [appDir] });
+    } catch (e) {
+      bad.push(`${n}：连入口都找不到（${firstLine(e)}）`);
+      continue;
+    }
+    try {
+      require(resolved);
+    } catch (e) {
+      if (e && (e.code === "ERR_REQUIRE_ESM" || /require\(\) of ES Module/.test(String(e.message)))) {
+        try {
+          await import(require("url").pathToFileURL(resolved).href);
+          continue;
+        } catch (e2) {
+          bad.push(`${n}：${firstLine(e2)}`);
+          continue;
+        }
+      }
+      bad.push(`${n}：${firstLine(e)}`);
+    }
+  }
+  if (bad.length) {
+    throw new Error(
+      `[打包] 装机包里有 ${bad.length} 个依赖 require 不起来，装完必定打不开：\n` +
+        bad.map((b) => "  - " + b).join("\n") +
+        `\n多半是 electron-builder.config.js 的 files 里某条排除删过头了。`
+    );
+  }
+  console.log(`[打包] 依赖可用核对通过：${names.length} 个生产依赖都 require 得起来`);
+}
+
+function firstLine(e) {
+  return String((e && e.message) || e).split("\n")[0].slice(0, 160);
+}
+
+/** 装机包里不该再有的文件类型：运行时一个字节都不读，却占了原来 44% 的体积 */
+const DEAD_WEIGHT = [/\.map$/, /\.d\.[cm]?ts$/];
+
+/**
+ * 核一遍瘦身有没有真生效。
+ * 光在 config 里写排除不算数——写错一个 glob 它会静默什么都不删，
+ * 下载量还是那么大，而谁也不会发现。
+ * @returns {{files: number, bytes: number, leftovers: string[]}}
+ */
+function assertSlimmed(appDir) {
+  const leftovers = [];
+  let files = 0;
+  let bytes = 0;
+  const walk = (dir) => {
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.isFile()) continue;
+      files++;
+      try { bytes += fs.statSync(full).size; } catch {}
+      if (DEAD_WEIGHT.some((re) => re.test(e.name))) leftovers.push(path.relative(appDir, full));
+    }
+  };
+  walk(appDir);
+  if (leftovers.length) {
+    throw new Error(
+      `[打包] 装机包里还剩 ${leftovers.length} 个 source map / 类型声明，files 里的排除没生效：\n` +
+        leftovers.slice(0, 8).map((f) => "  - " + f).join("\n") +
+        (leftovers.length > 8 ? `\n  …还有 ${leftovers.length - 8} 个` : "")
+    );
+  }
+  console.log(`[打包] 瘦身核对通过：app/ ${files} 个文件 / ${(bytes / 1024 / 1024).toFixed(0)} MB，没有 .map 和 .d.ts`);
+  return { files, bytes, leftovers };
+}
+
+module.exports = { walkGraph, missingFrom, assertPackComplete, assertDepsRequirable, assertSlimmed, localRequires, bareRequires, missingDeps, DEAD_WEIGHT, ENTRIES, ASSETS, RUNTIME_PROVIDED, SOURCE_DIRS, sourceDirFiles, missingSourceDirFiles };
+
+if (require.main === module) {
+  const dir = process.argv[2];
+  if (!dir) {
+    console.log(walkGraph().sort().join("\n"));
+    process.exit(0);
+  }
+  try {
+    assertPackComplete(path.resolve(dir));
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+}

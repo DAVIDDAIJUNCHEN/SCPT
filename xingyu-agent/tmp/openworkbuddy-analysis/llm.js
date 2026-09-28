@@ -1,0 +1,1101 @@
+"use strict";
+/**
+ * LLM 适配层 — 统一 Anthropic（Claude）与 OpenAI 兼容接口（DeepSeek/Qwen/GLM/Kimi/Ollama）。
+ *
+ * 统一的会话历史格式（neutral history）：
+ *   { role: "user", content: string }
+ *   { role: "assistant", text: string, toolCalls: [{id, name, input}], raw?: any[] }  // raw 仅 anthropic 用，保留 thinking 块
+ *   { role: "tool", results: [{ id, content, isError }] }
+ *
+ * chat() 返回 { text, toolCalls, stopReason }
+ */
+
+const thinking = require("./thinking");
+
+// ---------- Anthropic (Claude) —— 官方 SDK 通道，@anthropic-ai/sdk 是正式依赖，跟着装机包一起走 ----------
+
+/**
+ * 把「带 tool_calls 的 assistant」和它的工具结果重新配上对。
+ *
+ * 两家接口都有同一条硬规矩：一条带 tool_calls 的 assistant 后面必须逐个 id 跟上工具结果，
+ * 少一个就整条请求 400。而这个对子是分两次 push 进历史的——中间进程被 kill（重启 app、
+ * 崩溃）或工具抛异常，就会留下一条永远配不上对的 assistant。会话是落盘的，于是这条坏消息
+ * 之后每一次请求都 400，整个会话永久报废，用户只能删了重开。
+ *
+ * 所以在发请求前补一条占位结果把对子配上：坏会话下一次请求就自愈了。顺带丢掉找不到主人的
+ * 孤儿结果（有 tool_result 却没有对应的 tool_use，同样是 400）和重复 id。
+ */
+/** 已经喊过的坏配对（按 call id）。同一条每轮都会被修，但只值得说一次 */
+const warnedLeakedPairs = new Set();
+
+function repairToolPairs(history) {
+  const out = [];
+  for (let i = 0; i < history.length; i++) {
+    const entry = history[i];
+    if (entry.role === "tool") continue; // 一律由前面那条 assistant 统一带出，孤儿在这里自然被丢掉
+    out.push(entry);
+    const calls = entry.role === "assistant" ? entry.toolCalls || [] : [];
+    if (!calls.length) continue;
+    const want = new Map(calls.map((tc) => [tc.id, tc.name]));
+    const results = [];
+    const seen = new Set();
+    for (let j = i + 1; j < history.length && history[j].role === "tool"; j++) {
+      for (const r of history[j].results || []) {
+        if (!want.has(r.id) || seen.has(r.id)) continue;
+        seen.add(r.id);
+        results.push(r);
+      }
+    }
+    for (const [id, name] of want) {
+      if (seen.has(id)) continue;
+      // 同一条坏配对每一轮都会被重新补一次（历史里那半截是永久的），日志一轮刷一遍
+      // 就把真正的新问题淹了。按 call id 只喊第一次
+      if (!warnedLeakedPairs.has(id)) {
+        warnedLeakedPairs.add(id);
+        if (warnedLeakedPairs.size > 500) warnedLeakedPairs.clear(); // 长跑进程别让它无限涨
+        console.warn(`[llm] 工具调用 ${name}(${id}) 没有结果，已补占位——否则整个会话会一直 400`);
+      }
+      results.push({
+        id,
+        name,
+        content: `（${name} 这一步结果缺失：上一轮执行被中断了。把它当作没做过——需要的话重新调用一次，别假设它成功了。）`,
+        isError: true,
+      });
+    }
+    if (results.length) out.push({ role: "tool", results });
+  }
+  return out;
+}
+
+/**
+ * 发请求前把历史里的「方言」统一掉，再交给 repairToolPairs 配对。
+ *
+ * 历史不全是内置循环写的：本机 Claude Code / Codex 引擎那条路以前落盘的是
+ * { role:"assistant", content:"…" }（没有 text），老会话文件里一直躺着。按 text 读就是一条
+ * 空 assistant——部分供应商直接 400，而且会话是落盘的，之后每一轮都 400。所以：
+ *   ① 正文先认 text，没有再认 content；
+ *   ② 既没正文、也没工具调用的 assistant 整条不发（发出去只会换一个 400）；
+ *   ③ raw 里有 tool_use、toolCalls 里却没记的，补进 toolCalls——不补的话 repairToolPairs
+ *      看不见它，Claude 那边就是一个没人应答的 tool_use，同样 400。
+ * 正常历史原样返回同一批对象（一个字节都不改），不破坏前缀缓存。
+ * useRaw：Anthropic 那边会原样回传 raw（含 thinking），raw 里有东西就不算空。
+ */
+function assistantText(entry) {
+  if (typeof entry.text === "string" && entry.text) return entry.text;
+  return typeof entry.content === "string" ? entry.content : typeof entry.text === "string" ? entry.text : "";
+}
+function rawHasBody(raw) {
+  return Array.isArray(raw) && raw.some((b) => b && (b.type === "tool_use" || (b.type === "text" && String(b.text || "").trim())));
+}
+function sendableHistory(history, useRaw) {
+  const out = [];
+  let skipped = 0;
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.role !== "assistant") { out.push(entry); continue; }
+    const text = assistantText(entry);
+    let calls = Array.isArray(entry.toolCalls) ? entry.toolCalls : [];
+    if (Array.isArray(entry.raw)) {
+      const have = new Set(calls.map((c) => c && c.id));
+      const lost = entry.raw.filter((b) => b && b.type === "tool_use" && !have.has(b.id));
+      if (lost.length) calls = calls.concat(lost.map((b) => ({ id: b.id, name: b.name, input: b.input || {} })));
+    }
+    if (!String(text).trim() && !calls.length && !(useRaw && rawHasBody(entry.raw))) { skipped++; continue; }
+    out.push(text === entry.text && calls === entry.toolCalls ? entry : { ...entry, text, toolCalls: calls });
+  }
+  // 每一轮都会再跳一次，只喊第一次（同 warnedLeakedPairs 的道理）
+  if (skipped && !sendableHistory.warned) {
+    sendableHistory.warned = true;
+    console.warn(`[llm] 历史里有 ${skipped} 条空的 assistant（没正文也没工具调用），请求里不发它们`);
+  }
+  return out;
+}
+
+/**
+ * raw 原样回传，但要跟 toolCalls 对齐：toolCalls 里有、raw 里没有的 tool_use 补上（它的结果会发出去，
+ * 没有对应的 tool_use 就是孤儿结果）；空文本块去掉（Anthropic 不收空 text 块）。
+ * 返回新数组：下面打缓存断点是改数组元素，直接拿 entry.raw 去改就改进历史里了，
+ * 断点一轮轮攒下去会超过 4 个的上限。
+ */
+function rawForSend(entry) {
+  const blocks = entry.raw.filter((b) => b && !(b.type === "text" && !String(b.text || "").trim()));
+  const have = new Set(blocks.filter((b) => b.type === "tool_use").map((b) => b.id));
+  for (const tc of entry.toolCalls || []) {
+    if (!have.has(tc.id)) blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input || {} });
+  }
+  return blocks;
+}
+
+function toAnthropicMessages(rawHistory) {
+  const history = repairToolPairs(sendableHistory(rawHistory, true));
+  const messages = [];
+  for (const entry of history) {
+    if (entry.role === "user") {
+      // 插队消息可能紧跟在 tool 结果（也是 user 角色）之后：并入上一条，保持角色交替。
+      // 跳过空 assistant 之后两条 user 也会挨在一起，同样并成一条
+      const last = messages[messages.length - 1];
+      if (last && last.role === "user") {
+        if (!Array.isArray(last.content)) last.content = [{ type: "text", text: String(last.content) }];
+        last.content.push({ type: "text", text: entry.content });
+      } else {
+        messages.push({ role: "user", content: entry.content });
+      }
+    } else if (entry.role === "assistant") {
+      // raw 保留了原始 content 块（含 thinking 块），多轮 tool use 必须原样传回
+      if (Array.isArray(entry.raw) && entry.raw.length) {
+        messages.push({ role: "assistant", content: rawForSend(entry) });
+      } else {
+        const blocks = [];
+        if (String(entry.text || "").trim()) blocks.push({ type: "text", text: entry.text });
+        for (const tc of entry.toolCalls || []) {
+          blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+        }
+        messages.push({ role: "assistant", content: blocks });
+      }
+    } else if (entry.role === "tool") {
+      messages.push({
+        role: "user",
+        content: entry.results.map((r) => ({
+          type: "tool_result",
+          tool_use_id: r.id,
+          content: r.content,
+          is_error: !!r.isError,
+        })),
+      });
+    }
+  }
+  return messages;
+}
+
+/**
+ * Anthropic 的地址只算一次。
+ *
+ * 以前是两套算法：向导验活走裸 fetch（自己拼 `${base}/messages`），真跑走 SDK（它自己补
+ * `/v1/messages`，而且压根没人把 base_url 传给它）。于是填了中转地址的人，验活验的是中转、
+ * 跑起来打的是官方——一个绿勾换一句 401。统一归一成「不带 /v1 的根」，两边各补各的那一段。
+ */
+function anthropicBase(baseUrl) {
+  const raw = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const root = (raw || "https://api.anthropic.com").replace(/\/v1$/, "");
+  return { baseURL: root, messagesUrl: root + "/v1/messages" };
+}
+
+/**
+ * 这条渠道该用哪把 Key。
+ *
+ * 起因是一个能把 Key 送给外人的组合：`OPENAI_API_KEY` 是最常见的环境变量之一（几乎所有
+ * AI 命令行工具都认它，很多人直接写死在 ~/.zshrc 里），而初始 config.json 里预置着
+ * 通义 / 智谱 / Kimi / Ollama 四条**空着 Key**的渠道。老代码是一句
+ * `cfg.api_key || process.env.OPENAI_API_KEY`——于是只要选中其中任意一条，
+ * 你的 OpenAI Key 就带着 `Authorization: Bearer` 发给了 api.moonshot.cn。
+ * 这不是理论推演，本仓库 test/e2e.js 里那条「Key 不许串门」就是拿一个本地监听器
+ * 把这个头原样抓下来的。
+ *
+ * 所以取 Key 分三级，越明确的越优先：
+ *   ① 渠道自己填的（设置页 / config.json）——最明确，什么地址都认；
+ *   ② `OPENWORKBUDDY_KEY_<渠道 id>`——按渠道点名，给 Docker / VPS 用：不用把明文写进 config.json，
+ *      又因为点了名，不存在发错家的问题（渠道 id 见设置页那张卡，大写、非字母数字换成下划线）；
+ *   ③ `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`——通用兜底，**只发给这家自己的域名**。
+ *      地址是别家的就跳过，并在控制台说一次为什么跳过、该怎么办；不说的话，
+ *      用户只会看到一句 401，然后以为是软件坏了。
+ */
+const KEY_ENV = {
+  openai: { env: "OPENAI_API_KEY", official: /(^|\.)openai\.com$/i, label: "OpenAI" },
+  anthropic: { env: "ANTHROPIC_API_KEY", official: /(^|\.)anthropic\.com$/i, label: "Anthropic" },
+};
+const warnedEnvSkip = new Set(); // 同一个地址只唠叨一次，别把日志刷满
+
+/** 渠道 id → 环境变量名。`openrouter-2` → `OPENWORKBUDDY_KEY_OPENROUTER_2` */
+function channelEnvName(channel) {
+  const id = String(channel || "").trim();
+  return id ? "OPENWORKBUDDY_KEY_" + id.toUpperCase().replace(/[^A-Z0-9]+/g, "_") : "";
+}
+
+function hostOf(baseUrl) {
+  const b = String(baseUrl || "").trim();
+  if (!b) return ""; // 没填地址 = 走这家官方，算自己人
+  try { return new URL(b).host.replace(/:\d+$/, ""); } catch { return ""; }
+}
+
+function resolveKey(cfg, which) {
+  const own = String((cfg && cfg.api_key) || "").trim();
+  if (own) return own;
+  const named = channelEnvName(cfg && cfg.channel);
+  const byChannel = named ? String(process.env[named] || "").trim() : "";
+  if (byChannel) return byChannel; // 按渠道点名的：用户自己指的，不猜
+  const rule = KEY_ENV[which];
+  const generic = rule ? String(process.env[rule.env] || "").trim() : "";
+  if (!generic) return "";
+  const host = hostOf(cfg && cfg.base_url);
+  if (!host || rule.official.test(host)) return generic;
+  // 本机地址不唠叨：绝大多数是 Ollama，它压根不要 Key（下面会兜底成 "ollama"），
+  // 为它每次开机刷一条警告纯属噪音。本机网关真要 Key 的，在设置页填一次就完事
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i.test(host)) return "";
+  if (!warnedEnvSkip.has(host)) {
+    warnedEnvSkip.add(host);
+    console.warn(
+      `[模型] 渠道「${(cfg && cfg.name) || host}」没填 Key，环境变量 ${rule.env} 也没用上——` +
+        `它是 ${rule.label} 的 Key，这条渠道打的是 ${host}，发过去等于把 Key 交给了别家。` +
+        `要给这条渠道配 Key：设置 → 模型 里填，或者设环境变量 ${named || "OPENWORKBUDDY_KEY_<渠道id>"}。`
+    );
+  }
+  return "";
+}
+
+/**
+ * Key 递给 HTTP 头之前的最后一道。
+ *
+ * Key 是人从网页、文档、聊天窗口里复制过来的：末尾粘上一个换行，中间夹一个零宽空格，
+ * 或者把 sk- 后面连着的那句中文一起框走了，都很常见。可 HTTP 头只装得下单字节字符，
+ * 不管的话，fetch 会在请求发出去之前抛这么一句——
+ *   Cannot convert argument to a ByteString because the character at index 10 has a value of 28192…
+ * 它既没说这是 Key 的事，也没说该去哪儿改，落到界面上就是一次没头没尾的「调用失败」。
+ *
+ * 前后的空白直接吃掉：那是纯粹的复制残渣，吞掉只有好处。剩下的非 ASCII 才是真填错了，
+ * 就报出是第几个字符、是哪个字符，让人回设置里一眼能找到。
+ * 标 fatalForChannel 是给嵌入渠道看的：这种错重试一百次也还是它，别陪它试满三轮。
+ */
+const KEY_TRASH = /^[\s\u200b-\u200d\u2060]+|[\s\u200b-\u200d\u2060]+$/g;
+function cleanKey(raw, cfg) {
+  const key = String(raw || "").replace(KEY_TRASH, "");
+  const chars = [...key];
+  const at = chars.findIndex((c) => c.codePointAt(0) < 0x20 || c.codePointAt(0) > 0x7e);
+  if (at < 0) return key;
+  const who = (cfg && (cfg.name || cfg.label || cfg.model)) || "未命名";
+  const e = new Error(
+    `渠道「${who}」的 Key 第 ${at + 1} 个字符是 ${JSON.stringify(chars[at])}，这样的 Key 发不出去：` +
+      "API Key 只会由半角的字母、数字和 - _ 这类符号组成，出现中文、全角标点、空格或换行，" +
+      "多半是从网页或聊天记录里复制时多框了一段。到 设置 → 模型 里把这条渠道的 Key 重新粘一次就好。"
+  );
+  e.fatalForChannel = true;
+  throw e;
+}
+
+/** 解析出 Key，并保证它能塞进 Authorization 头 */
+function headerKey(cfg, which) {
+  return cleanKey(resolveKey(cfg, which), cfg);
+}
+
+/**
+ * system 拆成 Anthropic 的 system 块数组。
+ * stableLen 是「稳定段」的长度（角色/工具规则/技能目录/语言/模式，同一个人同一套设置下每轮逐字相同），
+ * 后面是易变段（记忆召回、项目块、媒体状态、时间）。稳定段末尾单独打一个断点：
+ * 易变段变了只作废它自己，稳定段那一大块照样走缓存读。
+ * 没给 stableLen（或者整段都稳定）就还是原来的单块写法。断点总数：稳定段 + 易变段 + 历史 = 3 个，没超 4。
+ */
+function anthropicSystemBlocks(system, stableLen) {
+  if (!system) return system;
+  const cc = { type: "ephemeral" };
+  const n = Number(stableLen) || 0;
+  if (n > 0 && n < system.length) {
+    return [
+      { type: "text", text: system.slice(0, n), cache_control: cc },
+      { type: "text", text: system.slice(n), cache_control: cc },
+    ];
+  }
+  return [{ type: "text", text: system, cache_control: cc }];
+}
+
+async function anthropicChat(cfg, { system, systemStableLen, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
+  let Anthropic;
+  try {
+    Anthropic = require("@anthropic-ai/sdk");
+  } catch {
+    // 这个包在 package.json 的 dependencies 里，装机包和 npm install 都会带上它。
+    // 还能走到这儿，说明是从源码跑但没装依赖——说清楚下一步怎么办，别让人以为是渠道不支持
+    throw new Error(
+      "@anthropic-ai/sdk 没装好（它是正式依赖，正常安装会自带）：在项目目录里跑一次 npm install 就有了；" +
+        "或者在设置里改用 OpenRouter 等 OpenAI 兼容通道访问 Claude"
+    );
+  }
+  const client = new Anthropic({
+    apiKey: headerKey(cfg, "anthropic") || undefined, // 空串会被 SDK 当成"配了一把空 Key"，undefined 才会报"没配"
+    baseURL: anthropicBase(cfg.base_url).baseURL, // 填了中转就真走中转，跟向导验活同一个地址
+  });
+
+  // Anthropic 的缓存要自己打断点（DeepSeek/OpenAI 是自动的）。最多三个：
+  // ① 工具定义 + system 的稳定段 —— 跨轮跨任务都不变，是最大的一块固定前缀；
+  //    易变段（记忆/项目/时间）单独一块再打一个断点，见 anthropicSystemBlocks；
+  // ② 上一轮结尾 —— agent 的 history 是只追加的，把断点压在倒数第二条上，
+  //    这一步新增的工具结果落在断点之后，前面几十步全部走缓存读。
+  // 断点最多 4 个，且是前缀匹配：前面任何一个字节变了，后面全部作废——
+  // 所以 system 里绝不能塞每次都变的东西（时钟、UUID、随机排序的 JSON）。
+  const amsgs = toAnthropicMessages(history);
+  const markLast = (i) => {
+    const m = amsgs[i];
+    if (!m || typeof m.content === "string" || !Array.isArray(m.content) || !m.content.length) return;
+    const b = m.content[m.content.length - 1];
+    if (b && typeof b === "object") m.content[m.content.length - 1] = { ...b, cache_control: { type: "ephemeral" } };
+  };
+  markLast(amsgs.length - 2);
+
+  // 思考模式：默认（auto）一个字段都不发 —— Anthropic 的语义就是「不发 = 不思考」，
+  // 所以「关闭」这一档也是不发，最安全；只有用户要它想的时候才带上 thinking 预算
+  const think = thinking.planFor(cfg, cfg.thinking);
+
+  const stream = client.messages.stream(
+    {
+      model: cfg.model,
+      max_tokens: 32000,
+      ...think.params,
+      system: anthropicSystemBlocks(system, systemStableLen),
+      messages: amsgs,
+      // 空数组要整个字段不发：一部分服务端会把 tools: [] 判成参数非法直接 400。
+      // 但历史里带着 tool_use/tool_result 时 Anthropic 要求必须定义 tools，所以强制收尾那一问
+      // 照发工具表、再用 tool_choice none 禁掉调用（工具表在缓存前缀最前面，照发还不破缓存）
+      ...(tools && tools.length
+        ? {
+            tools: tools.map((t) => ({
+              name: t.name,
+              description: t.description,
+              input_schema: t.input_schema,
+            })),
+            ...(toolChoice === "none" ? { tool_choice: { type: "none" } } : {}),
+          }
+        : {}),
+    },
+    { signal }
+  );
+
+  if (onTextDelta) stream.on("text", (delta) => onTextDelta(delta));
+  if (onActivity) stream.on("streamEvent", () => onActivity());
+
+  const msg = await stream.finalMessage();
+
+  let text = "";
+  const toolCalls = [];
+  for (const block of msg.content) {
+    if (block.type === "text") text += block.text;
+    else if (block.type === "tool_use") {
+      toolCalls.push({ id: block.id, name: block.name, input: block.input });
+    }
+  }
+  // Anthropic 的 input_tokens 不含缓存部分，要加回来才是「这次真的喂进去多少」
+  const u = msg.usage;
+  const cacheRead = u ? u.cache_read_input_tokens || 0 : 0;
+  const usage = u
+    ? {
+        prompt: (u.input_tokens || 0) + cacheRead + (u.cache_creation_input_tokens || 0),
+        completion: u.output_tokens || 0,
+        cached: cacheRead,
+      }
+    : null;
+  return { text, toolCalls, stopReason: msg.stop_reason, raw: msg.content, usage };
+}
+
+// 命中缓存的那部分 prompt token 便宜一个数量级（DeepSeek 约 1/10），可它默认是个哑指标：
+// 谁都不报，就没人知道自己在反复全价重买同一段上下文。三家的字段名各不一样，统一读成 cached。
+//   DeepSeek：prompt_cache_hit_tokens / prompt_cache_miss_tokens（磁盘缓存，自动生效，无需请求参数）
+//   OpenAI / OpenRouter：prompt_tokens_details.cached_tokens
+//   Anthropic：cache_read_input_tokens（另见 anthropicChat 里显式打的缓存断点）
+function openaiUsage(u) {
+  if (!u) return null;
+  const cached = Number(
+    u.prompt_cache_hit_tokens != null ? u.prompt_cache_hit_tokens : (u.prompt_tokens_details || {}).cached_tokens || 0
+  ) || 0;
+  return { prompt: u.prompt_tokens || 0, completion: u.completion_tokens || 0, cached };
+}
+
+// ---------- OpenAI 兼容接口 (DeepSeek / Qwen / GLM / Kimi / Ollama ...) ----------
+
+function toOpenAIMessages(system, rawHistory) {
+  const cleaned = sendableHistory(rawHistory, false);
+  const history = repairToolPairs(cleaned);
+  // 两条 user 挨着在循环里很常见：核验打回后又插话、压缩摘要后接保留的那句、打回后自动续跑、
+  // 完成钩子、截断追问……有的服务端（如 deepseek-reasoner、要求一问一答交替的 vLLM 模板）
+  // 不收连续同角色，一律并成一条。history 只追加，合并结果是它的纯函数，不会改动前面的缓存前缀
+  const messages = [{ role: "system", content: system }];
+  for (const entry of history) {
+    if (entry.role === "user") {
+      const last = messages[messages.length - 1];
+      if (last && last.role === "user" && typeof last.content === "string" && typeof entry.content === "string") {
+        last.content += "\n\n" + entry.content;
+      } else {
+        messages.push({ role: "user", content: entry.content });
+      }
+    } else if (entry.role === "assistant") {
+      const m = { role: "assistant", content: entry.text || "" };
+      if (entry.toolCalls && entry.toolCalls.length) {
+        m.tool_calls = entry.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: JSON.stringify(tc.input) },
+        }));
+      }
+      messages.push(m);
+    } else if (entry.role === "tool") {
+      for (const r of entry.results) {
+        messages.push({ role: "tool", tool_call_id: r.id, content: r.content });
+      }
+    }
+  }
+  return messages;
+}
+
+// ---------- 把「说出来」的工具调用救回来 ----------
+// DeepSeek 一类模型的工具调用在权重里是特殊 token（<｜tool▁sep｜> 等）。经过某些
+// 中转/兼容层时它们不会被解析进 tool_calls 字段，而是原样解码进正文——于是模型以为
+// 自己调了工具，实际什么都没发生，接着开始编造"抓取结果"。这不是提示词能治的，
+// 只能在解析层认出来并还原成真正的工具调用。
+const LEAK_MARK = /[<＜][|｜]tool[_▁]?(?:calls?[_▁]?)?(?:begin|sep)[|｜][>＞]/;
+const LEAK_SEP = /[<＜][|｜]tool[_▁]?sep[|｜][>＞]\s*([A-Za-z_][\w.-]*)/g;
+
+/**
+ * 从正文里抠出被"说"出来的工具调用。
+ * 返回 { text, toolCalls }：text 是剔掉这些标记后的干净正文（通常剩不下什么）。
+ */
+function rescueLeakedToolCalls(raw) {
+  if (!raw || !LEAK_MARK.test(raw)) return { text: raw, toolCalls: [] };
+  const toolCalls = [];
+  LEAK_SEP.lastIndex = 0;
+  let m;
+  while ((m = LEAK_SEP.exec(raw))) {
+    const name = m[1];
+    const rest = raw.slice(m.index + m[0].length);
+    // 参数紧跟在后面，可能裹在 ```json 围栏里，也可能是裸的 {...}
+    const fence = rest.match(/^\s*```(?:json)?\s*([\s\S]*?)```/);
+    const body = fence ? fence[1] : sliceFirstObject(rest);
+    // 参数没读全（有 { 但配不上对，说明被截断了）就宁可丢掉这次调用，
+    // 拿半截参数去执行比不执行更糟。真正不带参数的工具（rest 里压根没有 {）才按 {} 放行。
+    if (body === null && rest.includes("{")) continue;
+    let input = {};
+    try {
+      input = JSON.parse((body || "{}").trim());
+    } catch {
+      continue;
+    }
+    // 参数得是个对象；null/数组/标量按没带参数算，免得下游读 input.xxx 直接炸
+    if (!input || typeof input !== "object" || Array.isArray(input)) input = {};
+    toolCalls.push({ id: `rescued_${toolCalls.length}`, name, input });
+  }
+  // 标记之前的那段还是模型的正常叙述，留着；标记之后全是调用负载，砍掉
+  const cut = raw.search(LEAK_MARK);
+  return { text: (cut > 0 ? raw.slice(0, cut) : "").replace(/\bfunction\s*$/, "").trimEnd(), toolCalls };
+}
+
+/** 从字符串开头找出第一个花括号对（按深度配平，跳过字符串字面量） */
+function sliceFirstObject(s) {
+  const start = s.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return s.slice(start, i + 1);
+  }
+  return null;
+}
+
+/**
+ * 流式转发时的闸门：一旦冒出特殊 token 的开头就停止往界面吐字。
+ * 后面全是工具调用负载，让用户看见一堆 <｜tool▁sep｜> 只会以为程序坏了。
+ */
+function createLeakGuard(onTextDelta) {
+  let leaking = false;
+  let hold = ""; // 标记可能被切在两个 chunk 中间，留一个字符不发
+  return (delta) => {
+    if (!onTextDelta) return;
+    if (leaking) return;
+    const s = hold + delta;
+    const i = s.search(/[<＜][|｜]/);
+    if (i >= 0) {
+      leaking = true;
+      hold = "";
+      if (i > 0) onTextDelta(s.slice(0, i));
+      return;
+    }
+    // 结尾恰好是 "<" 时先扣住：下一片可能接上 "｜" 组成标记
+    if (/[<＜]$/.test(s)) { hold = s.slice(-1); onTextDelta(s.slice(0, -1)); return; }
+    hold = "";
+    onTextDelta(s);
+  };
+}
+
+/** OpenAI 兼容通道的输出上限：模型条目写了正整数就用它，缺省 8192；extra_body 里自己写了上限就不发 */
+const DEFAULT_MAX_TOKENS = 8192;
+function outputCap(cfg) {
+  const extra = (cfg && cfg.extra_body) || {};
+  if (extra.max_completion_tokens != null || extra.max_tokens != null) return 0;
+  const n = Math.round(Number(cfg && cfg.max_tokens));
+  return n > 0 ? n : DEFAULT_MAX_TOKENS;
+}
+/** 上限字段名：OpenAI 官方和 Azure 的推理模型（o 系列、gpt-5）不收 max_tokens，发了直接 400，
+ *  它们全系都认 max_completion_tokens；其余兼容厂商（DeepSeek/通义/方舟/Ollama/OpenRouter）只认 max_tokens */
+function outputCapField(cfg) {
+  let host = "";
+  try { host = new URL(String((cfg && cfg.base_url) || "")).hostname.toLowerCase(); } catch { /* 地址写坏了照老字段发，报错交给请求本身 */ }
+  return host === "api.openai.com" || host.endsWith(".openai.azure.com") ? "max_completion_tokens" : "max_tokens";
+}
+
+async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
+  // 兜底那句 "ollama" 是给本地 Ollama 的：它不校验 Key，但 Authorization 头缺了会被某些版本拒掉
+  const apiKey = headerKey(cfg, "openai") || "ollama";
+  const useStream = cfg.stream !== false;
+  const resp = await fetch(`${cfg.base_url.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      // 思考模式开关推导出来的厂商参数（各家名字都不一样，表在 thinking.js）。
+      // 放在 extra_body 前面 = 用户手填的 extra_body 压得住它：万一那张表哪家猜错了，
+      // 用户不用等我改代码，自己就能纠正
+      ...thinking.planFor(cfg, cfg.thinking).params,
+      // 输出上限：不发的话各家默认值天差地别（有的只给 4096），写长文件时工具参数被悄悄截断，
+      // 截断又没个准数，查都没法查。取模型条目的 max_tokens，缺省 8192。
+      // 同样放在 extra_body 前面：用户在 extra_body 里自己写了上限，就不再发这个
+      ...(outputCap(cfg) ? { [outputCapField(cfg)]: outputCap(cfg) } : {}),
+      ...(cfg.extra_body || {}), // 模型条目可带厂商特有参数（如 OpenRouter 的 reasoning）；核心字段在后，不会被覆盖
+      model: cfg.model,
+      stream: useStream,
+      ...(useStream ? { stream_options: { include_usage: true } } : {}), // 流式也带回 token 用量（DeepSeek/OpenRouter 等均支持）
+      messages: toOpenAIMessages(system, history),
+      // 同上：OpenAI 兼容接口对 tools: [] 一律报「数组不能为空」，没有工具就别带这个字段。
+      // 强制收尾（toolChoice none）也不带：这边历史里有工具消息不给 tools 照样收，
+      // 而不少兼容服务不认 tool_choice，带上工具表反倒可能又调一次工具
+      ...(tools && tools.length && toolChoice !== "none"
+        ? {
+            tools: tools.map((t) => ({
+              type: "function",
+              function: { name: t.name, description: t.description, parameters: t.input_schema },
+            })),
+          }
+        : {}),
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    // 把判断模型（Jev）填成了对话模型：它只会在选项里挑一个，不会写字。上游回的那句
+    // "is a decisions model" 落到界面上没人看得懂，翻成「去哪儿改」
+    if (resp.status === 400 && /is a decisions model/i.test(body)) {
+      throw new Error(
+        `渠道「${cfg.name || cfg.model}」填的是判断模型（Jev）——它只会在选项里挑一个，不会写字，不能当对话模型用。` +
+          `去 设置 → 模型 把默认对话模型换成别的；判断模型在 设置 → 智能体设置 里单独配。\n原始报错：${body.slice(0, 200)}`
+      );
+    }
+    // 上下文超限是最常见的 400，原文是一坨英文 JSON，翻成用户能照着做的话
+    if (resp.status === 400 && /context length|context_length|maximum context|too many tokens|reduce the length/i.test(body)) {
+      throw new Error(
+        `这次请求超出了模型的上下文长度上限。可以在 设置 → 智能体设置 调小「上下文预算」或「单任务最大步数」，` +
+          `也可以换一个上下文更大的模型；这条任务的历史已经很长，新开一个任务接着做更稳。\n原始报错：${body.slice(0, 300)}`
+      );
+    }
+    // 欠费/余额不足：这不是抖动也不是 bug，重试一百次也没用。翻成人话并指名是哪条渠道，
+    // 免得用户以为是软件坏了（原始报错还是留在后面，方便贴给渠道客服）
+    if (resp.status === 402 || /insufficient balance|insufficient_quota|欠费|余额不足|arrearage/i.test(body)) {
+      throw new Error(
+        `渠道「${cfg.name || cfg.model}」余额不足，模型不给跑了——这不是软件出错，去这条渠道的官网充值即可；` +
+          `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 智能体设置 里指定「备用渠道」，以后这条挂了会自动接上。\n原始报错：${body.slice(0, 200)}`
+      );
+    }
+    // Key 不对 / 过期 / 被撤回。渠道卡上那个「测一下」按钮早就把 401 翻成人话了
+    // （server.js 的 probeModel），可真跑一趟撞上同一个码，吐的却是一坨英文 JSON。
+    // 同一件事两种说法，用户的体感是「测的时候好好的，一跑就报天书」——两边统一。
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(
+        `渠道「${cfg.name || cfg.model}」的 Key 上游不认（HTTP ${resp.status}）：检查有没有复制全、是不是这家服务商的 Key、` +
+          `有没有过期或被撤回。改在 设置 → 模型 里，改完点这条渠道的「测一下」能当场验。\n原始报错：${body.slice(0, 200)}`
+      );
+    }
+    throw new Error(`LLM 接口错误 ${resp.status}: ${body.slice(0, 500)}`);
+  }
+
+  if (!useStream) {
+    const data = await resp.json();
+    if (data.error) {
+      throw new Error(`LLM 接口错误 ${data.error.code || ""}: ${data.error.message || JSON.stringify(data.error).slice(0, 300)}`);
+    }
+    return parseOpenAIChoice(
+      data.choices && data.choices[0],
+      onTextDelta,
+      openaiUsage(data.usage)
+    );
+  }
+
+  // ---- SSE 流式解析 ----
+  let text = "";
+  let finishReason = null;
+  let usage = null; // 最后一个 chunk 里的 token 用量（stream_options.include_usage）
+  const tcByIndex = new Map(); // index -> {id, name, args}
+  // 有的兼容网关不给 index：靠 id 认是哪一个调用，没 id 的续片接在上一个调用后面
+  const tcKeyById = new Map();
+  let tcLastKey = null;
+  const guard = createLeakGuard(onTextDelta);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    // 收流时冲掉解码器残留字节并补一个换行：最后一行 data: 不带换行就收流的上游，
+    // 那一行不补就整行丢了（finish_reason、用量都在里面）
+    buf += done ? decoder.decode() + "\n" : decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") continue;
+      let chunk;
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      // 任何解析成功的数据块都算「模型还活着」：正文、思考(reasoning)、工具参数流全在内。
+      // 排队中的 keep-alive 注释行（如 OpenRouter 的 ": PROCESSING"）不带 data: 前缀，天然不算
+      if (onActivity) onActivity();
+      // 网关（OpenRouter 等）常常 HTTP 200 之后把错误装在流里发过来：{"error":{...}}，没有 choices。
+      // 以前这里被 continue 静默跳过，整条流走完变成「空回答」，用户什么都看不到——必须抛出去
+      if (chunk.error) {
+        const code = chunk.error.code || chunk.error.status || "";
+        const emsg = chunk.error.message || JSON.stringify(chunk.error).slice(0, 300);
+        throw new Error(`LLM 接口错误 ${code}: ${emsg}`);
+      }
+      if (chunk.usage) usage = openaiUsage(chunk.usage);
+      const choice = chunk.choices && chunk.choices[0];
+      if (!choice) continue;
+      // 错误还有一种挂在 choice 上的姿势：{"choices":[{"finish_reason":"error","error":{...}}]}
+      if (choice.error || choice.finish_reason === "error") {
+        const ce = choice.error || {};
+        throw new Error(`LLM 接口错误 ${ce.code || 502}: ${ce.message || "上游在流中途报错（finish_reason=error）"}`);
+      }
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta || {};
+      if (delta.content) {
+        text += delta.content;
+        guard(delta.content);
+      }
+      for (const tc of delta.tool_calls || []) {
+        let key;
+        if (tc.index != null && tc.index !== "" && Number.isInteger(Number(tc.index))) key = Number(tc.index);
+        else if (tc.id && tcKeyById.has(tc.id)) key = tcKeyById.get(tc.id);
+        else if (tc.id || tcLastKey === null) key = tcByIndex.size ? Math.max(...tcByIndex.keys()) + 1 : 0;
+        else key = tcLastKey;
+        const slot = tcByIndex.get(key) || { id: "", name: "", args: "" };
+        if (tc.id) {
+          slot.id = tc.id;
+          tcKeyById.set(tc.id, key);
+        }
+        // 有的服务每个分片都把完整名字再发一遍，照拼会拼成 read_fileread_file
+        const nm = tc.function?.name;
+        if (nm && nm !== slot.name) slot.name += nm;
+        if (tc.function?.arguments) slot.args += tc.function.arguments;
+        tcByIndex.set(key, slot);
+        tcLastKey = key;
+      }
+    }
+    if (done) break;
+  }
+
+  const toolCalls = [...tcByIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([i, s]) => {
+      // 参数不是合法 JSON 时，parseToolArgs 会先试着救开头那个完整对象；实在救不回来才
+      // 塞一个带解析器原话的 _raw 进去，下游据此如实告诉模型「你发的东西坏在哪」，
+      // 而不是按缺字段报一句「缺少 prompt」——那会让它以为是自己漏填了，然后原样再发一遍。
+      const input = parseToolArgs(s.args, s.name);
+      return { id: s.id || `call_${i}`, name: s.name, input };
+    });
+
+  // 正经的 tool_calls 字段是空的，但正文里躺着工具调用的特殊 token —— 救回来
+  if (!toolCalls.length) {
+    const rescued = rescueLeakedToolCalls(text);
+    if (rescued.toolCalls.length) {
+      console.warn(`[llm] 模型把 ${rescued.toolCalls.map((t) => t.name).join("、")} 当成正文吐了出来，已还原成真正的调用`);
+      return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage };
+    }
+  }
+
+  // 整条流走完却什么都没有（没正文/没工具调用/没记账/没结束原因）：典型是连上之后立刻被掐断，
+  // 或上游异常但没走错误载荷。当失败抛出去让重试接手——以前这里返回空结果，agent 会当成「模型答完了」正常收尾
+  if (!text && !toolCalls.length && !usage) {
+    throw new Error("LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）");
+  }
+  return { text, toolCalls, stopReason: finishReason, usage };
+}
+
+/**
+ * 解析不了的工具参数，只留个头。
+ *
+ * 这坨东西会原封不动进 history，而 history 是每一轮整份重发的——本机真实会话里有一次
+ * write_file 写到一半被输出长度截断，19482 字的残缺 JSON 在之后的 12 轮里每轮重发一遍，
+ * 白烧掉 23 万字的上下文；那 19482 字里除了开头几百字，没有任何一个字有人会去读。
+ */
+function keepBadArgs(args, e) {
+  const raw = String(args == null ? "" : args);
+  return {
+    _raw: raw.length > 400 ? raw.slice(0, 400) : raw,
+    _rawLen: raw.length,
+    _parseError: String((e && e.message) || e),
+  };
+}
+
+/**
+ * 工具参数从文本变成对象；解析不了的先试着救一把。
+ *
+ * 本机真实会话里参数坏掉的姿势有两种，代价差很远，得分开对待：
+ *   ① 尾巴上多了几个字符 —— 见过 374 字的参数，前 372 字是一个完整合法的对象，
+ *      后面孤零零跟着一个 "]}"。整条丢掉纯属可惜：那一轮几千字的推理全白烧，
+ *      模型还得把同样的东西重写一遍。按括号配平切出开头那个完整对象用就是了。
+ *   ② 字符串没收尾（Unterminated string）—— 输出长度到顶被截断了。这种救不得：
+ *      半截的参数拿去执行等于替用户瞎编，只能如实报错，让模型重发一份短的。
+ */
+function parseToolArgs(raw, name) {
+  const s = String(raw == null ? "" : raw);
+  try {
+    const v = JSON.parse(s || "{}");
+    // 有的本地服务无参工具会发 "null"，也可能是数组/标量：一律当没带参数，
+    // 不然下游读 input.xxx 直接抛异常，一个坏调用就把整个任务带走
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch (e) {
+    const head = sliceFirstObject(s);
+    if (head && head.length < s.length) {
+      try {
+        const input = JSON.parse(head);
+        // 救回来了也得留一行：万一有一天是「两次调用被并到一个槽里」，丢掉的是后半个真调用，
+        // 日志里没这一行就再也查不出来了
+        console.warn(`[llm] ${name || "工具"} 的参数后面多出 ${s.length - head.length} 个字符，已取开头那个完整对象继续执行`);
+        return input;
+      } catch { /* 开头那段自己也不合法，那就真没得救 */ }
+    }
+    return keepBadArgs(s, e);
+  }
+}
+
+function parseOpenAIChoice(choice, onTextDelta, usage) {
+  if (!choice) throw new Error("LLM 返回为空");
+  let text = choice.message.content || "";
+  const rescued = (choice.message.tool_calls || []).length ? null : rescueLeakedToolCalls(text);
+  if (rescued && rescued.toolCalls.length) {
+    console.warn(`[llm] 模型把 ${rescued.toolCalls.map((t) => t.name).join("、")} 当成正文吐了出来，已还原成真正的调用`);
+    if (rescued.text && onTextDelta) onTextDelta(rescued.text);
+    return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage: usage || null };
+  }
+  if (text && onTextDelta) onTextDelta(text);
+  const toolCalls = (choice.message.tool_calls || []).map((tc) => ({
+    id: tc.id,
+    name: tc.function.name,
+    input: parseToolArgs(tc.function.arguments, tc.function.name),
+  }));
+  return { text, toolCalls, stopReason: choice.finish_reason, usage: usage || null };
+}
+
+// ---------- 瞬时错误自动重试 ----------
+
+// 上游繁忙/限流/网关抖动（DeepSeek 高峰 503 最常见）；仅在还没吐出任何流式文字时重试，避免界面出现重复内容
+const RETRYABLE = /LLM 接口错误 (429|500|502|503|504)|LLM 返回了空响应|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|terminated|other side closed/i;
+const RETRY_DELAYS = [2000, 5000, 10000];
+
+async function chatWithRetry(fn, args) {
+  for (let attempt = 0; ; attempt++) {
+    let streamed = false;
+    const onTextDelta = args.onTextDelta
+      ? (d) => {
+          streamed = true;
+          args.onTextDelta(d);
+        }
+      : undefined;
+    try {
+      return await fn({ ...args, onTextDelta });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      const canRetry =
+        RETRYABLE.test(msg) && !streamed && attempt < RETRY_DELAYS.length && !(args.signal && args.signal.aborted);
+      if (!canRetry) {
+        if (RETRYABLE.test(msg) && attempt > 0) {
+          e.message = `${msg}\n（已自动重试 ${attempt} 次仍失败：上游服务繁忙，可稍后再试或在 设置→模型 切换备用渠道）`;
+        }
+        throw e;
+      }
+      console.warn(`[llm] 瞬时错误，${RETRY_DELAYS[attempt] / 1000}s 后重试（第 ${attempt + 1} 次）：${msg.slice(0, 120)}`);
+      // 重试以前在后台默默进行，用户只看到界面一动不动——报出去让前端显示
+      if (args.onStatus) {
+        // 第二个参数给结构化进度（attempt 从 1 数，delayMs 是这一次要等多久），新前端拿它画倒计时；
+        // 老前端只读第一个参数的文字，不受影响
+        const info = { kind: "retry", attempt: attempt + 1, total: RETRY_DELAYS.length, delayMs: RETRY_DELAYS[attempt] };
+        try { args.onStatus(`上游出错，${RETRY_DELAYS[attempt] / 1000} 秒后自动重试（第 ${attempt + 1}/${RETRY_DELAYS.length} 次）：${msg.slice(0, 100)}`, info); } catch {}
+      }
+      // 退避也要听停止信号：用户在等重试的那几秒里点了停，不能干等满 2/5/10 秒
+      await new Promise((resolve, reject) => {
+        const sig = args.signal;
+        // 抛 signal 自带的原因（手动停/卡住是 AbortError，超预算是 TimeoutError），agent 那边按名字认
+        const abortErr = () =>
+          sig.reason instanceof Error ? sig.reason : Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+        if (sig && sig.aborted) return reject(abortErr());
+        const onAbort = () => {
+          clearTimeout(t);
+          reject(abortErr());
+        };
+        const t = setTimeout(() => {
+          if (sig) sig.removeEventListener("abort", onAbort);
+          resolve();
+        }, RETRY_DELAYS[attempt]);
+        if (sig) sig.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+  }
+}
+
+// ---------- 模型上下文窗口（token） ----------
+// agent 按它算每一步能带多少历史（agent.js 的 ctxBudget）。三级来源：
+// ① 渠道配置里写了 context_window 就信它（用户最清楚自己那条中转/私有部署开了多大）；
+// ② 模型名里带了尺寸（moonshot-v1-32k、phi-3-mini-128k、qwen2.5-7b-instruct-1m）按名字算；
+// ③ 查下面这张族表；都查不到按 64k 保守估计。
+// 猜出来的值封顶 200k：窗口越大每一步重发的历史越多、越花钱，1M 窗口要用满得在渠道里显式写 context_window。
+const CONTEXT_WINDOW_DEFAULT = 64000;
+const CONTEXT_WINDOW_GUESS_MAX = 200000;
+// 顺序有讲究：窄的写在宽的前面（gpt-4o 要先于 gpt-4，qwen-max 要先于 qwen）
+const CONTEXT_WINDOW_TABLE = [
+  [/(^|\/)o1-(mini|preview)/, 128000],
+  [/claude/, 200000],
+  [/gpt-5/, 400000],
+  [/gpt-4\.1/, 1000000],
+  [/(^|\/)o[134]($|-)/, 200000],
+  [/gemini/, 1000000],
+  // gpt-4.5、gpt-4-turbo、gpt-4-1106-preview / 0125-preview 都是 128k；8k 的只有最早那批 gpt-4 / 0314 / 0613。
+  // 以前一句 /gpt-4/ 把它们全按 8k 算，历史预算塌到 1.4 万字，跑两步就把前面全截没了
+  [/gpt-4o|gpt-4\.5|gpt-4-(turbo|vision|\d{4}-preview)|chatgpt|gpt-oss/, 128000],
+  [/gpt-4($|-0314|-0613)/, 8192],
+  [/gpt-3\.5/, 16385],
+  [/deepseek/, 128000],
+  [/qwen-long/, 1000000],
+  [/qwen-?(max|vl)|qvq/, 32000],
+  [/qwen|qwq/, 128000],
+  [/glm-4v/, 8000],
+  [/glm/, 128000],
+  [/kimi|moonshot/, 128000],
+  [/doubao-seed/, 128000],
+  [/doubao/, 32000],
+  [/grok|minimax|abab/, 128000],
+  [/llama-?3\.[1-9]|llama-?4/, 128000],
+  [/llama/, 8000],
+  // mistral-large 2 / codestral / devstral / pixtral 都是 128k 往上；老的 7B、mixtral 才 32k
+  [/mistral-large|codestral|devstral|pixtral/, 128000],
+  [/mistral|mixtral/, 32000],
+];
+
+/** "128k" / "1m" / 128000 → token 数；认不出返回 0 */
+function parseWindowSize(v) {
+  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(k|m)?\s*$/i.exec(String(v == null ? "" : v));
+  if (!m) return 0;
+  const n = parseFloat(m[1]) * (m[2] ? (m[2].toLowerCase() === "m" ? 1e6 : 1000) : 1);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * 这条渠道 + 这个模型的上下文窗口（token 数）。channel 可以是 config.models 里的一条，也可以是空。
+ * 渠道显式写的值原样返回（不封顶）；小于 1024 当成写错了，不信。
+ */
+function contextWindowOf(channel, model) {
+  const explicit = parseWindowSize(channel && channel.context_window);
+  if (explicit >= 1024) return explicit;
+  const name = String(model || (channel && channel.model) || "").toLowerCase().trim();
+  if (!name) return CONTEXT_WINDOW_DEFAULT;
+  const sized = /(?:^|[-_:/])(\d+)(k|m)(?:$|[-_:])/.exec(name);
+  let guess = 0;
+  if (sized) guess = +sized[1] * (sized[2] === "m" ? 1e6 : 1000);
+  if (!(guess >= 1024)) {
+    const hit = CONTEXT_WINDOW_TABLE.find(([re]) => re.test(name));
+    guess = hit ? hit[1] : CONTEXT_WINDOW_DEFAULT;
+  }
+  return Math.min(guess, CONTEXT_WINDOW_GUESS_MAX);
+}
+
+// ---------- 统一入口 ----------
+
+/**
+ * 模型配置的两种来源（优先 models 列表）：
+ * 1. config.models: [{ name, provider: "openai"|"anthropic", base_url?, api_key, model }] + config.active_model（按 name 选中）
+ * 2. 旧式 config.provider + config.openai / config.anthropic
+ */
+function createLLM(config) {
+  if (Array.isArray(config.models) && config.models.length) {
+    const picked = config.models.find((m) => m.name === config.active_model) || config.models[0];
+    // 思考模式是一个全局档位（设置页那个下拉框），单条模型可以自己写 thinking 覆盖它。
+    // 这里就地合成，下面两条路（anthropic / openai 兼容）读的都是 entry.thinking
+    const level = picked.thinking || ((config.agent || {}).thinking || "auto");
+    const entry = { ...picked, thinking: level };
+    const provider = entry.provider === "anthropic" ? "anthropic" : "openai";
+    return {
+      provider: entry.name || provider,
+      model: entry.model,
+      contextWindow: contextWindowOf(entry, entry.model),
+      chat: (args) =>
+        chatWithRetry((a) => (provider === "anthropic" ? anthropicChat(entry, a) : openaiChat(entry, a)), args),
+    };
+  }
+
+  const provider = config.provider;
+  if (provider === "anthropic") {
+    return {
+      provider,
+      model: config.anthropic.model,
+      contextWindow: contextWindowOf(config.anthropic, config.anthropic.model),
+      chat: (args) => chatWithRetry((a) => anthropicChat(config.anthropic, a), args),
+    };
+  }
+  if (provider === "openai") {
+    return {
+      provider,
+      model: config.openai.model,
+      contextWindow: contextWindowOf(config.openai, config.openai.model),
+      chat: (args) => chatWithRetry((a) => openaiChat(config.openai, a), args),
+    };
+  }
+  throw new Error(`未知 provider: ${provider}（可选 anthropic / openai）`);
+}
+
+// ---------- Embeddings（记忆向量召回用） ----------
+// 找一条能算文本向量的路：优先 config.embedding 显式指定；否则在 models 列表里找认识的
+// 厂商（DashScope/智谱/OpenAI/Ollama 本地）复用它的 key 和域名。DeepSeek/OpenRouter 压根
+// 没有 embeddings 接口，配了也是白配，所以不瞎猜。一条都找不到就返回 null——
+// 记忆召回自动退回关键词匹配，功能不缺，只是召回没那么聪明。
+const EMBED_KNOWN = [
+  { match: /dashscope\.aliyuncs\.com/i, model: "text-embedding-v4" },
+  { match: /open\.bigmodel\.cn/i, model: "embedding-3" },
+  { match: /api\.openai\.com/i, model: "text-embedding-3-small" },
+  { match: /localhost:11434|127\.0\.0\.1:11434/, model: "nomic-embed-text" },
+];
+
+/**
+ * 攒一份候选清单而不是只挑一条：配了 Ollama 但没开机、或某条渠道欠费，都不该让记忆召回
+ * 直接哑掉。媒体渠道（图像/视频）的 key 也算数——用户常把通义的 key 只填在视频那一栏，
+ * 但同一把 key 就能算向量，只是 DashScope 的原生地址要换成 OpenAI 兼容地址。
+ */
+function embedCandidates(config) {
+  const out = [];
+  const push = (base_url, api_key, model, label) => {
+    if (!base_url || !model) return;
+    let b = String(base_url).trim().replace(/\/+$/, "");
+    // DashScope 原生 /api/v1 不认 /embeddings，OpenAI 兼容层在 /compatible-mode/v1
+    if (/dashscope\.aliyuncs\.com/i.test(b)) b = b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1");
+    if (out.some((c) => c.base_url === b && c.model === model)) return;
+    out.push({ base_url: b, api_key: api_key || "", model, label });
+  };
+
+  const ec = config.embedding;
+  if (ec && ec.base_url && ec.model) push(ec.base_url, ec.api_key, ec.model, "设置里显式指定的嵌入渠道");
+
+  const knownFor = (url) => (EMBED_KNOWN.find((k) => k.match.test(String(url || ""))) || {}).model;
+  const isLocal = (url) => /localhost:11434|127\.0\.0\.1:11434/.test(String(url || ""));
+
+  const fromModels = [];
+  for (const m of Array.isArray(config.models) ? config.models : []) {
+    if (!m || !m.base_url) continue;
+    // 没填 key 的条目跳过（本地 Ollama 除外，它不要 key）：拿空 key 去打只会制造一堆 401 噪音
+    if (!m.api_key && !isLocal(m.base_url)) continue;
+    const model = knownFor(m.base_url);
+    if (model) fromModels.push({ m, model });
+  }
+  for (const { m, model } of fromModels.filter((x) => !isLocal(x.m.base_url)))
+    push(m.base_url, m.api_key, model, `模型渠道「${m.name || m.model}」`);
+
+  // 媒体渠道（图像/视频/语音）的 key 也算数：用户常把通义的 key 只填在视频那一栏
+  const media = config.media || {};
+  for (const [key, mc] of [["图像", media.image], ["视频", media.video], ["语音", media.tts]]) {
+    if (!mc || !mc.base_url || !mc.api_key) continue;
+    const model = knownFor(String(mc.base_url).replace(/\/api\/v\d+$/i, "/compatible-mode/v1"));
+    if (model) push(mc.base_url, mc.api_key, model, `${key}渠道的 key`);
+  }
+
+  // 本地 Ollama 垫底：没开机时它必然 fetch failed，别让它占着第一顺位把功能拖死
+  for (const { m, model } of fromModels.filter((x) => isLocal(x.m.base_url)))
+    push(m.base_url, m.api_key, model, `本地 Ollama`);
+  return out;
+}
+
+/**
+ * 「这条嵌入渠道已经确认用不了」——进程级记忆，跨 embedder 实例。
+ *
+ * 为什么要跨实例记：createEmbedder 在启动、存设置、走完引导时都会重建一次，
+ * 而每个新实例都从第一顺位开始试。首选渠道要是欠费/没开通（4xx），
+ * 就变成每建一次实例都去撞一次死渠道 + 刷一行一模一样的告警，
+ * 用户看到的是满屏重复日志，感觉到的是每次记忆读写都先卡一下。
+ *
+ * 只记 4xx 这种「这条路本身不通」的，不记超时和 5xx（那些下次可能就好了）。
+ * 十分钟后自动忘掉：用户可能刚去把账号充上了，不该让他重启才生效。
+ * key 里带上 api_key 的指纹（不是 key 本身）——换了 key 就是另一条路，立刻重试。
+ */
+const deadEmbedChannels = new Map();
+const DEAD_TTL_MS = 10 * 60 * 1000;
+const chanKey = (c) => `${c.base_url}|${c.model}|${String(c.api_key || "").length}:${String(c.api_key || "").slice(-4)}`;
+function markEmbedChannelDead(c, why) { deadEmbedChannels.set(chanKey(c), { at: Date.now(), why }); }
+function embedChannelDead(c) {
+  const d = deadEmbedChannels.get(chanKey(c));
+  if (!d) return null;
+  if (Date.now() - d.at > DEAD_TTL_MS) { deadEmbedChannels.delete(chanKey(c)); return null; }
+  return d;
+}
+
+function createEmbedder(config) {
+  const all = embedCandidates(config);
+  // 跳过刚刚确认过不通的。不是静默降级：跳了哪条、为什么、什么时候再试，都说出来
+  const cands = all.filter((c) => !embedChannelDead(c));
+  for (const c of all) {
+    const d = embedChannelDead(c);
+    if (!d) continue;
+    const mins = Math.max(1, Math.ceil((DEAD_TTL_MS - (Date.now() - d.at)) / 60000));
+    console.warn(`[记忆向量] 跳过 ${c.label}（${d.why}），${mins} 分钟后自动重试；想立刻重试就去设置里把这条渠道的 key 改一下`);
+  }
+  if (!cands.length) return null;
+
+  let idx = 0, fails = 0, dead = false;
+  /** @param {string[]} texts @returns {Promise<number[][]|null>} 失败返回 null，绝不抛出 */
+  const embed = async (texts) => {
+    if (dead) return null;
+    const cfg = cands[idx];
+    try {
+      const resp = await fetch(`${cfg.base_url}/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
+        body: JSON.stringify({ model: cfg.model, input: texts }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!resp.ok) {
+        const err = new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+        // 4xx = 这条渠道压根不给用（没开通/欠费/key 不对/模型不存在），重试三次也是白试
+        if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) err.fatalForChannel = true;
+        throw err;
+      }
+      const data = await resp.json();
+      const out = (Array.isArray(data.data) ? data.data : [])
+        .slice()
+        .sort((a, b) => (a.index || 0) - (b.index || 0))
+        .map((d) => d.embedding);
+      if (out.length !== texts.length || out.some((v) => !Array.isArray(v))) throw new Error("返回的向量条数或形状不对");
+      fails = 0;
+      return out;
+    } catch (e) {
+      fails = e && e.fatalForChannel ? 3 : fails + 1; // 4xx 一次就够，不用陪它试满三次
+      const why = String((e && e.message) || e).slice(0, 160);
+      // 一条候选挂到头就换下一条；全部挂完才停用。换道要出声，不搞静默降级
+      if (e && e.fatalForChannel) markEmbedChannelDead(cfg, why); // 4xx：下一个实例别再来撞这一下
+      if (fails >= 3 && idx < cands.length - 1) {
+        idx++; fails = 0;
+        embed.model = cands[idx].model; // 换了嵌入模型，memory 那边会自动把旧向量作废重算
+        console.warn(`[记忆向量] ${cfg.label} ${e && e.fatalForChannel ? "不可用" : "连挂 3 次"}（${why}），改用 ${cands[idx].label}（${cands[idx].model}）`);
+      } else if (fails >= 3) {
+        dead = true;
+        console.warn(`[记忆向量] ${cfg.label} 也不行（${why}）。可用的嵌入渠道已用尽，记忆召回退回关键词匹配——` +
+          `想恢复语义召回，去 设置 → 模型 配一条支持 embeddings 的渠道（通义/智谱/OpenAI，或本机跑起 Ollama）`);
+      } else {
+        console.warn(`[记忆向量] ${cfg.label} 调用失败（${fails}/3）：${why}`);
+      }
+      return null;
+    }
+  };
+  embed.model = cands[0].model;
+  embed.candidates = cands.map((c) => `${c.label} → ${c.model}`); // 供 /api/info 之类如实展示
+  return embed;
+}
+
+module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, contextWindowOf, _internals: { chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };
