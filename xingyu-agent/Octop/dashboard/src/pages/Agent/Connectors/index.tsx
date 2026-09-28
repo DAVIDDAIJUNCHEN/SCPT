@@ -23,7 +23,7 @@ import { useSearchParams } from "react-router-dom";
 import PageShell from "../../../layouts/PageShell";
 import TabBar, { type TabBarItem } from "../../../components/TabLabel/TabBar";
 import StreamSetupGuide from "../../../components/StreamSetupGuide/StreamSetupGuide";
-import { OctopEmptyMascot } from "../../../components/EmptyState/OctopEmptyMascot";
+import { 星语 AgentEmptyMascot } from "../../../components/EmptyState/星语 AgentEmptyMascot";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { userCan } from "../../../utils/permissions";
 import { apiErrorMessage } from "../../../utils/apiError";
@@ -1472,7 +1472,7 @@ function ConnectorConfigDrawer({
                 {cliInfo.error ??
                   t(
                     "connectors.cliMissingHint",
-                    "主机尚未安装 CLI。可点击「安装 CLI」，或在 Octop 主机终端手动执行下方命令。",
+                    "主机尚未安装 CLI。可点击「安装 CLI」，或在 星语 Agent 主机终端手动执行下方命令。",
                   )}
               </div>
             )}
@@ -2299,7 +2299,7 @@ export default function ConnectorsPage() {
               className={styles.emptyGuide}
               wide
               plain
-              icon={<OctopEmptyMascot />}
+              icon={<星语 AgentEmptyMascot />}
               title={t("connectors.emptyGuideTitle")}
               description={t("connectors.emptyGuideDesc")}
               steps={[
