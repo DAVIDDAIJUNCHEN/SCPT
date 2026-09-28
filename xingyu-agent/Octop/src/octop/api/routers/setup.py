@@ -11,7 +11,11 @@ from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
 
 from octop.api.deps import get_server, require_database, resolve_user_from_token, sign_token
-from octop.infra.agents.providers.presets import load_provider_presets
+from octop.infra.agents.providers.presets import (
+    XINGYU_PRESET_ID,
+    load_provider_presets,
+    xingyu_env_api_key,
+)
 from octop.infra.agents.providers.probe import make_probe_provider_row, probe_provider_row
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.setup import password_file as _wizard
@@ -174,7 +178,7 @@ async def _bootstrap_default_agent(server: Any, *, user_id: int, locale: str = "
 
 async def _apply_provider_draft(server: Any, draft: ProviderDraftBody) -> None:
     """Persist provider config from the wizard and reload harness providers."""
-    api_key = (draft.api_key or "").strip()
+    api_key = (draft.api_key or "").strip() or xingyu_env_api_key(draft.base_url)
     base_url = (draft.base_url or "").strip()
     if not api_key:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "api_key is required", status=400)
@@ -403,12 +407,13 @@ async def test_provider_draft(
     """Probe LLM connectivity for an unsaved wizard provider draft."""
     _enforce_wizard_token_phase(server)
     _authorize_setup_provider_test(authorization, server)
-    if not body.api_key.strip():
+    api_key = body.api_key.strip() or xingyu_env_api_key(body.base_url)
+    if not api_key:
         return {"ok": False, "error": "api_key is required"}
     row = make_probe_provider_row(
         name=body.name,
         kind=body.type,
-        api_key=body.api_key or None,
+        api_key=api_key,
         base_url=body.base_url,
         model_id=body.model_id,
     )

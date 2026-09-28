@@ -2,7 +2,63 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+# --- 星语（川邮·星语校内网关）预置 -------------------------------------------
+XINGYU_PRESET_ID = "xingyu"
+XINGYU_BASE_URL_DEFAULT = "http://10.255.12.210:3081/v1"
+
+# 海外公网 preset（校园内网不可达，从模型引导中移除）
+_OVERSEAS_PRESET_IDS = {
+    "openai",
+    "openai-codex",
+    "anthropic",
+    "gemini",
+    "groq",
+    "openrouter",
+}
+
+
+def _xingyu_base_url() -> str:
+    return os.environ.get("XINGYU_BASE_URL", "").strip() or XINGYU_BASE_URL_DEFAULT
+
+
+def xingyu_env_api_key(base_url: str | None = None) -> str:
+    """Server-side default API key for the campus Xingyu gateway.
+
+    Returns the ``XINGYU_API_KEY`` env var only when the target base_url
+    matches the Xingyu gateway, so other providers never accidentally
+    pick it up.
+    """
+    key = os.environ.get("XINGYU_API_KEY", "").strip()
+    if not key:
+        return ""
+    target = (base_url or "").strip().rstrip("/")
+    if target and target != _xingyu_base_url().rstrip("/"):
+        return ""
+    return key
+
+
+def _xingyu_preset() -> dict[str, Any]:
+    models: list[dict[str, Any]] = [
+        {"id": "DeepSeek-V4-Flash-0731", "name": "DeepSeek-V4-Flash-0731", "enabled": True, "input": ["text"]},
+        {"id": "DeepSeek-V4.1-Flash", "name": "DeepSeek-V4.1-Flash", "enabled": True, "input": ["text"]},
+        {"id": "GLM-5.3-Flash", "name": "GLM-5.3-Flash", "enabled": True, "input": ["text"]},
+        {"id": "Qwen3.8-Flash-Next", "name": "Qwen3.8-Flash-Next", "enabled": True, "input": ["text"]},
+        {"id": "Qwen3-VL-30B-A3B-Instruct", "name": "Qwen3-VL-30B-A3B-Instruct", "enabled": True, "input": ["text"]},
+    ]
+    return {
+        "id": XINGYU_PRESET_ID,
+        "name": "星语网关",
+        "base_url": _xingyu_base_url(),
+        "protocol": "openai",
+        "api_key_prefix": "",
+        "models": models,
+        "logo_id": "xingyu",
+        # 服务器已注入 XINGYU_API_KEY 时，向导可零配置直接测试
+        "env_key_ready": bool(xingyu_env_api_key()),
+    }
 
 
 def _reasoning_profile(provider_id: str, model_id: str) -> dict[str, Any] | None:
@@ -219,29 +275,15 @@ def load_provider_presets() -> list[dict[str, Any]]:
 
     bundled = resources.files("octop_harness.providers").joinpath("provider_template.json")
     out = [serialize_provider_preset(p) for p in load_provider_templates(str(bundled))]
-    if not any(p.get("id") == "openai-codex" for p in out):
-        out.insert(
-            0,
-            {
-                "id": "openai-codex",
-                "name": "OpenAI (ChatGPT)",
-                "base_url": "https://chatgpt.com/backend-api/codex",
-                "protocol": "openai",
-                "api_key_prefix": "",
-                "auth_method": "codex_oauth",
-                "models": [
-                    {"id": "gpt-5.4", "name": "GPT-5.4", "enabled": True, "input": ["text"]},
-                    {
-                        "id": "gpt-5.4-mini",
-                        "name": "GPT-5.4 mini",
-                        "enabled": True,
-                        "input": ["text"],
-                    },
-                    {"id": "gpt-5.5", "name": "GPT-5.5", "enabled": True, "input": ["text"]},
-                ],
-                "logo_id": "openai",
-            },
-        )
+    # 星语置顶 + 海外公网 preset 过滤（校内不可达，弱化公网模型引导）
+    if not any(p.get("id") == XINGYU_PRESET_ID for p in out):
+        out.insert(0, _xingyu_preset())
+    else:
+        for i, p in enumerate(out):
+            if p.get("id") == XINGYU_PRESET_ID:
+                out[i] = _xingyu_preset()
+                break
+    out = [p for p in out if p.get("id") not in _OVERSEAS_PRESET_IDS and not str(p.get("id") or "").startswith("opencode-")]
     if not any(p.get("id") == "onnx" for p in out):
         from octop.infra.agents.providers.onnx_catalog import ONNX_PRESET_MODEL_IDS
 

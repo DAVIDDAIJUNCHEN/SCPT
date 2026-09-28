@@ -65,6 +65,8 @@ interface ProviderPreset {
   provider_group_name?: string;
   provider_variant?: string;
   logo_id?: string;
+  /** Server has XINGYU_API_KEY injected — wizard can skip api_key input. */
+  env_key_ready?: boolean;
 }
 
 type PresetDisplayItem =
@@ -129,8 +131,20 @@ function buildWizardPresetDisplay(presets: ProviderPreset[]): {
     ];
   };
 
+  // 星语（校内默认网关）在 featured 中置顶
+  const withXingyuFirst = (list: ProviderPreset[]): ProviderPreset[] => {
+    const xingyu = list.find((p) => p.id === "xingyu");
+    if (!xingyu) return list;
+    const rest = list.filter((p) => p.id !== "xingyu");
+    const groupsFirst: ProviderPreset[] = [];
+    const groups = rest.filter((p) => p.provider_group);
+    const singles = rest.filter((p) => !p.provider_group);
+    groupsFirst.push(...groups, ...singles);
+    return [xingyu, ...groupsFirst];
+  };
+
   return {
-    featured: toItems(featuredCloud),
+    featured: toItems(withXingyuFirst(featuredCloud)),
     more: [
       ...toItems(overseasCloud),
       ...local.map((preset): PresetDisplayItem => ({ kind: "single", preset })),
@@ -257,6 +271,9 @@ export default function ModelStep({ onBack, onSkip, onContinue }: Props) {
   );
 
   const isOllama = preset?.id === "ollama";
+  /** 星语 preset 且服务器已注入 XINGYU_API_KEY → api_key 可留空。 */
+  const isXingyuEnvReady =
+    preset?.id === "xingyu" && Boolean(preset?.env_key_ready);
 
   const applyPreset = (p: ProviderPreset) => {
     resetTest();
@@ -336,7 +353,7 @@ export default function ModelStep({ onBack, onSkip, onContinue }: Props) {
         field: "name",
       };
     }
-    if (!isOllama && !apiKey) {
+    if (!isOllama && !isXingyuEnvReady && !apiKey) {
       return {
         ok: false,
         message: t("models.pleaseEnterApiKey"),
@@ -948,20 +965,28 @@ export default function ModelStep({ onBack, onSkip, onContinue }: Props) {
               name="api_key"
               label="API Key"
               rules={
-                isOllama
+                isOllama || isXingyuEnvReady
                   ? []
                   : [{ required: true, message: t("models.pleaseEnterApiKey") }]
               }
-              extra={isOllama ? t("models.apiKeyExtraOptional") : undefined}
+              extra={
+                isOllama
+                  ? t("models.apiKeyExtraOptional")
+                  : isXingyuEnvReady
+                    ? t("models.apiKeyXingyuEnvReady")
+                    : undefined
+              }
               getValueFromEvent={(e) =>
                 typeof e === "string" ? e : String(e?.target?.value ?? "")
               }
             >
               <Input.Password
                 placeholder={
-                  preset.api_key_prefix
-                    ? `${preset.api_key_prefix}...`
-                    : t("models.apiKeyExtraOptional")
+                  isXingyuEnvReady
+                    ? t("models.apiKeyXingyuEnvReady")
+                    : preset.api_key_prefix
+                      ? `${preset.api_key_prefix}...`
+                      : t("models.apiKeyExtraOptional")
                 }
                 autoComplete="new-password"
               />

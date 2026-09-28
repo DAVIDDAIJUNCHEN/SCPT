@@ -3159,6 +3159,7 @@
     "notePlaceholder": "自定义说明,仅在仪表盘可见",
     "apiKeyExtraConfigured": "已配置 API Key,留空表示保持原值。",
     "apiKeyExtraOptional": "可选 — 支持自部署服务无需 key 的场景。",
+    "apiKeyXingyuEnvReady": "服务器已预置星语密钥，可留空直接测试。",
     "apiKeyPlaceholderKeep": "留空保持原 key",
     "noChanges": "无变更",
     "revoke": "撤销",

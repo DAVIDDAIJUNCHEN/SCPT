@@ -3161,6 +3161,7 @@
     "notePlaceholder": "Custom description, only visible in the dashboard",
     "apiKeyExtraConfigured": "API Key configured. Leave blank to keep current value.",
     "apiKeyExtraOptional": "Optional — supports self-hosted services without an API key.",
+    "apiKeyXingyuEnvReady": "Server has a preset Xingyu key — leave blank and test directly.",
     "apiKeyPlaceholderKeep": "Leave blank to keep current key",
     "noChanges": "No changes",
     "revoke": "Revoke",

@@ -23,6 +23,7 @@ import edgeLogo from "./edge.svg";
 import tavilyLogo from "./tavily.svg";
 import braveLogo from "./brave.svg";
 import googleLogo from "./google.svg";
+import xingyuLogo from "./xingyu.svg";
 
 export const PROVIDER_LOGOS: Record<string, string> = {
   openai: openaiLogo,
@@ -50,6 +51,7 @@ export const PROVIDER_LOGOS: Record<string, string> = {
   tavily: tavilyLogo,
   brave: braveLogo,
   google: googleLogo,
+  xingyu: xingyuLogo,
 };
 
 export { customProviderLogo };
