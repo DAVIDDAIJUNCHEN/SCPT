@@ -9,7 +9,6 @@
 | 语音合成 | **Fun-CosyVoice3-0.5B** | `POST /v1/audio/speech` | 文本→语音（wav） |
 | 语音识别 | **Qwen3-ASR-1.7B** | `POST /v1/audio/transcriptions` | 音频→文本 |
 | 音频理解 | **Qwen2-Audio-7B-Instruct** | `POST /v1/chat/completions` | 可对音频内容问答 |
-| 文档解析 | **MinerU2.5-2509-1.2B** | `POST /v1/chat/completions` | 接入联调中，暂不稳定（见下文） |
 
 ## TTS 语音合成（Fun-CosyVoice3-0.5B）
 
@@ -75,19 +74,6 @@ multipart 文件上传，音频文件直接附在 `file` 字段。适合课堂�
 ## 音频理解（Qwen2-Audio-7B-Instruct）
 
 音频+文字混合提问（如"这段音频里的人在讨论什么"），content 数组格式同 [VL 视觉理解](02-6-多模态视觉理解.md)，`type` 用 `input_audio`。适合音频内容问答而非纯转写。
-
-## 文档解析（MinerU2.5）
-
-> **状态交底**【实测 2026-09-24】：MinerU 正在接入联调中，当前经网关调用图片/文档解析**返回结果不稳定**，暂不建议在课程场景使用。
-
-当前替代方案：
-
-| 需求 | 推荐替代 |
-|---|---|
-| 图片文字提取（板书/作业照片） | **Qwen3-VL**（[视觉理解](02-6-多模态视觉理解.md)，OCR 能力实测稳定） |
-| PDF 长文阅读 | 复制文本后用 **DS-V4.1-Flash**（1M 长上下文） |
-
-MinerU 联调完成后本页将补充完整调用样例，可联系智算中心了解进度。
 
 ## 场景搭配建议
 

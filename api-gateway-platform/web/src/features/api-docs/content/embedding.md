@@ -1,20 +1,38 @@
 # Embedding · Rerank 与 RAG 检索管线
 
-> 数据：2026-09-23 / 09-28 实测。**本页三件套同属 RAG 检索管线**：bge-m3 负责向量化（① 召回），Qwen3-Reranker-4B 负责精排（② 重排序），DS-V4.1-Flash 负责生成（③ 答案）。
+> 数据：2026-09-23 / 09-28 实测。**本页四件套同属 RAG 检索管线**：MinerU 负责文档解析（⓪ 入库），bge-m3 负责向量化（① 召回），Qwen3-Reranker-4B 负责精排（② 重排序），DS-V4.1-Flash 负责生成（③ 答案）。
 >
 > ```
-> 文档切块 → [bge-m3 向量化] → 向量库 ──top-50──> [Reranker 精排] ──top-5──> [LLM 生成答案]
->              ① 召回（快、粗）              ② 精排（准、慢）        ③ 生成
+> PDF/图片 → [MinerU 解析] → 文档切块 → [bge-m3 向量化] → 向量库 ──top-50──> [Reranker 精排] ──top-5──> [LLM 生成答案]
+>             ⓪ 解析（入库）              ① 召回（快、粗）              ② 精排（准、慢）        ③ 生成
 > ```
 
 ## 模型
 
 | 模型 | 角色 | 参数/维度 | 上下文 | 输入价格 |
 |---|---|---|---|---|
+| **MinerU2.5-2509-1.2B** | ⓪ 文档解析入库 | 1.2B | — | 接入联调中（见下） |
 | **bge-m3** | ① 向量召回 | 1024 维【实测】 | 8K | 0.5 元/百万 token |
 | **Qwen3-Reranker-4B** | ② 精排 | 4B | 32K | 0.6 元/百万 token（对齐阿里云百炼 qwen3-rerank 官方价） |
 
-端点：`POST /v1/embeddings`（bge-m3）· `POST /v1/rerank`（Qwen3-Reranker-4B）
+端点：`POST /v1/chat/completions`（MinerU）· `POST /v1/embeddings`（bge-m3）· `POST /v1/rerank`（Qwen3-Reranker-4B）
+
+---
+
+## 〇、MinerU2.5：文档解析入库（第 0 步）
+
+RAG 建库的第一步是把 PDF / 扫描件 / 图片讲义**解析成干净的 Markdown 文本**，才能切块向量化。MinerU2.5-2509-1.2B 是文档解析专用模型（PDF→Markdown、表格还原、版面分析）。
+
+> **状态交底**【实测 2026-09-24】：MinerU 正在接入联调中，当前经 API 网关调用图片/文档解析**返回结果不稳定**，暂不建议在课程场景直接调用。**网页端知识库**（ai-chat.sptc.edu.cn 新建知识库上传文档）的解析已由 MinerU 驱动，网页操作可正常使用。
+
+当前 API 直连替代方案：
+
+| 需求 | 推荐替代 |
+|---|---|
+| 图片文字提取（板书/作业照片） | **Qwen3-VL**（[视觉理解](02-6-多模态视觉理解.md)，OCR 能力实测稳定） |
+| PDF 长文阅读 | 复制文本后用 **DS-V4.1-Flash**（1M 长上下文） |
+
+MinerU 联调完成后本节将补充完整调用样例，可联系智算中心了解进度。
 
 ---
 
@@ -111,15 +129,18 @@ curl https://ai-platform.sptc.edu.cn/v1/rerank -k \
 
 ---
 
-## 三、两阶段 RAG 完整实战（召回 → 精排 → 生成）
+## 三、两阶段 RAG 完整实战（解析入库 → 召回 → 精排 → 生成）
 
 ```
+⓪ 入库：MinerU 把 PDF/图片解析成 Markdown（网页端知识库已可用；API 直连联调中）
 ① 召回：bge-m3 向量检索 top-50 候选块（快、粗排）
 ② 精排：Qwen3-Reranker-4B 对 50 个候选逐对精细打分，取 top-5（准、慢）
 ③ 生成：top-5 块 + 问题拼 prompt → DS-V4.1-Flash 生成答案
 ```
 
 ```python
+# ⓪ 建库前置（一次性）：PDF/讲义先解析成文本——网页端知识库上传即自动走 MinerU；
+#    API 直连联调完成前，纯文本 PDF 可用 pypdf 等工具抽取，扫描件用 Qwen3-VL 做 OCR
 # ① 建库（一次性）：文档切块 → bge-m3 向量化 → 存 FAISS / Chroma / pgvector
 question = "学校奖学金评定标准是什么？"
 q_vec = client.embeddings.create(model="bge-m3", input=question).data[0].embedding

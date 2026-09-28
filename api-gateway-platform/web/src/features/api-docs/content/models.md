@@ -18,6 +18,7 @@
 | **Qwen3-Coder-Next-FP8** | 256K | 64K | 1 | — | 4 | 专职代码模型：生成/Debug/重构/单测，原生 Tool Calls，适配 Cursor/Cline/Aider 等 AI 编程工具【2026-09-28 上线】 |
 | bge-m3（Embedding） | 8K | — | 0.5 | — | — | 文本向量化，检索/RAG 召回。[调用样例](02-8-Embedding与RAG.md#调用样例实测通过) |
 | Qwen3-Reranker-4B（Rerank） | 32K | — | 0.6 | — | — | 检索重排序，RAG 二阶段精排。[调用样例](02-8-Embedding与RAG.md#二qwen3-reranker-4b候选精排rerank) |
+| MinerU2.5-2509-1.2B（文档解析） | — | — | 联调中 | — | — | PDF/图片→Markdown，RAG 入库第 0 步。[状态与替代方案](02-8-Embedding与RAG.md#〇mineru25文档解析入库第-0-步) |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 8K | 0.75 | 0.75 | 3 | 图像理解多模态，[样例](02-6-多模态视觉理解.md) |
 | FLUX.2-klein-4B | — | — | 按张计费 | — | — | 图像生成，[样例](02-6-多模态视觉理解.md) |
 | **Qwen-Image-2.1** | — | — | 按张计费 | — | — | 图像生成（中文提示词优化、1664 宽幅），[样例](02-6-多模态视觉理解.md) |

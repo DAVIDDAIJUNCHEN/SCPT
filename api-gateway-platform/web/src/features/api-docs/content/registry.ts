@@ -212,12 +212,12 @@ const BILINGUAL_ENTRIES: BilingualEntry[] = [
     group: 'dev',
     zh: {
       title: 'Embedding · Rerank 与 RAG',
-      description: 'bge-m3 向量化 + Qwen3-Reranker 重排序：一条 RAG 检索管线全讲透。',
+      description: 'MinerU 解析 + bge-m3 向量化 + Qwen3-Reranker 重排序：一条 RAG 检索管线全讲透。',
       raw: embedding,
     },
     en: {
       title: 'Embedding · Rerank & RAG',
-      description: 'bge-m3 embedding + Qwen3-Reranker rerank — the whole RAG pipeline in one page.',
+      description: 'MinerU parsing + bge-m3 embedding + Qwen3-Reranker rerank — the whole RAG pipeline in one page.',
       raw: embeddingEn,
     },
   },

@@ -9,7 +9,6 @@
 | Speech synthesis | **Fun-CosyVoice3-0.5B** | `POST /v1/audio/speech` | Text → speech (wav) |
 | Speech recognition | **Qwen3-ASR-1.7B** | `POST /v1/audio/transcriptions` | Audio → text |
 | Audio understanding | **Qwen2-Audio-7B-Instruct** | `POST /v1/chat/completions` | Q&A over audio content |
-| Document parsing | **MinerU2.5-2509-1.2B** | `POST /v1/chat/completions` | Integration in progress, currently unstable (see below) |
 
 ## TTS Speech Synthesis (Fun-CosyVoice3-0.5B)
 
@@ -75,19 +74,6 @@ Multipart file upload — the audio file attaches directly to the `file` field. 
 ## Audio Understanding (Qwen2-Audio-7B-Instruct)
 
 Mixed audio + text questions (e.g. "what are the people in this audio discussing"); the `content` array format is the same as [VL vision](/docs/vision), with `type` set to `input_audio`. Suited to Q&A about audio content rather than pure transcription.
-
-## Document Parsing (MinerU2.5)
-
-> **Status disclosure** [verified 2026-09-24]: MinerU integration is still in progress; calling image/document parsing through the gateway currently **returns unstable results** — not yet recommended for course scenarios.
-
-Current alternatives:
-
-| Need | Recommended alternative |
-|---|---|
-| Text extraction from images (whiteboard/homework photos) | **Qwen3-VL** ([vision](/docs/vision); OCR verified stable) |
-| Long PDF reading | Copy the text out and use **DS-V4.1-Flash** (1M long context) |
-
-Complete usage examples will be added here once MinerU integration is finalized; contact the AI Computing Center for progress.
 
 ## Scenario Pairing Suggestions
 

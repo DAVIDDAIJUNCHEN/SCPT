@@ -1,20 +1,38 @@
 # Embedding · Rerank & the RAG Pipeline
 
-> Data verified 2026-09-23 / 09-28. **The three components on this page belong to one RAG pipeline**: bge-m3 does vectorization (① recall), Qwen3-Reranker-4B does refinement (② rerank), and DS-V4.1-Flash does generation (③ the answer).
+> Data verified 2026-09-23 / 09-28. **The four components on this page belong to one RAG pipeline**: MinerU does document parsing (⓪ ingestion), bge-m3 does vectorization (① recall), Qwen3-Reranker-4B does refinement (② rerank), and DS-V4.1-Flash does generation (③ the answer).
 >
 > ```
-> chunk docs → [bge-m3 embed] → vector DB ──top-50──> [Reranker] ──top-5──> [LLM answers]
->               ① recall (fast, coarse)                ② refine (accurate, slower)   ③ generate
+> PDF/image → [MinerU parse] → chunk docs → [bge-m3 embed] → vector DB ──top-50──> [Reranker] ──top-5──> [LLM answers]
+>              ⓪ parse (ingest)                ① recall (fast, coarse)             ② refine (accurate, slower)  ③ generate
 > ```
 
 ## Models
 
 | Model | Role | Params / dims | Context | Input price |
 |---|---|---|---|---|
+| **MinerU2.5-2509-1.2B** | ⓪ Document parsing / ingestion | 1.2B | — | Integration in progress (see below) |
 | **bge-m3** | ① Vector recall | 1024-dim [tested] | 8K | 0.5 CNY / million tokens |
 | **Qwen3-Reranker-4B** | ② Refinement | 4B | 32K | 0.6 CNY / million tokens (aligned with the official Alibaba Cloud Bailian qwen3-rerank price) |
 
-Endpoints: `POST /v1/embeddings` (bge-m3) · `POST /v1/rerank` (Qwen3-Reranker-4B)
+Endpoints: `POST /v1/chat/completions` (MinerU) · `POST /v1/embeddings` (bge-m3) · `POST /v1/rerank` (Qwen3-Reranker-4B)
+
+---
+
+## 0. MinerU2.5: Document Parsing for Ingestion (Step Zero)
+
+The first step of building a RAG knowledge base is parsing PDFs / scans / slide images **into clean Markdown text**, which can then be chunked and embedded. MinerU2.5-2509-1.2B is a dedicated document-parsing model (PDF→Markdown, table restoration, layout analysis).
+
+> **Status disclosure** [verified 2026-09-24]: MinerU integration is still in progress; calling image/document parsing through the API gateway currently **returns unstable results** — not yet recommended for direct API calls in course scenarios. Parsing in the **web knowledge base** (ai-chat.sptc.edu.cn — create a knowledge base and upload documents) is already powered by MinerU and works normally.
+
+Workarounds while direct API calls are pending:
+
+| Need | Recommended alternative |
+|---|---|
+| Text extraction from images (whiteboard / homework photos) | **Qwen3-VL** ([Vision](/docs/vision) — OCR tested stable) |
+| Reading long PDFs | Copy the text and use **DS-V4.1-Flash** (1M long context) |
+
+Complete API usage examples will be added here once MinerU integration is finalized; contact the AI Computing Center for progress.
 
 ---
 
@@ -111,15 +129,19 @@ Verified response (Jina-compatible format, sorted by relevance descending):
 
 ---
 
-## 3. Full Two-Stage RAG Walkthrough (recall → refine → generate)
+## 3. Full RAG Walkthrough (parse & ingest → recall → refine → generate)
 
 ```
+⓪ Ingest: MinerU parses PDFs/images into Markdown (web knowledge base works now; direct API pending)
 ① Recall: bge-m3 vector search for top-50 candidate chunks (fast, coarse)
 ② Refine: Qwen3-Reranker-4B scores all 50 candidates pairwise, keep top-5 (accurate, slower)
 ③ Generate: top-5 chunks + question assembled into a prompt → DS-V4.1-Flash generates the answer
 ```
 
 ```python
+# ⓪ Before building the index (one-off): parse PDFs/slides into text — the web knowledge base
+#    does this automatically via MinerU; until direct API is finalized, extract text from
+#    digital PDFs with pypdf etc., and use Qwen3-VL for OCR of scanned pages
 # ① Build the index (one-off): chunk documents → embed with bge-m3 → store in FAISS / Chroma / pgvector
 question = "What are the scholarship evaluation criteria?"
 q_vec = client.embeddings.create(model="bge-m3", input=question).data[0].embedding
