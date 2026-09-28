@@ -11,7 +11,7 @@
 
 | Model | Role | Params / dims | Context | Input price |
 |---|---|---|---|---|
-| **MinerU2.5-2509-1.2B** | ⓪ Document parsing / ingestion | 1.2B | — | Integration in progress (see below) |
+| **MinerU2.5-2509-1.2B** | ⓪ Document parsing / ingestion | 1.2B | — | Available (image input, see below) |
 | **bge-m3** | ① Vector recall | 1024-dim [tested] | 8K | 0.5 CNY / million tokens |
 | **Qwen3-Reranker-4B** | ② Refinement | 4B | 32K | 0.6 CNY / million tokens (aligned with the official Alibaba Cloud Bailian qwen3-rerank price) |
 
