@@ -17,7 +17,7 @@
 | **DeepSeek-V4-Flash-0731** | 1M | 1 | 0.02 | 4 | 上一代版本，一般选新不选旧 |
 | bge-m3（Embedding） | 8K | 0.5 | — | — | 文本向量化，检索/RAG 专用 |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 0.75 | — | 3 | 图像理解（看图说话、读图表） |
-| Qwen2-Audio-7B / Qwen3-ASR-1.7B / cosyvoice-v3 | — | 1 | — | 1 | 语音理解 / 识别 / 合成 |
+| Qwen2-Audio-7B / Qwen3-ASR-1.7B / Fun-CosyVoice3-0.5B | — | 1 | — | 1 | 语音理解 / 识别 / 合成 |
 
 ### vip 分组专享
 

@@ -184,7 +184,7 @@ SKIP = {
     "Qwen2-Audio-7B-Instruct": "音频模型",
     "FLUX.2-klein-4B": "图像生成，按张计费",
     "Qwen3-ASR-1.7B": "语音识别，按时长计费",
-    "cosyvoice-v3": "语音合成，按字符计费",
+    "Fun-CosyVoice3-0.5B": "语音合成，按字符计费",
     "MinerU2.5-2509-1.2B": "文档解析，按页计费",
     "bge-m3": "向量模型，官方无对标",
 }

@@ -6,19 +6,19 @@
 
 | Capability | Model | Endpoint | Notes |
 |---|---|---|---|
-| Speech synthesis | **cosyvoice-v3** | `POST /v1/audio/speech` | Text → speech (wav) |
+| Speech synthesis | **Fun-CosyVoice3-0.5B** | `POST /v1/audio/speech` | Text → speech (wav) |
 | Speech recognition | **Qwen3-ASR-1.7B** | `POST /v1/audio/transcriptions` | Audio → text |
 | Audio understanding | **Qwen2-Audio-7B-Instruct** | `POST /v1/chat/completions` | Q&A over audio content |
 | Document parsing | **MinerU2.5-2509-1.2B** | `POST /v1/chat/completions` | Integration in progress, currently unstable (see below) |
 
-## TTS Speech Synthesis (cosyvoice-v3)
+## TTS Speech Synthesis (Fun-CosyVoice3-0.5B)
 
 ```bash
 curl https://ai-platform.sptc.edu.cn/v1/audio/speech -k \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $YOUR_API_KEY" \
   -d '{
-    "model": "cosyvoice-v3",
+    "model": "Fun-CosyVoice3-0.5B",
     "input": "Hello, welcome to StarWhisper",
     "voice": "5a4ff23e588f"
   }' \
@@ -54,7 +54,7 @@ from openai import OpenAI
 client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.cn/v1")
 
 resp = client.audio.speech.create(
-    model="cosyvoice-v3",
+    model="Fun-CosyVoice3-0.5B",
     voice="5a4ff23e588f",  # voice ID, e.g. Tingting (standard female); full list above
     input="Hello, welcome to StarWhisper",
 )
@@ -93,7 +93,7 @@ Complete usage examples will be added here once MinerU integration is finalized;
 
 | Scenario | Recommended combo |
 |---|---|
-| Courseware narration | TTS (cosyvoice-v3) |
+| Courseware narration | TTS (Fun-CosyVoice3-0.5B) |
 | Lecture recording minutes | ASR (Qwen3-ASR) → LLM summary (DS-V4.1-Flash 1M long context) |
 | English listening/speaking practice | ASR on student speech + LLM scoring feedback + TTS model reading |
 | Batch exam/homework photo processing | VL (Qwen3-VL, OCR verified stable) |

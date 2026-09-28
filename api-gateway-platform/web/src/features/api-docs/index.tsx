@@ -26,7 +26,7 @@ const MODELS = {
   '视觉理解 (VL)': ['Qwen3-VL-30B-A3B-Instruct'],
   '音频理解 (Audio)': ['Qwen2-Audio-7B-Instruct'],
   '图像生成': ['FLUX.2-klein-4B'],
-  '语音合成 (TTS)': ['cosyvoice-v3'],
+  '语音合成 (TTS)': ['Fun-CosyVoice3-0.5B'],
   '语音识别 (ASR)': ['Qwen3-ASR-1.7B'],
   '文档解析': ['MinerU2.5-Pro-2605-1.2B'],
 }
@@ -98,7 +98,7 @@ const TTS_CURL = `curl ${BASE_URL}/audio/speech \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $YOUR_API_KEY" \\
   -d '{
-    "model": "cosyvoice-v3",
+    "model": "Fun-CosyVoice3-0.5B",
     "input": "你好，欢迎使用川邮星语",
     "voice": "7bfd2603e70f"
   }' \\
@@ -109,7 +109,7 @@ const TTS_PYTHON = `from openai import OpenAI
 client = OpenAI(api_key="YOUR_API_KEY", base_url="${BASE_URL}")
 
 resp = client.audio.speech.create(
-    model="cosyvoice-v3",
+    model="Fun-CosyVoice3-0.5B",
     voice="7bfd2603e70f",   # 需要使用 voice ID（查询 /v1/voices）
     input="你好，欢迎使用川邮星语",
 )

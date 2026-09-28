@@ -20,7 +20,7 @@ Platform models are exposed by **group**: registration puts you in the **default
 | Qwen3-VL-30B-A3B-Instruct | 128K | 8K | 0.75 | 0.75 | 3 | Multimodal image understanding. [Example](/docs/vision) |
 | FLUX.2-klein-4B | — | — | Per image | — | — | Image generation. [Example](/docs/vision) |
 | **Qwen-Image-2.1** | — | — | Per image | — | — | Image generation (Chinese-prompt optimized, 1664 wide). [Example](/docs/vision) |
-| Qwen2-Audio-7B-Instruct / Qwen3-ASR-1.7B / cosyvoice-v3 | — | — | 1 | — | 1 | Audio understanding/ASR/TTS. [Audio examples](/docs/audio#models-and-endpoints) |
+| Qwen2-Audio-7B-Instruct / Qwen3-ASR-1.7B / Fun-CosyVoice3-0.5B | — | — | 1 | — | 1 | Audio understanding/ASR/TTS. [Audio examples](/docs/audio#models-and-endpoints) |
 
 > Prices above are **live values verified against the platform billing config** [2026-09-24]. In classroom terms: one ordinary Q&A round costs about 0.001–0.01 CNY.
 > † GLM-5.3-Flash is currently at a **50%-off promotional price** (regular price 0.8 / 2.8 CNY); it will return to regular pricing after the promotion ends.

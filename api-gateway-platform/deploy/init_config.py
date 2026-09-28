@@ -28,6 +28,8 @@ import urllib.request
 # ---------------------------------------------------------------------------
 
 # 渠道定义: (name, base_url, models, group)
+# 注意：models 为星语侧模型名（官方名）；以下渠道需在后台补 model_mapping 映射到上游 id：
+#   Fun-CosyVoice3-0.5B -> cosyvoice-v3（渠道10）、Qwen-Image-2.1 -> qwen-image-2.1（渠道15）
 CHANNELS = [
     ("Campus-DeepSeek-Flash-V4-0731", "http://10.32.1.3:30551", "DeepSeek-V4-Flash-0731", "default"),
     ("deepseek-v4-flash-0731 (DGX)", "http://10.254.1.25:18000", "deepseek-v4-flash-0731", "default,vip"),
@@ -39,7 +41,7 @@ CHANNELS = [
     ("FLUX.2-klein-4B", "http://10.32.1.3:30606", "FLUX.2-klein-4B", "default"),
     ("MinerU2.5-Pro", "http://10.32.1.3:30556", "MinerU2.5-Pro-2605-1.2B", "default"),
     ("Qwen3-ASR-1.7B", "http://10.32.1.3:30555", "Qwen3-ASR-1.7B", "default"),
-    ("cosyvoice-v3", "http://10.32.1.3:30691", "cosyvoice-v3", "default"),
+    ("Fun-CosyVoice3-0.5B", "http://10.32.1.3:30691", "Fun-CosyVoice3-0.5B", "default"),
     ("Campus-DeepSeek-V4-Pro-0813", "http://10.32.1.3:30598", "DeepSeek-V4-Pro-0813", "default"),
     ("Campus-DeepSeek-V4.1-Flash", "http://10.32.1.3:30604", "DeepSeek-V4.1-Flash", "default"),
     # GLM-5.3 满血版（node004，8×H20-141G，TP8，SGLang dev-cu13）
@@ -67,7 +69,7 @@ MODEL_PRICES = {
     "FLUX.2-klein-4B": (0.068493, 1.0),
     "MinerU2.5-Pro-2605-1.2B": (0.068493, 1.0),
     "Qwen3-ASR-1.7B": (0.068493, 1.0),
-    "cosyvoice-v3": (0.068493, 1.0),
+    "Fun-CosyVoice3-0.5B": (0.068493, 1.0),
 }
 
 # 货币：人民币显示

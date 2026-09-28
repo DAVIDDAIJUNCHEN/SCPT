@@ -6,19 +6,19 @@
 
 | 能力 | 模型 | 端点 | 说明 |
 |---|---|---|---|
-| 语音合成 | **cosyvoice-v3** | `POST /v1/audio/speech` | 文本→语音（wav） |
+| 语音合成 | **Fun-CosyVoice3-0.5B** | `POST /v1/audio/speech` | 文本→语音（wav） |
 | 语音识别 | **Qwen3-ASR-1.7B** | `POST /v1/audio/transcriptions` | 音频→文本 |
 | 音频理解 | **Qwen2-Audio-7B-Instruct** | `POST /v1/chat/completions` | 可对音频内容问答 |
 | 文档解析 | **MinerU2.5-2509-1.2B** | `POST /v1/chat/completions` | 接入联调中，暂不稳定（见下文） |
 
-## TTS 语音合成（cosyvoice-v3）
+## TTS 语音合成（Fun-CosyVoice3-0.5B）
 
 ```bash
 curl https://ai-platform.sptc.edu.cn/v1/audio/speech -k \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $YOUR_API_KEY" \
   -d '{
-    "model": "cosyvoice-v3",
+    "model": "Fun-CosyVoice3-0.5B",
     "input": "你好，欢迎使用川邮星语",
     "voice": "5a4ff23e588f"
   }' \
@@ -54,7 +54,7 @@ from openai import OpenAI
 client = OpenAI(api_key="YOUR_API_KEY", base_url="https://ai-platform.sptc.edu.cn/v1")
 
 resp = client.audio.speech.create(
-    model="cosyvoice-v3",
+    model="Fun-CosyVoice3-0.5B",
     voice="5a4ff23e588f",  # voice ID，如：婷婷（标准女声）；完整列表见上表
     input="你好，欢迎使用川邮星语",
 )
@@ -93,7 +93,7 @@ MinerU 联调完成后本页将补充完整调用样例，可联系智算中心�
 
 | 场景 | 推荐组合 |
 |---|---|
-| 课件配音 | TTS（cosyvoice-v3） |
+| 课件配音 | TTS（Fun-CosyVoice3-0.5B） |
 | 课堂录音纪要 | ASR（Qwen3-ASR）→ LLM 总结（DS-V4.1-Flash 1M 长文） |
 | 英语听说训练 | ASR 识别学生语音 + LLM 评分反馈 + TTS 示范朗读 |
 | 试卷/作业照片批量处理 | VL（Qwen3-VL，OCR 实测稳定） |

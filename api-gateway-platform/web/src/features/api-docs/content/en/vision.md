@@ -142,7 +142,7 @@ curl https://ai-platform.sptc.edu.cn/v1/images/generations -k \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $YOUR_API_KEY" \
   -d '{
-    "model": "qwen-image-2.1",
+    "model": "Qwen-Image-2.1",
     "prompt": "a cute capybara reading a book by candlelight",
     "generator_device": "cpu",
     "output_format": "png",

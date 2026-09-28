@@ -17,7 +17,7 @@
 | **DeepSeek-V4-Flash-0731** | 1M | 1 | 0.02 | 4 | Previous generation — prefer the newer one |
 | bge-m3 (Embedding) | 8K | 0.5 | — | — | Text embedding, for retrieval / RAG |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 0.75 | — | 3 | Image understanding (captioning, chart reading) |
-| Qwen2-Audio-7B / Qwen3-ASR-1.7B / cosyvoice-v3 | — | 1 | — | 1 | Speech understanding / recognition / synthesis |
+| Qwen2-Audio-7B / Qwen3-ASR-1.7B / Fun-CosyVoice3-0.5B | — | 1 | — | 1 | Speech understanding / recognition / synthesis |
 
 ### vip group exclusive
 
