@@ -73,6 +73,7 @@ import {
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
+import { resolveLocalizedDescription } from '../lib/model-description'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
 import {
   evaluateTaskUsageExamples,
@@ -589,11 +590,14 @@ function ModelBackendDetailsSection(props: { model: PricingModel }) {
 // ----------------------------------------------------------------------------
 
 function ModelHeader(props: { model: PricingModel }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const model = props.model
   const modelIconKey = model.icon || model.vendor_icon
   const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 20) : null
-  const description = model.description || model.vendor_description || null
+  const description =
+    resolveLocalizedDescription(model.description, i18n.language) ||
+    resolveLocalizedDescription(model.vendor_description, i18n.language) ||
+    null
 
   return (
     <header className='pb-4'>
