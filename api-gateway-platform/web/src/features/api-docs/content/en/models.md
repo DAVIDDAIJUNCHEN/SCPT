@@ -5,9 +5,9 @@
 
 ## Model Overview
 
-Platform models are exposed by **group**: registration puts you in the **default group** (4 LLMs + multimodal feature models); the **vip group** additionally includes the flagship model (see the group notes below).
+Platform models are exposed by **group**: registration puts you in the **default group** (5 LLMs + multimodal feature models); the **vip group** additionally includes the flagship model (see the group notes below).
 
-### default group (default on registration, 4 LLMs + feature models)
+### default group (default on registration, 5 LLMs + feature models)
 
 | Model (the API `model` value) | Context | Max output | Input price<br>CNY/M tokens | Cache price<br>CNY/M tokens | Output price<br>CNY/M tokens | Positioning |
 |---|---|---|---|---|---|---|
@@ -15,6 +15,7 @@ Platform models are exposed by **group**: registration puts you in the **default
 | **Qwen3.8-Flash-Next** | **1M** | 64K | 0.8 | 0.1 | 2.7 | Chinese-optimized, reasoning-enhanced. [Thinking/streaming](/docs/streaming#working-with-thinking-mode) |
 | **GLM-5.3-Flash** | **1M** | 64K | 0.4<sup>†</sup> | 0.115 | 1.4<sup>†</sup> | Lightweight and fast for casual use. [Streaming example](/docs/streaming#usage-example-tested-working) |
 | **DeepSeek-V4-Flash-0731** | 1M | 64K | 1 | 0.02 | 4 | Previous generation of DeepSeek-V4.1-Flash |
+| **Qwen3-Coder-Next-FP8** | 256K | 64K | 1 | — | 4 | Dedicated coding model: generation/debug/refactor/unit tests, native Tool Calls, tailored for agentic coding tools like Cursor/Cline/Aider [added 2026-09-28] |
 | bge-m3 (Embedding) | 8K | — | 0.5 | — | — | Text embedding for retrieval/RAG. [Example](/docs/embedding#usage-example-tested-working) |
 | Qwen3-Reranker-4B (Rerank) | 32K | — | 0.6 | — | — | Retrieval reranking, second-stage RAG refinement. [Example](/docs/rerank) |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 8K | 0.75 | 0.75 | 3 | Multimodal image understanding. [Example](/docs/vision) |
@@ -43,14 +44,14 @@ Platform models are exposed by **group**: registration puts you in the **default
 
 ## Feature Matrix
 
-| Feature | DS-V4.1-Flash | Qwen3.8-Flash-Next | GLM-5.3-Flash | DS-V4-Flash-0731 | GLM-5.3 (vip) |
-|---|---|---|---|---|---|
-| 1M long context (max single input) | ✅ | ✅ | ✅ | ✅ | ❌ (128K) |
-| Streaming | ✅ | ✅ | always-thinking: streams `reasoning_content` segments [tested] | ✅ | ✅ |
-| Tool Calls | ✅ | ✅ | ✅ | ✅ | ✅ |
-| JSON Output | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Embedding | — | — | — | — | — (use bge-m3) |
-| Image understanding | — | — | — | — | — (use Qwen3-VL) |
+| Feature | DS-V4.1-Flash | Qwen3.8-Flash-Next | GLM-5.3-Flash | DS-V4-Flash-0731 | Coder-Next | GLM-5.3 (vip) |
+|---|---|---|---|---|---|---|
+| 1M long context (max single input) | ✅ | ✅ | ✅ | ✅ | ❌ (256K) | ❌ (128K) |
+| Streaming | ✅ | ✅ | always-thinking: streams `reasoning_content` segments [tested] | ✅ | ✅ | ✅ |
+| Tool Calls | ✅ | ✅ | ✅ | ✅ | ✅ (native qwen3_coder parsing, optimized for coding) | ✅ |
+| JSON Output | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Embedding | — | — | — | — | — | — (use bge-m3) |
+| Image understanding | — | — | — | — | — | — (use Qwen3-VL) |
 
 > Tool Calls / JSON Output follow the OpenAI format. Detailed examples for each feature are in the "Developer Guide" volumes in the sidebar (Streaming / Long Context / Vision & Image Generation / Audio / Embedding & RAG); data marked [tested] was verified on 2026-09-23.
 

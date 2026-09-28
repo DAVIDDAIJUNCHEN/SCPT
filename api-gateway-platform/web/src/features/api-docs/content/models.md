@@ -5,9 +5,9 @@
 
 ## 模型总览
 
-平台模型按**分组**开放：注册即属 **default 分组**（4 款 LLM + 多模态功能系）；**vip 分组** 另含旗舰模型，见下文分组说明。
+平台模型按**分组**开放：注册即属 **default 分组**（5 款 LLM + 多模态功能系）；**vip 分组** 另含旗舰模型，见下文分组说明。
 
-### default 分组（注册默认，4 款 LLM + 功能模型）
+### default 分组（注册默认，5 款 LLM + 功能模型）
 
 | 模型（即 API 的 model 取值） | 上下文长度 | 最大输出 | 输入价<br>元/百万token | 缓存价<br>元/百万token | 输出价<br>元/百万token | 定位 |
 |---|---|---|---|---|---|---|
@@ -15,6 +15,7 @@
 | **Qwen3.8-Flash-Next** | **1M** | 64K | 0.8 | 0.1 | 2.7 | 中文优化，推理增强。[思考/流式](02-5-流式输出.md#与思考模式的配合) |
 | **GLM-5.3-Flash** | **1M** | 64K | 0.4<sup>†</sup> | 0.115 | 1.4<sup>†</sup> | 轻量快速，日常轻交互。[流式调用](02-5-流式输出.md#调用样例实测通过) |
 | **DeepSeek-V4-Flash-0731** | 1M | 64K | 1 | 0.02 | 4 | DeepSeek-V4.1-Flash 的上一代版本 |
+| **Qwen3-Coder-Next-FP8** | 256K | 64K | 1 | — | 4 | 专职代码模型：生成/Debug/重构/单测，原生 Tool Calls，适配 Cursor/Cline/Aider 等 AI 编程工具【2026-09-28 上线】 |
 | bge-m3（Embedding） | 8K | — | 0.5 | — | — | 文本向量化，检索/RAG 用。[调用样例](02-8-Embedding与RAG.md#调用样例实测通过) |
 | Qwen3-Reranker-4B（Rerank） | 32K | — | 0.6 | — | — | 检索重排序，RAG 二阶段精排。[调用样例](/docs/rerank) |
 | Qwen3-VL-30B-A3B-Instruct | 128K | 8K | 0.75 | 0.75 | 3 | 图像理解多模态，[样例](02-6-多模态视觉理解.md) |
@@ -43,14 +44,14 @@
 
 ## 功能矩阵
 
-| 功能 | DS-V4.1-Flash | Qwen3.8-Flash-Next | GLM-5.3-Flash | DS-V4-Flash-0731 | GLM-5.3 (vip) |
-|---|---|---|---|---|---|
-| 1M 长上下文（单次最大输入） | ✅ | ✅ | ✅ | ✅ | ❌（128K） |
-| 流式输出 | ✅ | ✅ | always-thinking：流式会收到 reasoning_content 分段【实测】 | ✅ | ✅ |
-| Tool Calls | ✅ | ✅ | ✅ | ✅ | ✅ |
-| JSON Output | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Embedding | — | — | — | — | —（用 bge-m3） |
-| 图像理解 | — | — | — | — | —（用 Qwen3-VL） |
+| 功能 | DS-V4.1-Flash | Qwen3.8-Flash-Next | GLM-5.3-Flash | DS-V4-Flash-0731 | Coder-Next | GLM-5.3 (vip) |
+|---|---|---|---|---|---|---|
+| 1M 长上下文（单次最大输入） | ✅ | ✅ | ✅ | ✅ | ❌（256K） | ❌（128K） |
+| 流式输出 | ✅ | ✅ | always-thinking：流式会收到 reasoning_content 分段【实测】 | ✅ | ✅ | ✅ |
+| Tool Calls | ✅ | ✅ | ✅ | ✅ | ✅（qwen3_coder 原生解析，编码场景优化） | ✅ |
+| JSON Output | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Embedding | — | — | — | — | — | —（用 bge-m3） |
+| 图像理解 | — | — | — | — | — | —（用 Qwen3-VL） |
 
 > Tool Calls / JSON Output 兼容 OpenAI 格式。各功能详细样例见左侧目录「开发者手册」分册（流式输出 / 长上下文 / 视觉与图像生成 / 语音能力 / Embedding 与 RAG）；标注【实测】的数据均验证于 2026-09-23。
 

@@ -142,6 +142,7 @@
 | GLM-5.3-Flash | 1M | 轻量快速，当前**半价优惠** | default（注册默认） |
 | Qwen3.8-Flash-Next | 1M | 长文备选，输出上限最大（64K） | default（注册默认） |
 | DeepSeek-V4-Flash-0731 | 1M | DeepSeek 上一代，备用（输出上限同为 64K） | default（注册默认） |
+| Qwen3-Coder-Next-FP8 | 256K | **专职写代码**：代码生成/Debug/重构/单测，原生 Tool Calls（适配 Cursor/Cline/Aider 等 AI 编程工具） | default（注册默认） |
 | GLM-5.3 | 128K | **深度思考专用**（vip 专享，default 令牌调用会返回 503） | 需 vip 分组 |
 
 **GLM-5.3 注意**：账号注册默认属 **default 分组**，无该模型权限，配置了也调不通（报 503，这是分组策略不是故障）；确需深度思考场景，联系**智算中心**申请 **vip 分组**。

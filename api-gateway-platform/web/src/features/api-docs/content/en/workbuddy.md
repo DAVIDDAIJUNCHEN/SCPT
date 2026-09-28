@@ -142,6 +142,7 @@ Add them in WorkBuddy **Settings → Model Configuration** (custom models), or e
 | GLM-5.3-Flash | 1M | Lightweight and fast, currently **50% off** | default (on registration) |
 | Qwen3.8-Flash-Next | 1M | Long-document alternative, largest output cap (64K) | default (on registration) |
 | DeepSeek-V4-Flash-0731 | 1M | Previous DeepSeek generation, backup (also 64K output) | default (on registration) |
+| Qwen3-Coder-Next-FP8 | 256K | **Coding specialist**: generation/debug/refactor/unit tests, native Tool Calls (tailored for Cursor/Cline/Aider) | default (on registration) |
 | GLM-5.3 | 128K | **Deep-thinking specialist** (vip exclusive; default tokens get 503) | vip group required |
 
 **GLM-5.3 note**: registered accounts belong to the **default group** by default and have no access to this model — configuring it won't work (503; group policy, not a malfunction). If you truly need deep thinking, contact the **AI Computing Center** for the **vip group**.
