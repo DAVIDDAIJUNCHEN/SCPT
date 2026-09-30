@@ -70,6 +70,58 @@
           if (systemDark()) mode = "dark";
         }
         document.documentElement.setAttribute("data-theme", mode);
+
+        // Brand palette must ALSO be resolved pre-paint: the stylesheet baseline
+        // (html without [data-palette]) is upstream's rose, so skipping this
+        // flashes red before React mounts. Keep the value list and the one-shot
+        // rebrand migration in sync with themePalettes.ts / appearanceStorage.ts.
+        var PALETTES = [
+          "rose",
+          "tech",
+          "indigo",
+          "teal",
+          "violet",
+          "emerald",
+          "amber",
+          "slate",
+          "custom",
+        ];
+        var PALETTE_DEFAULT = "tech";
+        var MIGRATION_KEY = "octop:palette-rebrand-migrated";
+        function isPalette(v) {
+          return typeof v === "string" && PALETTES.indexOf(v) !== -1;
+        }
+        var palette = "";
+        try {
+          if (raw && raw.charAt(0) === "{") {
+            try {
+              var stored = JSON.parse(raw);
+              if (stored && isPalette(stored.palette)) palette = stored.palette;
+            } catch (e) {
+              /* malformed JSON: fall through to the default */
+            }
+          }
+          if (!palette) {
+            var legacyPalette = localStorage.getItem("octop:ui-palette");
+            if (isPalette(legacyPalette)) palette = legacyPalette;
+          }
+          if (!palette) palette = PALETTE_DEFAULT;
+          // One-shot rebrand migration: upstream's implicit default was rose, and
+          // a value persisted before the rebrand would otherwise win forever.
+          // Read-only here on purpose — appearanceStorage.ts owns the marker, so
+          // this pre-paint pass can never make React skip a migration it still
+          // needs to persist.
+          if (
+            !localStorage.getItem(MIGRATION_KEY) &&
+            palette === "rose"
+          ) {
+            palette = PALETTE_DEFAULT;
+          }
+        } catch (e) {
+          palette = PALETTE_DEFAULT;
+        }
+        document.documentElement.setAttribute("data-palette", palette);
+
         var themeColor = mode === "dark" ? "#1a1c28" : "#ffffff";
         var metas = document.querySelectorAll('meta[name="theme-color"]');
         for (var i = 0; i < metas.length; i++) {

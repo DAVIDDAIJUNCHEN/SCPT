@@ -39,10 +39,43 @@ function readLegacyPalette(): ThemePalette {
 }
 
 /**
+ * Upstream Octop shipped `rose` as the implicit default palette. 星语 rebrand
+ * switched {@link DEFAULT_PALETTE} to `tech` (brand blue), but a palette that
+ * an earlier session persisted into localStorage always wins over the code
+ * default — so browsers that opened the app before the rebrand stayed rose
+ * forever. This one-shot migration upgrades that single legacy value; any
+ * other stored palette (a deliberate pick) is left untouched.
+ */
+const LEGACY_DEFAULT_PALETTE: ThemePalette = "rose";
+
+/** Marker so the rebrand migration runs at most once per browser. */
+export const PALETTE_MIGRATION_KEY = "octop:palette-rebrand-migrated";
+
+export function migrateLegacyDefaultPalette(
+  palette: ThemePalette,
+): ThemePalette {
+  try {
+    if (localStorage.getItem(PALETTE_MIGRATION_KEY)) return palette;
+    localStorage.setItem(PALETTE_MIGRATION_KEY, "1");
+  } catch {
+    return palette;
+  }
+  return palette === LEGACY_DEFAULT_PALETTE ? DEFAULT_PALETTE : palette;
+}
+
+/**
  * Read light/dark preference + brand palette from the shared `theme` key.
- * Migrates legacy plain-string `theme` and `octop:ui-palette` values.
+ * Migrates legacy plain-string `theme` and `octop:ui-palette` values, plus the
+ * one-shot rebrand migration of the legacy implicit palette (see
+ * {@link migrateLegacyDefaultPalette}).
  */
 export function readStoredAppearance(): StoredAppearance {
+  const appearance = readStoredAppearanceRaw();
+  const palette = migrateLegacyDefaultPalette(appearance.palette);
+  return palette === appearance.palette ? appearance : { ...appearance, palette };
+}
+
+function readStoredAppearanceRaw(): StoredAppearance {
   const raw = localStorage.getItem(THEME_STORAGE_KEY);
   if (!raw) {
     return {

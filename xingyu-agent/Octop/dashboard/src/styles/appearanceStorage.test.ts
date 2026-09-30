@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  PALETTE_MIGRATION_KEY,
   loadAppearanceOnBoot,
   readStoredAppearance,
   writeStoredAppearance,
@@ -14,6 +15,7 @@ import {
 afterEach(() => {
   localStorage.removeItem(THEME_STORAGE_KEY);
   localStorage.removeItem(LEGACY_PALETTE_STORAGE_KEY);
+  localStorage.removeItem(PALETTE_MIGRATION_KEY);
 });
 
 describe("appearanceStorage", () => {
@@ -101,6 +103,30 @@ describe("appearanceStorage", () => {
       palette: "amber",
       customColor: DEFAULT_CUSTOM_COLOR.toLowerCase(),
     });
+  });
+
+  it("upgrades upstream's legacy rose default exactly once", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({ preference: "system", palette: "rose" }),
+    );
+
+    // First read migrates the rebrand: rose (upstream's implicit default) → brand blue.
+    expect(readStoredAppearance().palette).toBe(DEFAULT_PALETTE);
+    expect(localStorage.getItem(PALETTE_MIGRATION_KEY)).toBe("1");
+
+    // A deliberate pick made after the migration must survive.
+    writeStoredAppearance({ preference: "system", palette: "rose" });
+    expect(readStoredAppearance().palette).toBe("rose");
+  });
+
+  it("leaves an explicitly chosen non-default palette untouched", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({ preference: "dark", palette: "violet" }),
+    );
+
+    expect(readStoredAppearance().palette).toBe("violet");
   });
 
   it("falls back safely on invalid JSON or unknown values", () => {
