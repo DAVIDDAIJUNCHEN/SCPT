@@ -432,6 +432,10 @@ export default function Sidebar({
     ? "/logo_horizontal_white.png"
     : "/logo_horizontal_dark.png";
 
+  // 折叠态（rail）显示学校校徽，与星语 Chat 品牌标记对齐；展开态才用「校徽+星语」横向词标。
+  // 注意 pwa-192.png 已改作星语 Agent 应用图标，不宜再兼任折叠态品牌标记。
+  const railMarkSrc = "/logo_vertical_dark.png";
+
   const selectMinimalPane = useCallback(
     (pane: MinimalNavPane, opts?: { expand?: boolean }) => {
       setMinimalPane(pane);
@@ -492,7 +496,7 @@ export default function Sidebar({
   const brandInner = (
     <>
       <img
-        src={isRailCollapsed ? "/pwa-192.png" : wordmarkSrc}
+        src={isRailCollapsed ? railMarkSrc : wordmarkSrc}
         alt="星语 Agent"
         style={{
           height: isRailCollapsed ? 32 : isMobile ? 38 : 36,
