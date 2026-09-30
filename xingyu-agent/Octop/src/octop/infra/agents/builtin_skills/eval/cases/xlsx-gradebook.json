@@ -1,0 +1,12 @@
+{
+  "id": "xlsx-gradebook",
+  "title": "成绩单 Excel（ROUND 公式）",
+  "skill_hint": "office-codegen",
+  "prompt": "请生成一个成绩单 Excel 文件 成绩单.xlsx：sheet「成绩」包含列：学号、姓名、平时分、期末分、总评；总评列用公式「平时分×0.4+期末分×0.6」并用 ROUND 保留 1 位小数；至少 5 行示例数据。",
+  "artifacts": ["成绩单.xlsx"],
+  "checks": [
+    {"type": "file_nonempty", "file": "成绩单.xlsx"},
+    {"type": "zip_has_entry", "file": "成绩单.xlsx", "entry": "xl/workbook.xml"},
+    {"type": "xlsx_formula", "file": "成绩单.xlsx", "func": "ROUND"}
+  ]
+}

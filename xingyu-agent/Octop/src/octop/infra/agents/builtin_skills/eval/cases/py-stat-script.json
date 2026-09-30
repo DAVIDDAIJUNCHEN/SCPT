@@ -1,0 +1,14 @@
+{
+  "id": "py-stat-script",
+  "title": "统计脚本（语法+输出契约）",
+  "skill_hint": "代码+执行",
+  "prompt": "请编写 stats.py：读入当前目录的 scores.csv（两列：name,score），计算平均分、最高分、及格人数（≥60），把结果以 JSON 写入 result.json，形如 {\"avg\": .., \"max\": .., \"passed\": ..}。附 scores.csv 示例数据 5 行。",
+  "artifacts": ["stats.py", "result.json"],
+  "checks": [
+    {"type": "file_nonempty", "file": "stats.py"},
+    {"type": "py_compile", "file": "stats.py"},
+    {"type": "json_valid", "file": "result.json"},
+    {"type": "json_field", "file": "result.json", "field": "avg"},
+    {"type": "json_field", "file": "result.json", "field": "passed"}
+  ]
+}

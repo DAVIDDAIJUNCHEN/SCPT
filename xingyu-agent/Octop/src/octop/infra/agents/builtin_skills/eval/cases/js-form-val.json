@@ -1,0 +1,13 @@
+{
+  "id": "js-form-val",
+  "title": "表单校验 JS（node --check）",
+  "skill_hint": "代码能力",
+  "prompt": "请编写 validate.js：导出函数 validateForm(fields)——fields 为对象，返回 {ok: true/false, errors: [...]}。规则：name 非空、email 含 @、age 为 1-120 整数。语法必须能通过 node --check。",
+  "artifacts": ["validate.js"],
+  "checks": [
+    {"type": "file_nonempty", "file": "validate.js"},
+    {"type": "text_contains", "file": "validate.js", "pattern": "validateForm"},
+    {"type": "text_contains", "file": "validate.js", "pattern": "@"},
+    {"type": "not_contains", "file": "validate.js", "pattern": "TODO|FIXME"}
+  ]
+}

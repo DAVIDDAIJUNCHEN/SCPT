@@ -1,0 +1,13 @@
+{
+  "id": "goal-loop",
+  "title": "目标验收循环（goal.json 落盘+标准全勾）",
+  "skill_hint": "goal/迁移2",
+  "prompt": "请完成一个明确交付目标：在工作目录生成 tips.txt，内容为 5 条面向大一新生的人工智能学习建议，每条一行、编号 1-5。完成后请按 goal 技能流程维护 goal.json 并跑验收，确保所有验收标准真实达成。",
+  "artifacts": ["tips.txt", "goal.json"],
+  "checks": [
+    {"type": "file_nonempty", "file": "tips.txt"},
+    {"type": "text_contains", "file": "tips.txt", "pattern": "5\\."},
+    {"type": "json_valid", "file": "goal.json"},
+    {"type": "text_contains", "file": "goal.json", "pattern": "criteria"}
+  ]
+}

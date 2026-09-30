@@ -1,0 +1,15 @@
+{
+  "id": "json-config",
+  "title": "配置 JSON（可解析+字段+无 TODO）",
+  "skill_hint": "基础格式",
+  "prompt": "请编写配置文件 config.json：星语 Agent 实验室机房部署配置——顶层字段 name（字符串）、seats（整数）、gpu_nodes（数组，每项含 host 和 gpu_count）、features（对象含 oauth 和 rerank 两个布尔值）。JSON 必须合法且不留 TODO。",
+  "artifacts": ["config.json"],
+  "checks": [
+    {"type": "json_valid", "file": "config.json"},
+    {"type": "json_field", "file": "config.json", "field": "name"},
+    {"type": "json_field", "file": "config.json", "field": "seats"},
+    {"type": "json_field", "file": "config.json", "field": "gpu_nodes"},
+    {"type": "json_field", "file": "config.json", "field": "features"},
+    {"type": "not_contains", "file": "config.json", "pattern": "TODO|xxx|待填"}
+  ]
+}

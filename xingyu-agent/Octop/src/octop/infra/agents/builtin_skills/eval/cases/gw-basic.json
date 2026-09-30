@@ -1,0 +1,14 @@
+{
+  "id": "gw-basic",
+  "title": "生成一份红头通知 docx",
+  "skill_hint": "gongwen/office-codegen",
+  "prompt": "请生成一份红头文件《关于开展2026年秋季学期期中教学检查的通知》的 Word 文档，文件名为 通知.docx。要求：标题用方正小标宋（或宋体加粗）二号居中；正文用仿宋三号；文末落款「教务处」和日期。",
+  "artifacts": ["通知.docx"],
+  "checks": [
+    {"type": "file_nonempty", "file": "通知.docx"},
+    {"type": "zip_has_entry", "file": "通知.docx", "entry": "word/document.xml"},
+    {"type": "docx_text_contains", "file": "通知.docx", "pattern": "期中教学检查"},
+    {"type": "docx_text_contains", "file": "通知.docx", "pattern": "教务处"},
+    {"type": "docx_font", "file": "通知.docx", "part": "body", "font": "仿宋"}
+  ]
+}

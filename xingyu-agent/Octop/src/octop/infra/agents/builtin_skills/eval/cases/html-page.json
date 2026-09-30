@@ -1,0 +1,13 @@
+{
+  "id": "html-page",
+  "title": "完整 HTML 页（标签配对+无占位符）",
+  "skill_hint": "代码能力",
+  "prompt": "请编写 index.html：一个「川邮·星语」介绍页，含 <html>/<head>/<body> 完整结构、<title>、一个 <script> 块和一段介绍文字。页面必须完整不要留 TODO 占位符。",
+  "artifacts": ["index.html"],
+  "checks": [
+    {"type": "file_nonempty", "file": "index.html"},
+    {"type": "html_paired", "file": "index.html"},
+    {"type": "text_contains", "file": "index.html", "pattern": "星语"},
+    {"type": "not_contains", "file": "index.html", "pattern": "TODO|占位|placeholder"}
+  ]
+}

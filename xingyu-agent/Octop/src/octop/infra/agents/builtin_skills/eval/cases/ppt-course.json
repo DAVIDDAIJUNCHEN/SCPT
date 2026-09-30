@@ -1,0 +1,12 @@
+{
+  "id": "ppt-course",
+  "title": "3 页课件 PPTX",
+  "skill_hint": "office-codegen",
+  "prompt": "请生成一个课件 PPT 文件 课件.pptx，主题「人工智能导论第一课」，共 3 页：第 1 页封面标题，第 2 页「什么是人工智能」要点列表，第 3 页「本课小结」。",
+  "artifacts": ["课件.pptx"],
+  "checks": [
+    {"type": "file_nonempty", "file": "课件.pptx"},
+    {"type": "zip_has_entry", "file": "课件.pptx", "entry": "ppt/slides/slide1.xml"},
+    {"type": "zip_has_entry", "file": "课件.pptx", "entry": "ppt/slides/slide3.xml"}
+  ]
+}

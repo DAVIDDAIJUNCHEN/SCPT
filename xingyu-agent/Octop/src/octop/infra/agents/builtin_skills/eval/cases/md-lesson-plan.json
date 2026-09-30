@@ -1,0 +1,13 @@
+{
+  "id": "md-lesson-plan",
+  "title": "教案 Markdown（分节+表格）",
+  "skill_hint": "jiaoan",
+  "prompt": "请编写教案 教案.md：《Python 循环结构》45 分钟课。必须包含分节标题（教学目标/教学重难点/教学过程/课堂练习）和一个 Markdown 表格（教学过程环节安排：环节、时长、内容三列）。",
+  "artifacts": ["教案.md"],
+  "checks": [
+    {"type": "file_nonempty", "file": "教案.md"},
+    {"type": "text_contains", "file": "教案.md", "pattern": "教学目标"},
+    {"type": "text_contains", "file": "教案.md", "pattern": "教学过程"},
+    {"type": "text_contains", "file": "教案.md", "pattern": "\\|.{0,40}\\|.{0,40}\\|"}
+  ]
+}

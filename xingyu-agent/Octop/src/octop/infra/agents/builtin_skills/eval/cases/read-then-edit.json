@@ -1,0 +1,13 @@
+{
+  "id": "read-then-edit",
+  "title": "先读 docx 再补段落（原内容保留）",
+  "skill_hint": "read-document/迁移4",
+  "prompt": "当前目录有一份 原文.docx（学院教学工作要点）。请先完整读取它的内容，然后在文末追加一段「第三，做好产教融合实训基地申报。」，输出为新文件 更新版.docx。原文件的既有内容必须一字不丢地保留。",
+  "artifacts": ["更新版.docx"],
+  "checks": [
+    {"type": "file_nonempty", "file": "更新版.docx"},
+    {"type": "docx_text_contains", "file": "更新版.docx", "pattern": "智算中心二期验收"},
+    {"type": "docx_text_contains", "file": "更新版.docx", "pattern": "产教融合实训基地"},
+    {"type": "docx_text_contains", "file": "更新版.docx", "pattern": "对照执行"}
+  ]
+}
