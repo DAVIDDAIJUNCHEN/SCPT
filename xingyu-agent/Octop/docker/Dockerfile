@@ -129,6 +129,24 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
+# ---------------------------------------------------------------------------
+# Office 三件套运行时（迁移 3 / 施工项 1.9 方案 B）
+# apt 的 nodejs 20 + docx/exceljs/pptxgenjs 装到 /opt/office-libs，
+# resolve-libs.js 会按 容器预置路径 -> cwd -> skill 目录 -> NODE_PATH 依次解析
+# ---------------------------------------------------------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/office-libs \
+    && cd /opt/office-libs \
+    && if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
+    && npm install --no-audit --no-fund --omit=dev docx exceljs pptxgenjs \
+    && rm -rf /root/.npm/_cacache
+
+ENV OFFICE_LIBS_PATH=/opt/office-libs/node_modules
+
 RUN mkdir -p /data/.octop
 
 EXPOSE 8088

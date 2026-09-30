@@ -16,14 +16,14 @@ metadata:
 
 不依赖 Office 引擎，通过**写 CommonJS 脚本**直接生成 Office 文件。三件套：`docx`（Word）、`exceljs`（Excel）、`pptxgenjs`（PowerPoint）。
 
-## 环境（容器内已预置）
+## 环境（镜像已预置，skin-1j+）
 
-- Node.js ≥ 18（PoC 容器 `/usr/bin/node`，node v20.19.2）
-- 三件套库位置：`/data/xingyu-agent/office-libs/node_modules/`
-- 若容器缺失，安装命令：
+- Node.js 20（镜像 apt 层预装 `/usr/bin/node`）
+- 三件套库位置：镜像内置 `/opt/office-libs/node_modules/`（ENV `OFFICE_LIBS_PATH`）
+- 旧版镜像（skin-1i 及以前）无 node，若容器缺失则手动补：
   ```bash
   apt-get update && apt-get install -y nodejs npm
-  mkdir -p /data/xingyu-agent/office-libs && cd /data/xingyu-agent/office-libs
+  mkdir -p /opt/office-libs && cd /opt/office-libs
   npm install docx exceljs pptxgenjs --registry=https://registry.npmmirror.com
   ```
 
